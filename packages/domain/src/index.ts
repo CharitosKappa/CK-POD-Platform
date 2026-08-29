@@ -36,10 +36,12 @@ export type DomainModule = (typeof domainModules)[number];
 
 export * from './catalog';
 export * from './ai-contracts';
+export * from './assets';
 export * from './ai-providers';
 export * from './ai-runtime';
 export * from './benchmark';
 export * from './credits';
+export * from './editor';
 export * from './generation-worker';
 export * from './generations';
 export * from './identity';

@@ -45,6 +45,20 @@ pnpm test:integration
 
 Open `http://localhost:3000` to exercise the development-only **Choose Product → Choose Color** flow. It creates a guest project, and the following placeholder page offers account creation to transfer that guest project's state and history. Milestone 2 supplies the authorized generation API and worker foundation; its editor surface remains out of scope until Milestone 3.
 
+## Milestone 3 editor checks
+
+Open the **Make It Yours** link for a saved project, or visit
+`http://localhost:3000/editor?project=<project-id>`. The editor saves only its canonical
+`EditorDocumentV1` after a configurable debounce (`NEXT_PUBLIC_EDITOR_AUTOSAVE_DEBOUNCE_MS`,
+default 700ms) and retains configurable local undo history (`NEXT_PUBLIC_EDITOR_UNDO_LIMIT`,
+default 50). A stale save deliberately leaves the browser draft intact; reload the project before
+retrying.
+
+The development print-area and quality indicator are not production prepress. The app allows an
+invalid temporary draft to save, but disables the Continue action until it is placed inside the
+visible safe boundary. Controlled preview URLs are authorized per guest session or account and
+must never be replaced with source-object URLs.
+
 ## Milestone 2 generation checks
 
 Use Redis locally for a separate generation worker (`QUEUE_DRIVER=redis` in `.env.example`), then start it in a second terminal:

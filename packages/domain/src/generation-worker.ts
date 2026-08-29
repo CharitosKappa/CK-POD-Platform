@@ -51,7 +51,7 @@ export class GenerationWorkerService {
         return;
       }
 
-      const candidates = this.providers.forTask('TEXT_TO_ARTWORK');
+      const candidates = this.providers.forTask(generation.task);
       if (!candidates.length) {
         await this.generations.fail(generation.id, 'CONFIGURATION_ERROR');
         return;
@@ -85,13 +85,13 @@ export class GenerationWorkerService {
     let lastCategory: GenerationFailureCategory = 'PROVIDER_ERROR';
 
     for (let retry = 0; retry < maximumAttempts; retry += 1) {
-      const attempt = await this.startAttempt(generation.id, provider);
+      const attempt = await this.startAttempt(generation.id, provider, generation.task);
       const startedAt = Date.now();
       try {
         const output = await withTimeout(
           provider.service.generate({
             generationId: generation.id,
-            task: 'TEXT_TO_ARTWORK',
+            task: generation.task,
             enhancedPrompt: generation.enhancedPrompt,
             requestedExactText: generation.requestedExactText,
             style: null,
@@ -208,19 +208,21 @@ export class GenerationWorkerService {
   private async startAttempt(
     generationId: string,
     provider: GenerationProvider,
+    task: GenerationWorkItem['task'],
   ): Promise<{ id: string }> {
     const result = await this.pool.query<AttemptRow>(
       `INSERT INTO app.generation_attempts (
         generation_id, provider_id, model_identifier, task, attempt_number, status, estimated_cost_cents
       ) VALUES (
-        $1, $2, $3, 'TEXT_TO_ARTWORK',
+        $1, $2, $3, $4,
         (SELECT COALESCE(max(attempt_number), 0) + 1 FROM app.generation_attempts WHERE generation_id = $1),
-        'PROCESSING', $4
+        'PROCESSING', $5
       ) RETURNING id`,
       [
         generationId,
         provider.configuration.id,
         provider.configuration.model,
+        task,
         provider.configuration.estimatedCostCents,
       ],
     );

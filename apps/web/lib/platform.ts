@@ -1,7 +1,12 @@
 import { cookies } from 'next/headers';
 
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
-import { IdentityService, ProjectService, type ActiveSession } from '@let-it-be/domain';
+import {
+  AssetService,
+  IdentityService,
+  ProjectService,
+  type ActiveSession,
+} from '@let-it-be/domain';
 
 const sessionCookieName = 'let_it_be_session';
 
@@ -20,7 +25,12 @@ function databasePool(): SqlPool {
 
 export function services() {
   const pool = databasePool();
-  return { identity: new IdentityService(pool), projects: new ProjectService(pool), pool };
+  return {
+    identity: new IdentityService(pool),
+    projects: new ProjectService(pool),
+    assets: new AssetService(pool),
+    pool,
+  };
 }
 
 export async function requireSession(createGuest = true): Promise<ActiveSession> {

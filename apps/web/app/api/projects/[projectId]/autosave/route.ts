@@ -23,11 +23,7 @@ export async function POST(
     const saved = await services().projects.autosave(
       await requireSession(),
       projectId,
-      body.editorDocument as {
-        canvas: Record<string, unknown>;
-        printArea: Record<string, unknown>;
-        layers: unknown[];
-      },
+      body.editorDocument,
       expectedRevision,
     );
     return NextResponse.json(saved);

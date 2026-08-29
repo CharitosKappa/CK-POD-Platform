@@ -1,4 +1,7 @@
+import { randomBytes } from 'node:crypto';
+
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { applyEditorCommand, createEmptyEditorDocument } from '@let-it-be/editor-schema';
 import { createLogger } from '@let-it-be/observability';
 import { InMemoryJobQueue } from '@let-it-be/queue';
 import { MemoryObjectStorage } from '@let-it-be/storage';
@@ -20,6 +23,8 @@ import {
   ScriptedGenerationProvider,
 } from './ai-providers.js';
 import { CreditService } from './credits.js';
+import { AssetService } from './assets.js';
+import { applySuccessfulRegeneration, generatedLayerFromDeliveredResult } from './editor.js';
 import { GenerationWorkerService } from './generation-worker.js';
 import { GenerationService, startGenerationConsumer } from './generations.js';
 import { IdentityService } from './identity.js';
@@ -94,6 +99,97 @@ integrationSuite('AI generation orchestration integration', () => {
     expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
       id: created.id,
     });
+    await harness.close();
+  });
+
+  it('delivers preview bytes only to the owning guest or account, never a source asset', async () => {
+    const harness = await createHarness();
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A bright sun.',
+    });
+    await harness.queue.waitForIdle();
+    const delivered = await harness.generations.get(guest, project.id, created.id);
+    const assets = await pool.query<{ id: string; asset_type: string }>(
+      'SELECT id, asset_type FROM app.assets WHERE generation_id = $1',
+      [created.id],
+    );
+    const preview = assets.rows.find((asset) => asset.asset_type === 'PREVIEW');
+    const source = assets.rows.find((asset) => asset.asset_type === 'SOURCE_OUTPUT');
+    const assetService = new AssetService(pool);
+    expect(
+      await assetService.getControlledPreview(guest, project.id, preview?.id as string),
+    ).toMatchObject({
+      contentType: 'image/svg+xml',
+    });
+    const account = await identity.register(
+      guest,
+      `preview-${randomBytes(8).toString('hex')}@example.test`,
+      'secure-editor-preview-password',
+    );
+    expect(
+      await assetService.getControlledPreview(account, project.id, preview?.id as string),
+    ).toMatchObject({ contentType: 'image/svg+xml' });
+    expect(
+      await assetService.getControlledPreview(guest, project.id, source?.id as string),
+    ).toBeNull();
+    expect(
+      await assetService.getControlledPreview(
+        await identity.createGuestSession(),
+        project.id,
+        preview?.id as string,
+      ),
+    ).toBeNull();
+    expect(JSON.stringify(delivered)).not.toContain('storage_key');
+    await harness.close();
+  });
+
+  it('routes selected-element regeneration through the task abstraction and leaves the prior editor version recoverable', async () => {
+    const harness = await createHarness({
+      providers: [
+        provider(
+          'editor-provider',
+          new DeterministicSvgProvider('editor-provider', 'editor-v1'),
+          true,
+          10,
+          ['SELECTED_ELEMENT_EDITING'],
+        ),
+      ],
+    });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('white'));
+    const original = applyEditorCommand(createEmptyEditorDocument(), {
+      type: 'add-layer',
+      layer: generatedLayerFromDeliveredResult({
+        layerId: 'generated-layer',
+        assetId: 'existing-preview',
+        generationId: 'existing-generation',
+        zIndex: 0,
+      }),
+    });
+    const saved = await projects.autosave(guest, project.id, original, project.revision);
+    const regeneration = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'Make the selected artwork warmer.',
+      task: 'SELECTED_ELEMENT_EDITING',
+      editorMetadata: { targetLayerId: 'generated-layer', lockedLayerIds: [] },
+    });
+    await harness.queue.waitForIdle();
+    const delivered = await harness.generations.get(guest, project.id, regeneration.id);
+    expect(delivered).toMatchObject({ status: 'SUCCEEDED', task: 'SELECTED_ELEMENT_EDITING' });
+    const replacement = applySuccessfulRegeneration(original, {
+      layerId: 'generated-layer',
+      assetId: delivered?.previewAsset?.id as string,
+      generationId: regeneration.id,
+    });
+    await projects.autosave(guest, project.id, replacement, saved.project.revision);
+    const versions = await projects.getVersions(guest, project.id);
+    expect(
+      versions.some((version) =>
+        JSON.stringify(version.editorDocument).includes('existing-preview'),
+      ),
+    ).toBe(true);
+    expect(versions[0]?.editorDocument.layers[0]).toMatchObject({ generationId: regeneration.id });
     await harness.close();
   });
 
@@ -283,13 +379,14 @@ function provider(
   service: ImageGenerationService,
   fallbackEligible: boolean,
   priority = 10,
+  tasks: AiTask[] = ['TEXT_TO_ARTWORK'],
 ): { configuration: ProviderConfiguration; service: ImageGenerationService } {
   return {
     configuration: {
       id,
       adapter: priority === 10 ? 'deterministic-svg' : 'deterministic-pattern',
       enabled: true,
-      tasks: ['TEXT_TO_ARTWORK'],
+      tasks,
       model: service.model,
       priority,
       estimatedCostCents: 0,

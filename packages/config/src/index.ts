@@ -10,7 +10,7 @@ const defaultProviderConfiguration = JSON.stringify([
     id: 'development-primary',
     adapter: 'deterministic-svg',
     enabled: true,
-    tasks: ['TEXT_TO_ARTWORK'],
+    tasks: ['TEXT_TO_ARTWORK', 'SELECTED_ELEMENT_EDITING'],
     model: 'development-svg-v1',
     priority: 10,
     estimatedCostCents: 0,
@@ -22,7 +22,7 @@ const defaultProviderConfiguration = JSON.stringify([
     id: 'development-fallback',
     adapter: 'deterministic-pattern',
     enabled: true,
-    tasks: ['TEXT_TO_ARTWORK'],
+    tasks: ['TEXT_TO_ARTWORK', 'SELECTED_ELEMENT_EDITING'],
     model: 'development-pattern-v1',
     priority: 20,
     estimatedCostCents: 0,
@@ -52,6 +52,8 @@ export const serverEnvironmentSchema = z
     AI_GUEST_FREE_CREDITS: positiveInteger.default(1),
     AI_REGISTERED_FREE_CREDITS: positiveInteger.default(0),
     AI_MAX_REFERENCE_ASSETS: z.coerce.number().int().min(0).max(5).default(5),
+    EDITOR_UNDO_LIMIT: z.coerce.number().int().min(1).max(100).default(50),
+    EDITOR_AUTOSAVE_DEBOUNCE_MS: z.coerce.number().int().min(250).max(5000).default(700),
   })
   .superRefine((environment, context) => {
     if (environment.STORAGE_DRIVER !== 's3') {

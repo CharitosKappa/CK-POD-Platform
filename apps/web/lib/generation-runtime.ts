@@ -12,6 +12,7 @@ import {
 interface WebGenerationRuntime {
   runtime: ReturnType<typeof createGenerationRuntime>;
   queue: BackgroundJobQueue;
+  storage: PrivateObjectStorage;
 }
 
 declare global {
@@ -29,10 +30,11 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
   const environment = parseServerEnvironment(process.env);
   const pool: SqlPool = createDatabaseClient(environment.DATABASE_URL).pool;
   const queue = createQueue(environment.QUEUE_DRIVER, environment.REDIS_URL);
+  const storage = createStorage(environment);
   const runtime = createGenerationRuntime({
     pool,
     queue,
-    storage: createStorage(environment),
+    storage,
     logger: createLogger({ service: 'web-ai', minimumLevel: environment.LOG_LEVEL }),
     providerConfiguration: environment.AI_PROVIDER_CONFIG,
     guestFreeCredits: environment.AI_GUEST_FREE_CREDITS,
@@ -42,7 +44,7 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
   if (environment.QUEUE_DRIVER === 'memory') {
     await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
   }
-  return { runtime, queue };
+  return { runtime, queue, storage };
 }
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {

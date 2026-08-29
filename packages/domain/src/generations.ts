@@ -7,6 +7,7 @@ import {
   type GenerationFailureCategory,
   type GenerationRateLimiter,
   type GenerationStatus,
+  type AiTask,
   GenerationAccessError,
   type ProductGenerationContext,
   type PromptPipeline,
@@ -21,6 +22,8 @@ export interface GenerationCreateInput {
   rawPrompt: string;
   style?: string;
   referenceAssetIds?: string[];
+  task?: Extract<AiTask, 'TEXT_TO_ARTWORK' | 'SELECTED_ELEMENT_EDITING'>;
+  editorMetadata?: { targetLayerId: string; lockedLayerIds: string[] };
 }
 
 export interface GenerationSummary {
@@ -30,6 +33,7 @@ export interface GenerationSummary {
   creditStatus: 'PENDING' | 'CONSUMED' | 'NOT_CONSUMED' | 'REFUNDED';
   failureCategory: GenerationFailureCategory | null;
   requestedExactText: string[];
+  task: Extract<AiTask, 'TEXT_TO_ARTWORK' | 'SELECTED_ELEMENT_EDITING'>;
   previewAsset: {
     id: string;
     contentType: string;
@@ -60,6 +64,7 @@ interface GenerationRow {
   credit_status: GenerationSummary['creditStatus'];
   failure_category: GenerationFailureCategory | null;
   prompt_metadata: { requestedExactText?: unknown };
+  task: GenerationSummary['task'];
   created_at: Date;
   started_at: Date | null;
   completed_at: Date | null;
@@ -115,8 +120,8 @@ export class GenerationService {
         `INSERT INTO app.generations (
           project_id, requested_by_session_id, requested_by_user_id, status,
           raw_prompt, enhanced_prompt, prompt_metadata, style_metadata, product_context,
-          reference_asset_ids, credit_account_id
-        ) VALUES ($1, $2, $3, 'QUEUED', $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10)
+          reference_asset_ids, credit_account_id, task, editor_metadata
+        ) VALUES ($1, $2, $3, 'QUEUED', $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb)
         RETURNING ${generationReturning()}`,
         [
           projectId,
@@ -129,6 +134,8 @@ export class GenerationService {
           JSON.stringify(context),
           JSON.stringify(referenceAssetIds),
           creditAccount.id,
+          input.task ?? 'TEXT_TO_ARTWORK',
+          JSON.stringify(input.editorMetadata ?? {}),
         ],
       );
       return mapGeneration(requireRow(result.rows[0], 'Could not create generation.'));
@@ -170,7 +177,7 @@ export class GenerationService {
 
   async getForWorker(generationId: string): Promise<GenerationWorkItem | null> {
     const result = await this.pool.query<GenerationWorkRow>(
-      `SELECT g.id, g.project_id, g.status, g.raw_prompt, g.enhanced_prompt, g.prompt_metadata,
+      `SELECT g.id, g.project_id, g.status, g.raw_prompt, g.enhanced_prompt, g.prompt_metadata, g.task,
               g.product_context, g.reference_asset_ids, g.credit_account_id
        FROM app.generations g WHERE g.id = $1`,
       [generationId],
@@ -182,7 +189,7 @@ export class GenerationService {
     const result = await this.pool.query<GenerationWorkRow>(
       `UPDATE app.generations SET status = 'PROCESSING', started_at = COALESCE(started_at, now())
        WHERE id = $1 AND status = 'QUEUED'
-       RETURNING id, project_id, status, raw_prompt, enhanced_prompt, prompt_metadata,
+       RETURNING id, project_id, status, raw_prompt, enhanced_prompt, prompt_metadata, task,
                  product_context, reference_asset_ids, credit_account_id`,
       [generationId],
     );
@@ -218,6 +225,7 @@ export interface GenerationWorkItem {
   productContext: ProductGenerationContext;
   referenceAssetIds: string[];
   creditAccountId: string;
+  task: GenerationSummary['task'];
 }
 
 interface GenerationWorkRow {
@@ -227,6 +235,7 @@ interface GenerationWorkRow {
   raw_prompt: string;
   enhanced_prompt: string;
   prompt_metadata: { requestedExactText?: unknown };
+  task: GenerationSummary['task'];
   product_context: unknown;
   reference_asset_ids: unknown;
   credit_account_id: string | null;
@@ -312,13 +321,13 @@ async function markUndeliverableGeneration(
 }
 
 function generationSelection(): string {
-  return `g.id, g.project_id, g.status, g.credit_status, g.failure_category, g.prompt_metadata,
+  return `g.id, g.project_id, g.status, g.credit_status, g.failure_category, g.prompt_metadata, g.task,
     g.created_at, g.started_at, g.completed_at, preview.id AS preview_asset_id,
     preview.content_type AS preview_content_type, preview.width AS preview_width, preview.height AS preview_height`;
 }
 
 function generationReturning(): string {
-  return `id, project_id, status, credit_status, failure_category, prompt_metadata,
+  return `id, project_id, status, credit_status, failure_category, prompt_metadata, task,
     created_at, started_at, completed_at, NULL::uuid AS preview_asset_id,
     NULL::text AS preview_content_type, NULL::integer AS preview_width, NULL::integer AS preview_height`;
 }
@@ -336,6 +345,7 @@ function mapGeneration(row: GenerationRow): GenerationSummary {
     creditStatus: row.credit_status,
     failureCategory: row.failure_category,
     requestedExactText: stringArray(row.prompt_metadata.requestedExactText),
+    task: row.task,
     previewAsset: row.preview_asset_id
       ? {
           id: row.preview_asset_id,
@@ -361,6 +371,7 @@ function mapWorkItem(row: GenerationWorkRow): GenerationWorkItem {
     productContext: row.product_context as ProductGenerationContext,
     referenceAssetIds: stringArray(row.reference_asset_ids),
     creditAccountId: row.credit_account_id,
+    task: row.task,
   };
 }
 

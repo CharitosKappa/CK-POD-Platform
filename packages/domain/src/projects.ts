@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
+import {
+  createEmptyEditorDocument,
+  migrateEditorDocument,
+  type EditorDocumentV1,
+} from '@let-it-be/editor-schema';
 
 import type { ActiveSession } from './identity';
 
-export interface EditorDocument {
-  canvas: Record<string, unknown>;
-  printArea: Record<string, unknown>;
-  layers: unknown[];
-}
+export type EditorDocument = EditorDocumentV1;
 
 export interface Project {
   id: string;
@@ -83,7 +84,7 @@ export class ProjectService {
   async create(
     session: ActiveSession,
     selection: ProjectSelection,
-    document: EditorDocument = emptyEditorDocument(),
+    document: EditorDocument | unknown = emptyEditorDocument(),
   ): Promise<Project> {
     return withTransaction(this.pool, async (client) => {
       await assertSelectable(client, selection);
@@ -103,7 +104,14 @@ export class ProjectService {
         ],
       );
       const project = mapProject(requireRow(projectResult.rows[0]));
-      const version = await this.insertVersion(client, project.id, 1, document, 'INITIAL', session);
+      const version = await this.insertVersion(
+        client,
+        project.id,
+        1,
+        migrateEditorDocument(document),
+        'INITIAL',
+        session,
+      );
       const active = await client.query<ProjectRow>(
         'UPDATE app.projects SET active_version_id = $1 WHERE id = $2 RETURNING *',
         [version.id, project.id],
@@ -155,7 +163,7 @@ export class ProjectService {
   async autosave(
     session: ActiveSession,
     projectId: string,
-    document: EditorDocument,
+    document: EditorDocument | unknown,
     expectedRevision: number,
   ): Promise<{ project: Project; version: ProjectVersion; unchanged: boolean }> {
     return withTransaction(this.pool, async (client) => {
@@ -166,7 +174,8 @@ export class ProjectService {
         [projectId],
       );
       const latest = requireRow(latestResult.rows[0]);
-      const documentHash = hashDocument(document);
+      const normalizedDocument = migrateEditorDocument(document);
+      const documentHash = hashDocument(normalizedDocument);
       if (latest.document_hash === documentHash) {
         return { project, version: mapVersion(latest), unchanged: true };
       }
@@ -181,7 +190,7 @@ export class ProjectService {
         client,
         projectId,
         latest.version_number + 1,
-        document,
+        normalizedDocument,
         'AUTOSAVE',
         session,
       );
@@ -250,7 +259,7 @@ export class ProjectService {
 }
 
 export function emptyEditorDocument(): EditorDocument {
-  return { canvas: {}, printArea: {}, layers: [] };
+  return createEmptyEditorDocument();
 }
 
 function projectSelect(): string {
@@ -306,7 +315,7 @@ function mapVersion(row: VersionRow): ProjectVersion {
     id: row.id,
     projectId: row.project_id,
     versionNumber: row.version_number,
-    editorDocument: row.editor_document,
+    editorDocument: migrateEditorDocument(row.editor_document),
     snapshotReason: row.snapshot_reason,
     createdAt: row.created_at,
   };

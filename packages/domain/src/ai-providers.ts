@@ -38,7 +38,7 @@ export class DeterministicSvgProvider implements ImageGenerationService {
   ) {}
 
   supports(task: AiTask): boolean {
-    return task === 'TEXT_TO_ARTWORK';
+    return task === 'TEXT_TO_ARTWORK' || task === 'SELECTED_ELEMENT_EDITING';
   }
 
   async generate(request: ProviderGenerationRequest): Promise<ProviderGenerationOutput> {

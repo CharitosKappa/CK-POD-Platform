@@ -159,6 +159,8 @@ Milestone 1 adds the guest-first identity, projects, product-selection, and auto
 
 Milestone 2 adds provider-neutral generation orchestration, private generated-asset handling, attempt/credit persistence, deterministic development adapters, and the G1 benchmark harness. Read [the Milestone 2 architecture](docs/architecture/milestone-2.md) before changing AI workflows.
 
+Milestone 3 adds the constrained merchandise editor. Its platform-owned document, React Konva adapter boundary, normalized placement model, private preview access, and scope limits are documented in [the Milestone 3 architecture](docs/architecture/milestone-3.md). It does not include prepress or production rendering.
+
 ### Local setup
 
 ```powershell
