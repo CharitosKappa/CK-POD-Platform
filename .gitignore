@@ -1,0 +1,21 @@
+# Dependencies and package-manager files
+node_modules/
+.pnpm-store/
+
+# Build and test output
+.next/
+dist/
+coverage/
+.turbo/
+
+# Local configuration and service data
+.env
+.env.local
+!.env.example
+postgres-data/
+redis-data/
+
+# Local tooling
+*.tsbuildinfo
+*.log
+.DS_Store

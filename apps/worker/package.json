@@ -1,0 +1,18 @@
+{
+  "name": "@let-it-be/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@let-it-be/config": "workspace:*",
+    "@let-it-be/observability": "workspace:*",
+    "@let-it-be/queue": "workspace:*",
+    "dotenv": "^16.6.1"
+  }
+}

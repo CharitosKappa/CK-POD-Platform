@@ -1,0 +1,37 @@
+{
+  "name": "let-it-be-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.19.0 <23",
+    "pnpm": ">=10.33.0 <11"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @let-it-be/web dev",
+    "dev:worker": "pnpm --filter @let-it-be/worker dev",
+    "build": "pnpm --recursive --if-present run build",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "db:up": "docker compose up -d postgres redis",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @let-it-be/db migrate",
+    "db:verify": "pnpm --filter @let-it-be/db verify"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/node": "^22.17.0",
+    "@types/pg": "^8.15.4",
+    "eslint": "^9.35.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.43.0",
+    "vitest": "^3.2.4"
+  }
+}

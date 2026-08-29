@@ -1,0 +1,12 @@
+# Authoritative source documents are preserved byte-for-byte.
+docs/MASTER_BUILD_PROMPT.md
+docs/CEO_REQUIREMENTS_GR.md
+
+# Managed by Next.js during development and production builds.
+apps/web/next-env.d.ts
+
+# Generated and dependency content
+.next/
+coverage/
+node_modules/
+pnpm-lock.yaml
