@@ -157,6 +157,8 @@ Read [the Foundation architecture](docs/architecture/foundation.md), [local deve
 
 Milestone 1 adds the guest-first identity, projects, product-selection, and autosave foundation described in [the Milestone 1 architecture](docs/architecture/milestone-1.md). The seeded product and price are development-only placeholders.
 
+Milestone 2 adds provider-neutral generation orchestration, private generated-asset handling, attempt/credit persistence, deterministic development adapters, and the G1 benchmark harness. Read [the Milestone 2 architecture](docs/architecture/milestone-2.md) before changing AI workflows.
+
 ### Local setup
 
 ```powershell

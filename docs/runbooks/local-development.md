@@ -43,7 +43,23 @@ pnpm db:verify
 pnpm test:integration
 ```
 
-Open `http://localhost:3000` to exercise the development-only **Choose Product → Choose Color** flow. It creates a guest project, and the following placeholder page offers account creation to transfer that guest project's state and history. The next design-generation step is intentionally not implemented until Milestone 2.
+Open `http://localhost:3000` to exercise the development-only **Choose Product → Choose Color** flow. It creates a guest project, and the following placeholder page offers account creation to transfer that guest project's state and history. Milestone 2 supplies the authorized generation API and worker foundation; its editor surface remains out of scope until Milestone 3.
+
+## Milestone 2 generation checks
+
+Use Redis locally for a separate generation worker (`QUEUE_DRIVER=redis` in `.env.example`), then start it in a second terminal:
+
+```powershell
+pnpm dev:worker
+```
+
+The default provider configuration contains two deterministic, zero-cost adapters. It does not call a paid AI API. Run the persisted lifecycle tests with `pnpm test:integration`, then run the development benchmark fixture with:
+
+```powershell
+pnpm benchmark:g1
+```
+
+The command emits controlled JSON. Set `G1_BENCHMARK_DATASET` to a versioned full dataset and `G1_MANUAL_SCORES_FILE` to a JSON score import before executing the real G1 comparison. Do not use its output to select a production provider until the G1 review is complete.
 
 ## Local services
 

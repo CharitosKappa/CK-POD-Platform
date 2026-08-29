@@ -1,0 +1,30 @@
+{
+  "version": "g1-development-v1",
+  "cases": [
+    {
+      "id": "typography-metadata",
+      "task": "TEXT_TO_ARTWORK",
+      "prompt": "A vintage sunrise composition for a navy T-shirt. Required text: CREATE KINDLY.",
+      "requestedExactText": ["CREATE KINDLY"],
+      "productContext": {
+        "productModelId": "essential-dtg-tee",
+        "productDisplayName": "Essential DTG T-Shirt",
+        "colorCode": "navy",
+        "colorName": "Navy",
+        "printArea": {}
+      }
+    },
+    {
+      "id": "light-garment-illustration",
+      "task": "TEXT_TO_ARTWORK",
+      "prompt": "A joyful hand-drawn wildflower illustration for a white T-shirt.",
+      "productContext": {
+        "productModelId": "essential-dtg-tee",
+        "productDisplayName": "Essential DTG T-Shirt",
+        "colorCode": "white",
+        "colorName": "White",
+        "printArea": {}
+      }
+    }
+  ]
+}

@@ -2,7 +2,15 @@ import { config } from 'dotenv';
 import { fileURLToPath } from 'node:url';
 
 import { parseServerEnvironment } from '@let-it-be/config';
+import { createDatabaseClient } from '@let-it-be/db';
+import { createGenerationRuntime, startGenerationConsumer } from '@let-it-be/domain';
 import { createLogger } from '@let-it-be/observability';
+import { BullMqJobQueue, InMemoryJobQueue, type BackgroundJobQueue } from '@let-it-be/queue';
+import {
+  MemoryObjectStorage,
+  S3PrivateObjectStorage,
+  type PrivateObjectStorage,
+} from '@let-it-be/storage';
 
 config({ path: fileURLToPath(new URL('../../../.env', import.meta.url)) });
 
@@ -17,8 +25,43 @@ logger.info('worker.ready', {
   queueDriver: environment.QUEUE_DRIVER,
 });
 
-/**
- * Domain job consumers are intentionally added by their owning milestones.
- * This executable proves the separate worker runtime exists without starting
- * work that belongs to Milestone 1 or later.
- */
+const queue = createQueue(environment.QUEUE_DRIVER, environment.REDIS_URL);
+const runtime = createGenerationRuntime({
+  pool: createDatabaseClient(environment.DATABASE_URL).pool,
+  queue,
+  storage: createStorage(environment),
+  logger,
+  providerConfiguration: environment.AI_PROVIDER_CONFIG,
+  guestFreeCredits: environment.AI_GUEST_FREE_CREDITS,
+  registeredFreeCredits: environment.AI_REGISTERED_FREE_CREDITS,
+  maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,
+});
+
+await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
+logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
+
+function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {
+  if (driver === 'memory') return new InMemoryJobQueue();
+  const url = new URL(redisUrl);
+  return new BullMqJobQueue({
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    ...(url.username ? { username: decodeURIComponent(url.username) } : {}),
+    ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
+  });
+}
+
+function createStorage(input: ReturnType<typeof parseServerEnvironment>): PrivateObjectStorage {
+  if (input.STORAGE_DRIVER === 'memory') return new MemoryObjectStorage();
+  return new S3PrivateObjectStorage({
+    bucket: input.S3_BUCKET as string,
+    clientConfig: {
+      region: input.S3_REGION,
+      ...(input.S3_ENDPOINT ? { endpoint: input.S3_ENDPOINT } : {}),
+      credentials: {
+        accessKeyId: input.S3_ACCESS_KEY_ID as string,
+        secretAccessKey: input.S3_SECRET_ACCESS_KEY as string,
+      },
+    },
+  });
+}

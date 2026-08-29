@@ -107,6 +107,7 @@ export class IdentityService {
        WHERE owner_type = 'GUEST' AND owner_session_id = $2`,
       [userId, session.id],
     );
+    await migrateCreditAccount(client, session.id, userId);
     const result = await client.query<SessionRow>(
       `UPDATE app.sessions
        SET user_id = $1, session_kind = 'AUTHENTICATED', last_seen_at = now()
@@ -117,6 +118,45 @@ export class IdentityService {
     const row = requireRow(result.rows[0], 'Could not establish authenticated session.');
     return { id: row.id, userId: row.user_id, kind: row.session_kind, expiresAt: row.expires_at };
   }
+}
+
+async function migrateCreditAccount(
+  client: SqlClient,
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const guest = await client.query<{ id: string; current_balance: number }>(
+    `SELECT id, current_balance FROM app.credit_accounts
+     WHERE owner_type = 'GUEST' AND owner_session_id = $1 FOR UPDATE`,
+    [sessionId],
+  );
+  const guestAccount = guest.rows[0];
+  if (!guestAccount) return;
+  const user = await client.query<{ id: string; current_balance: number }>(
+    `SELECT id, current_balance FROM app.credit_accounts
+     WHERE owner_type = 'USER' AND owner_user_id = $1 FOR UPDATE`,
+    [userId],
+  );
+  const userAccount = user.rows[0];
+  if (!userAccount) {
+    await client.query(
+      `UPDATE app.credit_accounts
+       SET owner_type = 'USER', owner_user_id = $1, owner_session_id = NULL, updated_at = now()
+       WHERE id = $2`,
+      [userId, guestAccount.id],
+    );
+    return;
+  }
+  await client.query(
+    'UPDATE app.credit_ledger SET credit_account_id = $1 WHERE credit_account_id = $2',
+    [userAccount.id, guestAccount.id],
+  );
+  await client.query(
+    `UPDATE app.credit_accounts SET current_balance = current_balance + $1, updated_at = now()
+     WHERE id = $2`,
+    [guestAccount.current_balance, userAccount.id],
+  );
+  await client.query('DELETE FROM app.credit_accounts WHERE id = $1', [guestAccount.id]);
 }
 
 export function hashToken(token: string): string {

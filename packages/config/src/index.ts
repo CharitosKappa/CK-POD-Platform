@@ -3,6 +3,34 @@ import { z } from 'zod';
 const nodeEnvironment = z.enum(['development', 'test', 'production']);
 const adapterDriver = z.enum(['memory', 's3']);
 const queueDriver = z.enum(['memory', 'redis']);
+const positiveInteger = z.coerce.number().int().min(0);
+
+const defaultProviderConfiguration = JSON.stringify([
+  {
+    id: 'development-primary',
+    adapter: 'deterministic-svg',
+    enabled: true,
+    tasks: ['TEXT_TO_ARTWORK'],
+    model: 'development-svg-v1',
+    priority: 10,
+    estimatedCostCents: 0,
+    timeoutMs: 5000,
+    maxRetries: 0,
+    fallbackEligible: true,
+  },
+  {
+    id: 'development-fallback',
+    adapter: 'deterministic-pattern',
+    enabled: true,
+    tasks: ['TEXT_TO_ARTWORK'],
+    model: 'development-pattern-v1',
+    priority: 20,
+    estimatedCostCents: 0,
+    timeoutMs: 5000,
+    maxRetries: 0,
+    fallbackEligible: true,
+  },
+]);
 
 export const serverEnvironmentSchema = z
   .object({
@@ -20,6 +48,10 @@ export const serverEnvironmentSchema = z
     S3_ACCESS_KEY_ID: z.string().min(1).optional(),
     S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     QUEUE_DRIVER: queueDriver.default('memory'),
+    AI_PROVIDER_CONFIG: z.string().min(2).default(defaultProviderConfiguration),
+    AI_GUEST_FREE_CREDITS: positiveInteger.default(1),
+    AI_REGISTERED_FREE_CREDITS: positiveInteger.default(0),
+    AI_MAX_REFERENCE_ASSETS: z.coerce.number().int().min(0).max(5).default(5),
   })
   .superRefine((environment, context) => {
     if (environment.STORAGE_DRIVER !== 's3') {
@@ -44,3 +76,5 @@ export function parseServerEnvironment(
 ): ServerEnvironment {
   return serverEnvironmentSchema.parse(input);
 }
+
+export const defaultAiProviderConfiguration = defaultProviderConfiguration;

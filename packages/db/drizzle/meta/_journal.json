@@ -15,6 +15,13 @@
       "when": 1787995000000,
       "tag": "0001_identity_projects_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787996000000,
+      "tag": "0002_ai_orchestration",
+      "breakpoints": true
     }
   ]
 }

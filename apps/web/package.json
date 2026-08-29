@@ -10,9 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@let-it-be/config": "workspace:*",
     "@let-it-be/db": "workspace:*",
     "@let-it-be/domain": "workspace:*",
     "@let-it-be/observability": "workspace:*",
+    "@let-it-be/queue": "workspace:*",
+    "@let-it-be/storage": "workspace:*",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

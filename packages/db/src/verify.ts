@@ -9,10 +9,24 @@ try {
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema = 'app'
        AND table_name = ANY($1::text[])`,
-    [['sessions', 'users', 'projects', 'project_versions', 'product_models', 'product_variants']],
+    [
+      [
+        'sessions',
+        'users',
+        'projects',
+        'project_versions',
+        'product_models',
+        'product_variants',
+        'assets',
+        'generations',
+        'generation_attempts',
+        'credit_accounts',
+        'credit_ledger',
+      ],
+    ],
   );
 
-  if (result.rows.length !== 6) {
+  if (result.rows.length !== 11) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

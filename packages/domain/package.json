@@ -14,6 +14,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@let-it-be/db": "workspace:*"
+    "@let-it-be/db": "workspace:*",
+    "@let-it-be/observability": "workspace:*",
+    "@let-it-be/queue": "workspace:*",
+    "@let-it-be/storage": "workspace:*"
   }
 }

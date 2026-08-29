@@ -23,6 +23,7 @@ describe('InMemoryJobQueue', () => {
       options: { idempotencyKey: 'foundation-check-project-1' },
     });
 
+    await queue.waitForIdle();
     expect(received).toEqual(['project-1']);
     expect(duplicate.id).toBe(first.id);
 

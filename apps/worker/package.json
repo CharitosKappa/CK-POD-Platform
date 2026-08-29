@@ -11,8 +11,11 @@
   },
   "dependencies": {
     "@let-it-be/config": "workspace:*",
+    "@let-it-be/db": "workspace:*",
+    "@let-it-be/domain": "workspace:*",
     "@let-it-be/observability": "workspace:*",
     "@let-it-be/queue": "workspace:*",
+    "@let-it-be/storage": "workspace:*",
     "dotenv": "^16.6.1"
   }
 }

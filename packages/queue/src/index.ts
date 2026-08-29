@@ -38,6 +38,8 @@ export interface BackgroundJobQueue {
 export class InMemoryJobQueue implements BackgroundJobQueue {
   private readonly handlers = new Map<string, JobHandler<unknown>>();
   private readonly jobsById = new Map<string, QueuedJob<unknown>>();
+  private readonly dispatchedIds = new Set<string>();
+  private readonly pending = new Set<Promise<void>>();
 
   async enqueue<TPayload>(input: EnqueueInput<TPayload>): Promise<QueuedJob<TPayload>> {
     const id = input.options?.idempotencyKey ?? randomUUID();
@@ -55,16 +57,16 @@ export class InMemoryJobQueue implements BackgroundJobQueue {
     };
     this.jobsById.set(id, job);
 
-    const handler = this.handlers.get(input.queue) as JobHandler<TPayload> | undefined;
-    if (handler) {
-      await handler(job);
-    }
+    this.dispatch(job);
 
     return job;
   }
 
   async process<TPayload>(queue: string, handler: JobHandler<TPayload>): Promise<QueueWorker> {
     this.handlers.set(queue, handler as JobHandler<unknown>);
+    for (const job of this.jobsById.values()) {
+      if (job.queue === queue) this.dispatch(job);
+    }
 
     return {
       close: async () => {
@@ -74,8 +76,27 @@ export class InMemoryJobQueue implements BackgroundJobQueue {
   }
 
   async close(): Promise<void> {
+    await this.waitForIdle();
     this.handlers.clear();
     this.jobsById.clear();
+    this.dispatchedIds.clear();
+  }
+
+  /** Test/local-development helper; production callers use durable worker acknowledgements. */
+  async waitForIdle(): Promise<void> {
+    await Promise.all([...this.pending]);
+  }
+
+  private dispatch<TPayload>(job: QueuedJob<TPayload>): void {
+    if (this.dispatchedIds.has(job.id)) return;
+    const handler = this.handlers.get(job.queue) as JobHandler<TPayload> | undefined;
+    if (!handler) return;
+    this.dispatchedIds.add(job.id);
+    const task = Promise.resolve()
+      .then(() => handler(job))
+      .catch(() => undefined)
+      .finally(() => this.pending.delete(task));
+    this.pending.add(task);
   }
 }
 

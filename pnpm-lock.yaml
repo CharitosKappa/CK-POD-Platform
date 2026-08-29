@@ -41,6 +41,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@let-it-be/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@let-it-be/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -50,6 +53,12 @@ importers:
       '@let-it-be/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@let-it-be/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@let-it-be/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       next:
         specifier: ^16.0.0
         version: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -72,12 +81,21 @@ importers:
       '@let-it-be/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@let-it-be/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@let-it-be/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@let-it-be/observability':
         specifier: workspace:*
         version: link:../../packages/observability
       '@let-it-be/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@let-it-be/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       dotenv:
         specifier: ^16.6.1
         version: 16.6.1
@@ -109,6 +127,15 @@ importers:
       '@let-it-be/db':
         specifier: workspace:*
         version: link:../db
+      '@let-it-be/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@let-it-be/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@let-it-be/storage':
+        specifier: workspace:*
+        version: link:../storage
 
   packages/observability:
     dependencies:
