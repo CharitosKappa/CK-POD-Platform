@@ -6,6 +6,11 @@
       "task": "TEXT_TO_ARTWORK",
       "prompt": "A vintage sunrise composition for a navy T-shirt. Required text: CREATE KINDLY.",
       "requestedExactText": ["CREATE KINDLY"],
+      "styleSelection": {
+        "styleFamilyId": "family-vintage",
+        "presetId": "preset-vintage-engraving",
+        "presetVersion": 1
+      },
       "productContext": {
         "productModelId": "essential-dtg-tee",
         "productDisplayName": "Essential DTG T-Shirt",
@@ -18,6 +23,11 @@
       "id": "light-garment-illustration",
       "task": "TEXT_TO_ARTWORK",
       "prompt": "A joyful hand-drawn wildflower illustration for a white T-shirt.",
+      "styleSelection": {
+        "styleFamilyId": "family-illustration",
+        "presetId": "preset-illustration-hand-drawn",
+        "presetVersion": 1
+      },
       "productContext": {
         "productModelId": "essential-dtg-tee",
         "productDisplayName": "Essential DTG T-Shirt",

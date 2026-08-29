@@ -43,7 +43,9 @@ export class DeterministicSvgProvider implements ImageGenerationService {
 
   async generate(request: ProviderGenerationRequest): Promise<ProviderGenerationOutput> {
     const digest = createHash('sha256')
-      .update(`${this.id}:${request.enhancedPrompt}:${request.productContext.colorCode}`)
+      .update(
+        `${this.id}:${request.enhancedPrompt}:${request.productContext.colorCode}:${request.styleSelection.styleFamilyId}:${request.styleSelection.presetId}:${request.styleSelection.presetVersion}`,
+      )
       .digest('hex');
     const primary = `#${digest.slice(0, 6)}`;
     const secondary = `#${digest.slice(6, 12)}`;

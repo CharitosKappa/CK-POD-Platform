@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 import { parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient } from '@let-it-be/db';
-import { createGenerationRuntime, startGenerationConsumer } from '@let-it-be/domain';
+import {
+  createGenerationRuntime,
+  startGenerationConsumer,
+  startPrepressConsumer,
+} from '@let-it-be/domain';
 import { createLogger } from '@let-it-be/observability';
 import { BullMqJobQueue, InMemoryJobQueue, type BackgroundJobQueue } from '@let-it-be/queue';
 import {
@@ -39,6 +43,8 @@ const runtime = createGenerationRuntime({
 
 await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
 logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
+await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
+logger.info('worker.prepress_consumer_ready', { queue: 'prepress-render' });
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {
   if (driver === 'memory') return new InMemoryJobQueue();

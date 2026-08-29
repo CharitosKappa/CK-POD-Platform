@@ -52,7 +52,7 @@ Initial MVP scope:
 - Primary persona: Consumer
 - Product: DTG T-shirts
 - Platforms: Desktop + Mobile
-- AI: Multi-model, provider-agnostic orchestration
+- AI: Multi-model, provider-agnostic orchestration with guided, structured style selection
 - Editor: Constrained, layer-aware merchandise editor
 - Checkout: Custom Stripe-based checkout
 - Fulfillment: Printify
@@ -62,7 +62,7 @@ Initial MVP scope:
 
 ## Core User Journey
 
-`Choose Product → Describe Idea → Generate → Edit → Preview → Approve → Checkout → Production → Delivery`
+`Choose Product → Describe Idea → Guided Style → Generate → Edit → Preview → Approve → Checkout → Production → Delivery`
 
 ## Development Model
 
@@ -160,6 +160,12 @@ Milestone 1 adds the guest-first identity, projects, product-selection, and auto
 Milestone 2 adds provider-neutral generation orchestration, private generated-asset handling, attempt/credit persistence, deterministic development adapters, and the G1 benchmark harness. Read [the Milestone 2 architecture](docs/architecture/milestone-2.md) before changing AI workflows.
 
 Milestone 3 adds the constrained merchandise editor. Its platform-owned document, React Konva adapter boundary, normalized placement model, private preview access, and scope limits are documented in [the Milestone 3 architecture](docs/architecture/milestone-3.md). It does not include prepress or production rendering.
+
+Milestone 4 adds deterministic server-side production rendering and structured prepress. The [Milestone 4 architecture](docs/architecture/milestone-4.md) documents private production masters, effective-DPI policy, score, asset lineage, and the explicit G3 qualification boundary.
+
+Milestone 4.5 adds the consumer-first, visual Style Family → Substyle system, immutable preset versions, secure structured conditioning, and stable generation attribution without changing the approved Milestone 0–4 architecture. Read [the Milestone 4.5 architecture](docs/architecture/milestone-4.5.md), [Meeting #004](docs/decisions/0030-meeting-004-guided-creation-and-structured-presets.md), and ADRs 0031–0033 before changing generation UX or prompt orchestration. Milestone 5 Printify integration and routing follows Milestone 4.5.
+
+Milestone 5 adds the server-only Printify adapter boundary, deterministic fake adapter, allowlisted catalog synchronization, Product + Provider + Decoration qualification data, private provider-derivative contract, trusted provider matrix, and explainable platform routing. Read [the Milestone 5 architecture](docs/architecture/milestone-5.md) and ADRs 0034–0037 before changing fulfillment or provider selection. Real Printify calls require explicit environment configuration; development combinations remain unqualified until G3/G6 evidence exists.
 
 ### Local setup
 

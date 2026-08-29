@@ -3,7 +3,12 @@ import { z } from 'zod';
 const nodeEnvironment = z.enum(['development', 'test', 'production']);
 const adapterDriver = z.enum(['memory', 's3']);
 const queueDriver = z.enum(['memory', 'redis']);
+const fulfillmentAdapterMode = z.enum(['fake', 'printify']);
 const positiveInteger = z.coerce.number().int().min(0);
+const optionalNonEmptyString = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().min(1).optional(),
+);
 
 const defaultProviderConfiguration = JSON.stringify([
   {
@@ -54,9 +59,26 @@ export const serverEnvironmentSchema = z
     AI_MAX_REFERENCE_ASSETS: z.coerce.number().int().min(0).max(5).default(5),
     EDITOR_UNDO_LIMIT: z.coerce.number().int().min(1).max(100).default(50),
     EDITOR_AUTOSAVE_DEBOUNCE_MS: z.coerce.number().int().min(250).max(5000).default(700),
+    PREPRESS_FONT_ROOT: optionalNonEmptyString,
+    FULFILLMENT_ADAPTER: fulfillmentAdapterMode.default('fake'),
+    PRINTIFY_API_TOKEN: optionalNonEmptyString,
+    PRINTIFY_SHOP_ID: optionalNonEmptyString,
+    PRINTIFY_API_BASE_URL: z.string().url().default('https://api.printify.com/v1'),
+    PRINTIFY_WEBHOOK_SECRET: optionalNonEmptyString,
   })
   .superRefine((environment, context) => {
     if (environment.STORAGE_DRIVER !== 's3') {
+      if (environment.FULFILLMENT_ADAPTER === 'printify') {
+        for (const key of ['PRINTIFY_API_TOKEN', 'PRINTIFY_SHOP_ID'] as const) {
+          if (!environment[key]) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${key} is required when FULFILLMENT_ADAPTER=printify.`,
+              path: [key],
+            });
+          }
+        }
+      }
       return;
     }
 
@@ -67,6 +89,17 @@ export const serverEnvironmentSchema = z
           message: `${key} is required when STORAGE_DRIVER=s3.`,
           path: [key],
         });
+      }
+    }
+    if (environment.FULFILLMENT_ADAPTER === 'printify') {
+      for (const key of ['PRINTIFY_API_TOKEN', 'PRINTIFY_SHOP_ID'] as const) {
+        if (!environment[key]) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${key} is required when FULFILLMENT_ADAPTER=printify.`,
+            path: [key],
+          });
+        }
       }
     }
   });

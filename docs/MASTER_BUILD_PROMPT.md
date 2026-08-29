@@ -68,7 +68,7 @@ The platform is NOT primarily an image-generation tool.
 
 The product is the complete transition:
 
-**Idea → Design → Controlled Editing → Print Validation → Product Preview → Checkout → Production → Delivery**
+**Idea → Guided Style → AI T-shirt Design → Simple Editing → Print Validation → Product Preview → Checkout → Production → Delivery**
 
 ---
 
@@ -107,6 +107,13 @@ Initial paid orders must pass manual production review.
 
 The system must collect structured operational data so that manual review can gradually be replaced by safe automation.
 
+## 3.6 Guided Consumer Creation and Competitive Positioning
+Kittl is a Tier-1 benchmark for the AI creation/editor experience, not a feature checklist for this product. Project Let It Be remains a consumer-focused AI merchandise commerce platform, not a general-purpose design platform.
+
+The product should be powerful because a consumer barely has to do anything: it should guide an idea through curated visual direction, merchandise-specific AI generation, constrained editing, print intelligence, and commerce. Do not add a Kittl-, Canva-, Photoshop-, or Illustrator-style feature explosion.
+
+Internal differentiation is the combination of zero-skill consumer creation, a structured curated style system, print intelligence and validation, commerce integration, fulfillment/provider routing, conversion-oriented UX, and accumulated generation-to-purchase data. It is not merely “AI generation + editor + POD”.
+
 ---
 
 # 4. MVP Scope
@@ -135,7 +142,7 @@ The system must collect structured operational data so that manual review can gr
 - background removal where required
 - internal output validation
 - selected-element controlled regeneration
-- support for style presets
+- structured, versioned guided Style Family → Substyle presets with visual metadata and provider-neutral conditioning
 - prompt and upload moderation
 - final production moderation
 
@@ -308,7 +315,7 @@ User can:
 - enter prompt
 - upload one or more reference images within configured limits
 - upload artwork intended for direct print
-- select optional style preset
+- choose a Style Family, then a Substyle, through visual examples, concise names, and optional consumer-friendly descriptions
 - select optional typography preferences
 - select pose/composition reference options where supported
 
@@ -353,12 +360,28 @@ User:
 ## 7.1 Avoid Blank Canvas
 Use:
 - example prompts
-- curated style chips
+- visual Style Family → Substyle choices with example artwork
 - starter ideas
 - gift-oriented prompts
 - context-aware ideas based on product/color
 
 Do not require the user to understand design terminology.
+
+## 7.6 Guided Style Selection
+Style selection supplements the user’s idea; it never replaces it. The consumer journey is approximately:
+
+```text
+Choose T-shirt / color
+  → Describe the idea
+  → Choose Style Family
+  → Choose Substyle
+  → Generate
+  → Edit
+  → Validate / preview
+  → Order
+```
+
+Style Families and Substyles are primarily visual choices. Show a thumbnail or example artwork, concise name, and optional short description. Do not expose model names, samplers, lighting or perspective parameters, rendering engines, prompt weights, or other prompt-engineering controls.
 
 ## 7.2 Contextual Recommendations
 The platform may suggest:
@@ -580,6 +603,7 @@ The AI layer must be task-oriented, not provider-oriented.
 
 Tasks:
 - prompt understanding
+- structured preset resolution and provider-neutral conditioning
 - prompt enhancement
 - text-to-artwork
 - reference-to-artwork
@@ -657,6 +681,8 @@ Product Context Injection
   ↓
 Color Context Injection
   ↓
+Structured Preset Resolution (Style Family → Substyle → version)
+  ↓
 Style Conditioning
   ↓
 Required Exact Text Extraction
@@ -679,6 +705,22 @@ User Preview
 ```
 
 The enhanced prompt remains internal by default.
+
+## 14.1 Structured Preset Engine
+Meeting #004 supersedes any prior flat “approximately 6–10 style presets” requirement. The platform must use a hierarchical Style Family → Substyle catalog whose entries can evolve without application logic being coupled to display names or a fixed list.
+
+Each versioned preset configuration must support at minimum:
+- stable Style Family ID, preset ID, and preset version
+- display name, consumer-friendly description, and visual thumbnail/example artwork metadata
+- prompt conditioning
+- composition guidance
+- typography guidance
+- color strategy
+- texture/detail guidance
+- print-oriented constraints
+- optional provider-neutral AI routing hints
+
+The user’s prompt remains central. Provider-specific prompt translation belongs behind the existing task-oriented AI boundary; no preset may be encoded solely as a provider-specific hardcoded prompt suffix.
 
 ---
 
@@ -1319,6 +1361,8 @@ Core events:
 - product_selected
 - color_selected
 - prompt_submitted
+- style_family_selected
+- substyle_selected
 - generation_started
 - generation_succeeded
 - generation_rejected_internal
@@ -1349,7 +1393,9 @@ Useful dimensions:
 - adset
 - creative
 - generation_number
-- style
+- style_family_id
+- preset_id
+- preset_version
 - device
 - printability score
 
@@ -1362,6 +1408,7 @@ Respect consent/privacy rules.
 ```text
 Visitor
 → Product Selection
+→ Guided Style
 → Generation
 → Valid Design
 → Editor
@@ -1380,6 +1427,13 @@ Track:
 - Visitor → Generation
 - Generation Success Rate
 - Generation → Purchase
+- Generations by Style Family / Substyle / preset version
+- Successful Generations by Style Family / Substyle / preset version
+- Generations per Order by preset
+- Generation → Purchase conversion by preset
+- AOV by preset where useful
+- Refund and reprint rate by preset
+- Product/color × preset performance
 - Add-to-cart → Purchase
 - Generations / Order
 - AI Cost / Successful Generation
@@ -1635,6 +1689,9 @@ Schema must cover at minimum:
 - assets
 - generations
 - generation_attempts
+- style_families
+- style_presets
+- preset_versions
 - credit_accounts
 - credit_ledger
 - products
@@ -1733,7 +1790,7 @@ Store actor + reason.
 Use configurable flags for:
 - AI routing
 - free credits
-- styles
+- style families, substyles, and preset versions
 - provider eligibility
 - auto-production
 - future PayPal
@@ -1750,6 +1807,7 @@ Configurable:
 - undo depth
 - snapshot count
 - generation limits
+- preset-catalog rollout and eligibility
 - credit pricing
 - free credits
 - printability thresholds
@@ -1901,7 +1959,43 @@ Acceptance:
 
 ---
 
+# 71.5 Milestone 4.5 — Guided Creation & Structured Preset Engine
+
+Milestone 4.5 follows the approved Milestone 4 prepress work and precedes Milestone 5. It extends the approved Milestone 2 provider-neutral AI architecture; it does not replace the editor or prepress architecture.
+
+Deliver:
+- structured Style Family and Substyle schema
+- versioned preset configuration
+- visual preset metadata (thumbnail/example artwork, concise name, optional consumer description)
+- generation-request integration with product/color-aware preset context
+- provider-neutral prompt-conditioning integration
+- guided consumer generation UX
+- persistence of style family ID, preset ID, and preset version with generations
+- analytics-ready preset dimensions
+- deterministic local/fake-provider support
+- compatibility with existing project, project-version, generation, editor, and prepress models
+
+Do not deliver:
+- a generic template marketplace
+- Kittl-style general design features
+- Printify API integration
+- fulfillment routing
+- checkout
+- changes to the approved Milestone 4 prepress architecture
+
+Acceptance:
+- a consumer can describe an idea and make a visual Style Family → Substyle choice without technical AI controls
+- generation records preserve stable style family, preset, and preset-version identifiers
+- a preset is represented as structured, versioned configuration rather than a hardcoded provider prompt suffix
+- provider-neutral generation contracts receive preset conditioning without provider SDK coupling
+- product/color context and the selected preset survive request persistence and deterministic local-provider execution
+- existing Milestone 0–4 behavior and tests remain healthy
+
+---
+
 # 72. Milestone 5 — Printify & Routing
+
+Milestone 5 follows Milestone 4.5. It must consume the existing product, project, generation, editor, prepress, and structured-preset foundations without replacing them.
 
 Deliver:
 - Printify adapter
@@ -2086,7 +2180,7 @@ Do not claim speculative work as completed.
 
 # 81. Conflict Resolution Priority
 
-1. latest explicit CEO decision
+1. latest explicit CEO decision, including Meeting #004 locked decisions
 2. Meeting #003 locked decisions
 3. Meeting #002 locked decisions
 4. completed CEO questionnaire
@@ -2123,7 +2217,9 @@ Avoid consumer-facing technical language such as:
 # 83. Final Positioning
 
 Internal:
-**Consumer AI merchandise creation platform with controlled editing, automated prepress and intelligent fulfillment.**
+**Consumer AI merchandise commerce platform with guided style selection, controlled editing, print intelligence, and intelligent fulfillment.**
+
+Kittl remains a Tier-1 benchmark for quality of creation experience, not a mandate to reproduce a general-purpose design platform. The product optimizes for zero-skill guided creation, not feature parity.
 
 Customer-facing:
 **Create something uniquely yours and wear it.**

@@ -8,6 +8,7 @@ import {
 } from '@let-it-be/editor-schema';
 
 import type { ActiveSession } from './identity';
+import { StyleCatalogService, type StyleSelection } from './styles';
 
 export type EditorDocument = EditorDocumentV1;
 
@@ -15,6 +16,7 @@ export interface Project {
   id: string;
   productModelId: string | null;
   selectedColorCode: string | null;
+  styleSelection: StyleSelection;
   activeVersionId: string | null;
   status: 'DRAFT' | 'ACTIVE' | 'ARCHIVED';
   revision: number;
@@ -37,6 +39,9 @@ export interface ProjectSelection {
   colorCode: string;
 }
 
+export type GuidedStyleSelectionInput =
+  { selectionMode: 'AUTO' } | { selectionMode: 'MANUAL'; styleFamilyId: string; presetId: string };
+
 export interface ProjectServiceOptions {
   guestRetentionDays?: number;
   userRetentionDays?: number;
@@ -47,6 +52,10 @@ interface ProjectRow {
   id: string;
   product_model_id: string | null;
   selected_color_code: string | null;
+  style_selection_mode: StyleSelection['selectionMode'];
+  style_family_id: string | null;
+  style_preset_id: string | null;
+  style_preset_version: number | null;
   active_version_id: string | null;
   status: Project['status'];
   revision: number;
@@ -160,6 +169,43 @@ export class ProjectService {
     });
   }
 
+  async selectGuidedStyle(
+    session: ActiveSession,
+    projectId: string,
+    selection: GuidedStyleSelectionInput,
+    expectedRevision: number,
+  ): Promise<Project> {
+    return withTransaction(this.pool, async (client) => {
+      await this.requireAccess(client, session, projectId);
+      const resolved =
+        selection.selectionMode === 'MANUAL'
+          ? await new StyleCatalogService(client).resolveManual({
+              styleFamilyId: selection.styleFamilyId,
+              presetId: selection.presetId,
+            })
+          : null;
+      const result = await client.query<ProjectRow>(
+        `UPDATE app.projects
+         SET style_selection_mode = $1, style_family_id = $2, style_preset_id = $3,
+             style_preset_version = $4, revision = revision + 1, updated_at = now()
+         WHERE id = $5 AND revision = $6
+         RETURNING *`,
+        [
+          selection.selectionMode,
+          resolved?.styleFamilyId ?? null,
+          resolved?.presetId ?? null,
+          resolved?.presetVersion ?? null,
+          projectId,
+          expectedRevision,
+        ],
+      );
+      if (!result.rows[0]) {
+        throw new ProjectConflictError('Project changed before this style could be saved.');
+      }
+      return mapProject(result.rows[0]);
+    });
+  }
+
   async autosave(
     session: ActiveSession,
     projectId: string,
@@ -264,6 +310,7 @@ export function emptyEditorDocument(): EditorDocument {
 
 function projectSelect(): string {
   return `SELECT p.id, p.product_model_id, p.selected_color_code, p.active_version_id,
+    p.style_selection_mode, p.style_family_id, p.style_preset_id, p.style_preset_version,
     p.status, p.revision, p.expires_at, p.created_at, p.updated_at FROM app.projects p`;
 }
 
@@ -301,6 +348,12 @@ function mapProject(row: ProjectRow): Project {
     id: row.id,
     productModelId: row.product_model_id,
     selectedColorCode: row.selected_color_code,
+    styleSelection: {
+      selectionMode: row.style_selection_mode,
+      styleFamilyId: row.style_family_id,
+      presetId: row.style_preset_id,
+      presetVersion: row.style_preset_version,
+    },
     activeVersionId: row.active_version_id,
     status: row.status,
     revision: row.revision,

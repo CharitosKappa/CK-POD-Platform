@@ -25,4 +25,21 @@ describe('parseServerEnvironment', () => {
       }),
     ).toThrow(/S3_BUCKET/);
   });
+
+  it('requires server-only Printify credentials only in real fulfillment mode', () => {
+    expect(() =>
+      parseServerEnvironment({
+        ...baseEnvironment,
+        FULFILLMENT_ADAPTER: 'printify',
+      }),
+    ).toThrow(/PRINTIFY_API_TOKEN/);
+    expect(
+      parseServerEnvironment({
+        ...baseEnvironment,
+        FULFILLMENT_ADAPTER: 'printify',
+        PRINTIFY_API_TOKEN: 'server-only-token',
+        PRINTIFY_SHOP_ID: '1234',
+      }).FULFILLMENT_ADAPTER,
+    ).toBe('printify');
+  });
 });

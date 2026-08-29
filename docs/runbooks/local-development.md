@@ -1,5 +1,23 @@
 # Local development
 
+## Fulfillment / Printify development
+
+Fulfillment defaults to `FULFILLMENT_ADAPTER=fake`. The deterministic fake adapter supports catalog sync, variant availability, shipping estimates, provider state differences, and routing tests without API credentials. It deliberately rejects production submission.
+
+To use the real adapter, set all of the following in a local, uncommitted `.env` file:
+
+```text
+FULFILLMENT_ADAPTER=printify
+PRINTIFY_API_TOKEN=...
+PRINTIFY_SHOP_ID=...
+PRINTIFY_API_BASE_URL=https://api.printify.com/v1
+PRINTIFY_WEBHOOK_SECRET=...
+```
+
+Credentials are server-only. Do not use real mode in CI and do not place credentials in browser variables. The trusted `/ops/providers` page requires an operationally assigned `FULFILLMENT_ADMIN` user role; it is not a consumer surface. Refreshing catalog data preserves qualification and provider-status controls. G3/G6 evidence must be recorded before any candidate can be qualified.
+
+Run `pnpm fulfillment:reconcile` to perform the same bounded, idempotent catalog reconciliation used by the trusted refresh control. It only synchronizes platform-allowlisted mappings.
+
 ## Prerequisites
 
 - Node 22.19.0 (see `.nvmrc`)
@@ -58,6 +76,19 @@ The development print-area and quality indicator are not production prepress. Th
 invalid temporary draft to save, but disables the Continue action until it is placed inside the
 visible safe boundary. Controlled preview URLs are authorized per guest session or account and
 must never be replaced with source-object URLs.
+
+## Milestone 4 prepress checks
+
+Use the editor’s **Check print quality** action after a save. It creates an asynchronous server
+prepress run for the active immutable project version. The memory queue completes it in the web
+process for local development; use `pnpm dev:worker` with Redis for a separate worker. The result
+contains only a controlled summary and reduced preview; production-master and source keys must not
+be returned by browser APIs.
+
+The seeded profile is intentionally `UNQUALIFIED / DEVELOPMENT`. Its 12 × 16 inch / 3600 × 4800
+pixel DTG values and DPI thresholds are useful for development tests only. Do not use it to submit
+production work or declare G3 complete. Run `pnpm test:integration` with PostgreSQL available to
+verify lifecycle, retry, lineage, and production-master access controls.
 
 ## Milestone 2 generation checks
 

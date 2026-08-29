@@ -14,15 +14,32 @@ export class DefaultPromptPipeline implements PromptPipeline {
       throw new Error('Describe your idea in between 1 and 2000 characters.');
     }
     const requestedExactText = extractExactText(rawPrompt);
-    const style = input.style?.trim() || 'unspecified';
     const context = `${input.productContext.productDisplayName} in ${input.productContext.colorName}`;
+    const preset = input.styleSelection;
+    const conditioning = preset.conditioning;
     const typographyInstruction = requestedExactText.length
       ? 'Required exact text is preserved as structured metadata and must not be generated as image text.'
       : 'Do not add unintended readable text.';
 
     return {
-      enhancedPrompt: `Create original apparel artwork for ${context}. User concept: ${rawPrompt}. Style: ${style}. ${typographyInstruction}`,
-      metadata: { requestedExactText, pipelineVersion: 'm2-v1' },
+      enhancedPrompt: [
+        `Create original apparel artwork for ${context}.`,
+        `User concept: ${rawPrompt}.`,
+        `Guided style: ${preset.styleFamily.displayName} / ${preset.preset.displayName}.`,
+        `Visual direction: ${conditioning.promptConditioning.direction}.`,
+        `Composition: ${conditioning.compositionGuidance.layout}; ${conditioning.compositionGuidance.focus}.`,
+        `Typography mood: ${conditioning.typographyGuidance.mood}.`,
+        conditioning.colorStrategy.considerShirtColor
+          ? `Respect visibility on the ${input.productContext.colorName} shirt.`
+          : '',
+        conditioning.printGuidance.transparentBackgroundPreferred
+          ? 'Prefer a transparent artwork background.'
+          : '',
+        typographyInstruction,
+      ]
+        .filter(Boolean)
+        .join(' '),
+      metadata: { requestedExactText, pipelineVersion: 'm4.5-v1' },
     };
   }
 }

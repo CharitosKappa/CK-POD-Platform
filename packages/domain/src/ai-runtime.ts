@@ -13,6 +13,7 @@ import { createConfiguredProviderRegistry, parseProviderConfigurations } from '.
 import { CreditService } from './credits';
 import { GenerationWorkerService } from './generation-worker';
 import { GenerationService } from './generations';
+import { PrepressService } from './prepress';
 import {
   AllowAllDevelopmentModeration,
   AllowAllDevelopmentValidation,
@@ -61,5 +62,6 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
     options.validation ?? new AllowAllDevelopmentValidation(),
     options.logger,
   );
-  return { credits, providers, generations, worker };
+  const prepress = new PrepressService(options.pool, options.queue, options.storage);
+  return { credits, providers, generations, worker, prepress };
 }

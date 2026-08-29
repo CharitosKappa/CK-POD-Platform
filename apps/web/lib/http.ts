@@ -3,10 +3,20 @@ import { NextResponse } from 'next/server';
 import {
   GenerationAccessError,
   GenerationCreditError,
+  FulfillmentAccessError,
   ProjectConflictError,
 } from '@let-it-be/domain';
 
 export function handleRouteError(error: unknown): NextResponse {
+  if (error instanceof Error && error.message === 'Authentication is required.') {
+    return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
+  }
+  if (error instanceof FulfillmentAccessError) {
+    return NextResponse.json(
+      { error: 'You do not have access to fulfillment operations.' },
+      { status: 403 },
+    );
+  }
   if (error instanceof ProjectConflictError) {
     return NextResponse.json({ error: error.message, code: 'STALE_PROJECT' }, { status: 409 });
   }

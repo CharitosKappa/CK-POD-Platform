@@ -34,11 +34,29 @@ interface ProjectResponse {
     productModelId: string;
     selectedColorCode: string;
     revision: number;
+    activeVersionId: string;
   };
 }
 
 interface VersionResponse {
-  versions: Array<{ editorDocument: EditorDocumentV1 }>;
+  versions: Array<{ id: string; editorDocument: EditorDocumentV1 }>;
+}
+
+interface PrepressSummary {
+  projectVersionId: string;
+  status:
+    'PENDING' | 'RENDERING' | 'VALIDATING' | 'PASSED' | 'REVIEW_REQUIRED' | 'BLOCKED' | 'FAILED';
+  score: {
+    total: number;
+    band: 'GREEN' | 'AMBER' | 'RED';
+    blockers: number;
+    warnings: number;
+  } | null;
+  findings: Array<{ code: string; severity: 'INFO' | 'WARNING' | 'BLOCKER'; message: string }>;
+}
+
+interface PrepressResponse {
+  prepress: PrepressSummary | null;
 }
 
 interface GenerationResponse {
@@ -62,6 +80,7 @@ export function EditorClient() {
   const generationId = search.get('generation');
   const [history, setHistory] = useState<ReturnType<typeof createEditorHistory>>();
   const [revision, setRevision] = useState<number>();
+  const [activeVersionId, setActiveVersionId] = useState<string>();
   const [colorCode, setColorCode] = useState('black');
   const [productModelId, setProductModelId] = useState('essential-dtg-tee');
   const [selectedLayerId, setSelectedLayerId] = useState<string>();
@@ -71,6 +90,8 @@ export function EditorClient() {
   );
   const [error, setError] = useState<string>();
   const [refinement, setRefinement] = useState('');
+  const [prepress, setPrepress] = useState<PrepressSummary | null>();
+  const [prepressBusy, setPrepressBusy] = useState(false);
   const loaded = useRef(false);
   const lastSavedDocument = useRef<string | undefined>(undefined);
 
@@ -87,16 +108,25 @@ export function EditorClient() {
       fetch(`/api/projects/${encodeURIComponent(projectId)}/versions`).then(
         readJson<VersionResponse>,
       ),
+      fetch(`/api/projects/${encodeURIComponent(projectId)}/prepress`).then(
+        readJson<PrepressResponse>,
+      ),
     ])
-      .then(([projectPayload, versionPayload]) => {
+      .then(([projectPayload, versionPayload, prepressPayload]) => {
         const active = versionPayload.versions[0]?.editorDocument;
         if (!active) throw new Error('This project does not have an editable design yet.');
         setHistory(createEditorHistory(active, editorUndoLimit));
         lastSavedDocument.current = serializeEditorDocument(active);
         setRevision(projectPayload.project.revision);
+        setActiveVersionId(projectPayload.project.activeVersionId);
         setColorCode(projectPayload.project.selectedColorCode);
         setProductModelId(projectPayload.project.productModelId);
         setSaveState('saved');
+        setPrepress(
+          prepressPayload.prepress?.projectVersionId === projectPayload.project.activeVersionId
+            ? prepressPayload.prepress
+            : null,
+        );
         loaded.current = true;
       })
       .catch((reason) => {
@@ -104,6 +134,22 @@ export function EditorClient() {
         setSaveState('error');
       });
   }, [projectId]);
+
+  useEffect(() => {
+    if (
+      !projectId ||
+      !prepress ||
+      !['PENDING', 'RENDERING', 'VALIDATING'].includes(prepress.status)
+    )
+      return;
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/projects/${encodeURIComponent(projectId)}/prepress`)
+        .then(readJson<PrepressResponse>)
+        .then((payload) => setPrepress(payload.prepress))
+        .catch((reason) => setError(messageFor(reason)));
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [prepress, projectId]);
 
   useEffect(() => {
     if (
@@ -148,7 +194,7 @@ export function EditorClient() {
       })
         .then(async (response) => {
           const payload = (await response.json()) as {
-            project?: { revision: number };
+            project?: { revision: number; activeVersionId?: string };
             code?: string;
             error?: string;
           };
@@ -157,7 +203,12 @@ export function EditorClient() {
               code: payload.code,
             });
           lastSavedDocument.current = serialized;
-          if (payload.project) setRevision(payload.project.revision);
+          if (payload.project) {
+            setRevision(payload.project.revision);
+            if (payload.project.activeVersionId)
+              setActiveVersionId(payload.project.activeVersionId);
+          }
+          setPrepress(null);
           setSaveState('saved');
         })
         .catch((reason: unknown) => {
@@ -239,6 +290,17 @@ export function EditorClient() {
     setSelectedLayerId(id);
   }
 
+  function requestPrintQuality(): void {
+    if (!projectId || saveState !== 'saved') return;
+    setPrepressBusy(true);
+    setError(undefined);
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}/prepress`, { method: 'POST' })
+      .then(readJson<PrepressResponse>)
+      .then((payload) => setPrepress(payload.prepress))
+      .catch((reason) => setError(messageFor(reason)))
+      .finally(() => setPrepressBusy(false));
+  }
+
   async function changeColor(nextColor: string): Promise<void> {
     if (!projectId || revision === undefined || nextColor === colorCode) return;
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/selection`, {
@@ -303,7 +365,7 @@ export function EditorClient() {
   if (!document || revision === undefined)
     return <EditorMessage message={error ?? 'Loading your design…'} />;
 
-  const canContinue = document.placementStatus === 'VALID';
+  const canContinue = document.placementStatus === 'VALID' && prepress?.status !== 'BLOCKED';
   const contrastWarning = hasPotentialContrastIssue(document, colorCode);
   return (
     <main className="editor-page">
@@ -419,6 +481,13 @@ export function EditorClient() {
                 : 'You can keep editing and saving, but continue is unavailable until this is fixed.'}
             </span>
           </div>
+          <PrintQualityStatus
+            prepress={prepress}
+            busy={prepressBusy}
+            saveState={saveState}
+            versionCurrent={Boolean(prepress && prepress.projectVersionId === activeVersionId)}
+            onCheck={requestPrintQuality}
+          />
           {contrastWarning ? (
             <p className="editor-contrast-warning" role="status">
               This text may be hard to see on this T-shirt color. Try a higher-contrast color.
@@ -440,6 +509,63 @@ export function EditorClient() {
         </aside>
       </section>
     </main>
+  );
+}
+
+function PrintQualityStatus({
+  prepress,
+  busy,
+  saveState,
+  versionCurrent,
+  onCheck,
+}: {
+  prepress: PrepressSummary | null | undefined;
+  busy: boolean;
+  saveState: 'loading' | 'saved' | 'saving' | 'conflict' | 'error';
+  versionCurrent: boolean;
+  onCheck: () => void;
+}) {
+  const active = prepress && versionCurrent ? prepress : null;
+  const pending = active && ['PENDING', 'RENDERING', 'VALIDATING'].includes(active.status);
+  const headline = !active
+    ? 'Check print quality before ordering'
+    : active.status === 'BLOCKED'
+      ? 'Fix the print-quality issues below'
+      : pending
+        ? 'Checking print quality…'
+        : active.status === 'FAILED'
+          ? 'We could not check this design yet'
+          : active.status === 'REVIEW_REQUIRED'
+            ? 'Your design may need a closer look'
+            : 'Your design is ready for review';
+  const notices = active?.findings.filter((finding) => finding.severity !== 'INFO') ?? [];
+  return (
+    <section
+      className={`editor-prepress editor-prepress-${active?.status.toLowerCase() ?? 'idle'}`}
+      aria-label="Print quality"
+    >
+      <div>
+        <strong>{headline}</strong>
+        {active?.score ? (
+          <span>Print quality: {active.score.total}/100</span>
+        ) : (
+          <span>We’ll check image quality and placement without changing your design.</span>
+        )}
+      </div>
+      {notices.slice(0, 2).map((finding) => (
+        <p key={finding.code}>{finding.message}</p>
+      ))}
+      <button type="button" disabled={busy || pending || saveState !== 'saved'} onClick={onCheck}>
+        {busy || pending
+          ? 'Checking…'
+          : active?.status === 'FAILED'
+            ? 'Try again'
+            : 'Check print quality'}
+      </button>
+      {saveState !== 'saved' ? (
+        <small>Finish saving your latest changes before checking.</small>
+      ) : null}
+    </section>
   );
 }
 

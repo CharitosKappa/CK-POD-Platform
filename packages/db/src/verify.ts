@@ -22,11 +22,30 @@ try {
         'generation_attempts',
         'credit_accounts',
         'credit_ledger',
+        'style_families',
+        'style_presets',
+        'style_preset_versions',
+        'analytics_events',
+        'print_providers',
+        'fulfillment_product_mappings',
+        'fulfillment_variant_mappings',
+        'provider_variants',
+        'provider_qualifications',
+        'provider_profile_mappings',
+        'provider_costs',
+        'shipping_quotes',
+        'catalog_sync_runs',
+        'routing_configurations',
+        'routing_evaluations',
+        'provider_derivatives',
+        'fulfillment_operations',
+        'fulfillment_events',
+        'fulfillment_operational_events',
       ],
     ],
   );
 
-  if (result.rows.length !== 11) {
+  if (result.rows.length !== 30) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

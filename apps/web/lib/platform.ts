@@ -1,8 +1,13 @@
 import { cookies } from 'next/headers';
 
+import { parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
+  CatalogSyncService,
+  createFulfillmentAdapter,
+  FulfillmentAdminService,
+  FulfillmentRoutingService,
   IdentityService,
   ProjectService,
   type ActiveSession,
@@ -29,7 +34,26 @@ export function services() {
     identity: new IdentityService(pool),
     projects: new ProjectService(pool),
     assets: new AssetService(pool),
+    fulfillmentAdmin: new FulfillmentAdminService(pool),
     pool,
+  };
+}
+
+export function fulfillmentRuntime() {
+  const environment = parseServerEnvironment(process.env);
+  const pool = databasePool();
+  const adapter = createFulfillmentAdapter({
+    adapter: environment.FULFILLMENT_ADAPTER,
+    baseUrl: environment.PRINTIFY_API_BASE_URL,
+    ...(environment.PRINTIFY_API_TOKEN ? { apiToken: environment.PRINTIFY_API_TOKEN } : {}),
+    ...(environment.PRINTIFY_SHOP_ID ? { shopId: environment.PRINTIFY_SHOP_ID } : {}),
+    ...(environment.PRINTIFY_WEBHOOK_SECRET
+      ? { webhookSecret: environment.PRINTIFY_WEBHOOK_SECRET }
+      : {}),
+  });
+  return {
+    catalogSync: new CatalogSyncService(pool, adapter),
+    routing: new FulfillmentRoutingService(pool, adapter),
   };
 }
 

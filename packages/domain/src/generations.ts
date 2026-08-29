@@ -14,12 +14,19 @@ import {
 } from './ai-contracts';
 import type { CreditService } from './credits';
 import type { ActiveSession } from './identity';
+import {
+  resolvePersistedStyleSelection,
+  type ResolvedStyleSelection,
+  type StyleSelection,
+} from './styles';
+import { recordGenerationAnalyticsEvent } from './analytics';
 
 const generationQueueName = 'ai-generation';
 const generationJobName = 'run-generation';
 
 export interface GenerationCreateInput {
   rawPrompt: string;
+  /** @deprecated Milestone 4.5 resolves a server-owned structured preset instead. */
   style?: string;
   referenceAssetIds?: string[];
   task?: Extract<AiTask, 'TEXT_TO_ARTWORK' | 'SELECTED_ELEMENT_EDITING'>;
@@ -33,6 +40,7 @@ export interface GenerationSummary {
   creditStatus: 'PENDING' | 'CONSUMED' | 'NOT_CONSUMED' | 'REFUNDED';
   failureCategory: GenerationFailureCategory | null;
   requestedExactText: string[];
+  styleSelection: StyleSelection;
   task: Extract<AiTask, 'TEXT_TO_ARTWORK' | 'SELECTED_ELEMENT_EDITING'>;
   previewAsset: {
     id: string;
@@ -53,8 +61,19 @@ interface ProjectContextRow {
   id: string;
   product_model_id: string;
   selected_color_code: string;
+  style_selection_mode: StyleSelection['selectionMode'];
+  style_family_id: string | null;
+  style_preset_id: string | null;
+  style_preset_version: number | null;
   display_name: string;
   color_name: string;
+}
+
+interface ProjectGenerationContext extends ProductGenerationContext {
+  style_selection_mode: StyleSelection['selectionMode'];
+  style_family_id: string | null;
+  style_preset_id: string | null;
+  style_preset_version: number | null;
 }
 
 interface GenerationRow {
@@ -65,6 +84,10 @@ interface GenerationRow {
   failure_category: GenerationFailureCategory | null;
   prompt_metadata: { requestedExactText?: unknown };
   task: GenerationSummary['task'];
+  style_selection_mode: StyleSelection['selectionMode'];
+  style_family_id: string | null;
+  style_preset_id: string | null;
+  style_preset_version: number | null;
   created_at: Date;
   started_at: Date | null;
   completed_at: Date | null;
@@ -110,9 +133,33 @@ export class GenerationService {
       const referenceAssetIds = input.referenceAssetIds ?? [];
       await assertReferenceAssets(client, projectId, referenceAssetIds);
       const creditAccount = await this.credits.assertGenerationCapacity(client, session);
+      const styleSelection = await resolvePersistedStyleSelection(
+        client,
+        projectStyleSelection(context),
+        { projectId, rawPrompt: input.rawPrompt },
+      );
+      if (
+        context.style_family_id !== styleSelection.styleFamilyId ||
+        context.style_preset_id !== styleSelection.presetId ||
+        context.style_preset_version !== styleSelection.presetVersion
+      ) {
+        await client.query(
+          `UPDATE app.projects
+           SET style_selection_mode = $2, style_family_id = $3, style_preset_id = $4,
+               style_preset_version = $5, updated_at = now()
+           WHERE id = $1`,
+          [
+            projectId,
+            styleSelection.selectionMode,
+            styleSelection.styleFamilyId,
+            styleSelection.presetId,
+            styleSelection.presetVersion,
+          ],
+        );
+      }
       const prepared = this.promptPipeline.prepare({
         rawPrompt: input.rawPrompt,
-        style: input.style?.trim() || null,
+        styleSelection,
         productContext: context,
         referenceAssetIds,
       });
@@ -120,8 +167,9 @@ export class GenerationService {
         `INSERT INTO app.generations (
           project_id, requested_by_session_id, requested_by_user_id, status,
           raw_prompt, enhanced_prompt, prompt_metadata, style_metadata, product_context,
-          reference_asset_ids, credit_account_id, task, editor_metadata
-        ) VALUES ($1, $2, $3, 'QUEUED', $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb)
+          reference_asset_ids, credit_account_id, task, editor_metadata, style_selection_mode,
+          style_family_id, style_preset_id, style_preset_version
+        ) VALUES ($1, $2, $3, 'QUEUED', $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb, $13, $14, $15, $16)
         RETURNING ${generationReturning()}`,
         [
           projectId,
@@ -130,15 +178,31 @@ export class GenerationService {
           input.rawPrompt.trim(),
           prepared.enhancedPrompt,
           JSON.stringify(prepared.metadata),
-          JSON.stringify({ style: input.style?.trim() || null }),
+          JSON.stringify({
+            styleFamily: styleSelection.styleFamily.displayName,
+            preset: styleSelection.preset.displayName,
+            selectionMode: styleSelection.selectionMode,
+          }),
           JSON.stringify(context),
           JSON.stringify(referenceAssetIds),
           creditAccount.id,
           input.task ?? 'TEXT_TO_ARTWORK',
           JSON.stringify(input.editorMetadata ?? {}),
+          styleSelection.selectionMode,
+          styleSelection.styleFamilyId,
+          styleSelection.presetId,
+          styleSelection.presetVersion,
         ],
       );
-      return mapGeneration(requireRow(result.rows[0], 'Could not create generation.'));
+      const created = mapGeneration(requireRow(result.rows[0], 'Could not create generation.'));
+      await recordGenerationAnalyticsEvent(client, {
+        name: 'generation_started',
+        projectId,
+        generationId: created.id,
+        productContext: context,
+        styleSelection,
+      });
+      return created;
     });
 
     try {
@@ -177,23 +241,20 @@ export class GenerationService {
 
   async getForWorker(generationId: string): Promise<GenerationWorkItem | null> {
     const result = await this.pool.query<GenerationWorkRow>(
-      `SELECT g.id, g.project_id, g.status, g.raw_prompt, g.enhanced_prompt, g.prompt_metadata, g.task,
-              g.product_context, g.reference_asset_ids, g.credit_account_id
-       FROM app.generations g WHERE g.id = $1`,
+      `${generationWorkSelection()} WHERE g.id = $1`,
       [generationId],
     );
     return result.rows[0] ? mapWorkItem(result.rows[0]) : null;
   }
 
   async claim(generationId: string): Promise<GenerationWorkItem | null> {
-    const result = await this.pool.query<GenerationWorkRow>(
+    const result = await this.pool.query<{ id: string }>(
       `UPDATE app.generations SET status = 'PROCESSING', started_at = COALESCE(started_at, now())
        WHERE id = $1 AND status = 'QUEUED'
-       RETURNING id, project_id, status, raw_prompt, enhanced_prompt, prompt_metadata, task,
-                 product_context, reference_asset_ids, credit_account_id`,
+       RETURNING id`,
       [generationId],
     );
-    return result.rows[0] ? mapWorkItem(result.rows[0]) : null;
+    return result.rows[0] ? this.getForWorker(generationId) : null;
   }
 
   async reject(
@@ -226,6 +287,7 @@ export interface GenerationWorkItem {
   referenceAssetIds: string[];
   creditAccountId: string;
   task: GenerationSummary['task'];
+  styleSelection: ResolvedStyleSelection;
 }
 
 interface GenerationWorkRow {
@@ -236,6 +298,11 @@ interface GenerationWorkRow {
   enhanced_prompt: string;
   prompt_metadata: { requestedExactText?: unknown };
   task: GenerationSummary['task'];
+  style_selection_mode: StyleSelection['selectionMode'];
+  style_family_id: string | null;
+  style_preset_id: string | null;
+  style_preset_version: number | null;
+  style_configuration: unknown;
   product_context: unknown;
   reference_asset_ids: unknown;
   credit_account_id: string | null;
@@ -267,9 +334,11 @@ async function loadProjectContext(
   client: SqlClient,
   session: ActiveSession,
   projectId: string,
-): Promise<ProductGenerationContext | null> {
+): Promise<ProjectGenerationContext | null> {
   const result = await client.query<ProjectContextRow>(
-    `SELECT p.id, p.product_model_id, p.selected_color_code, model.display_name, variant.color_name
+    `SELECT p.id, p.product_model_id, p.selected_color_code, p.style_selection_mode,
+            p.style_family_id, p.style_preset_id, p.style_preset_version,
+            model.display_name, variant.color_name
      FROM app.projects p
      JOIN app.product_models model ON model.id = p.product_model_id
      JOIN app.product_variants variant
@@ -286,6 +355,10 @@ async function loadProjectContext(
         colorCode: row.selected_color_code,
         colorName: row.color_name,
         printArea: {},
+        style_selection_mode: row.style_selection_mode,
+        style_family_id: row.style_family_id,
+        style_preset_id: row.style_preset_id,
+        style_preset_version: row.style_preset_version,
       }
     : null;
 }
@@ -322,12 +395,14 @@ async function markUndeliverableGeneration(
 
 function generationSelection(): string {
   return `g.id, g.project_id, g.status, g.credit_status, g.failure_category, g.prompt_metadata, g.task,
+    g.style_selection_mode, g.style_family_id, g.style_preset_id, g.style_preset_version,
     g.created_at, g.started_at, g.completed_at, preview.id AS preview_asset_id,
     preview.content_type AS preview_content_type, preview.width AS preview_width, preview.height AS preview_height`;
 }
 
 function generationReturning(): string {
   return `id, project_id, status, credit_status, failure_category, prompt_metadata, task,
+    style_selection_mode, style_family_id, style_preset_id, style_preset_version,
     created_at, started_at, completed_at, NULL::uuid AS preview_asset_id,
     NULL::text AS preview_content_type, NULL::integer AS preview_width, NULL::integer AS preview_height`;
 }
@@ -345,6 +420,12 @@ function mapGeneration(row: GenerationRow): GenerationSummary {
     creditStatus: row.credit_status,
     failureCategory: row.failure_category,
     requestedExactText: stringArray(row.prompt_metadata.requestedExactText),
+    styleSelection: {
+      selectionMode: row.style_selection_mode,
+      styleFamilyId: row.style_family_id,
+      presetId: row.style_preset_id,
+      presetVersion: row.style_preset_version,
+    },
     task: row.task,
     previewAsset: row.preview_asset_id
       ? {
@@ -372,6 +453,68 @@ function mapWorkItem(row: GenerationWorkRow): GenerationWorkItem {
     referenceAssetIds: stringArray(row.reference_asset_ids),
     creditAccountId: row.credit_account_id,
     task: row.task,
+    styleSelection:
+      row.style_family_id &&
+      row.style_preset_id &&
+      row.style_preset_version &&
+      row.style_configuration
+        ? {
+            selectionMode: row.style_selection_mode,
+            styleFamilyId: row.style_family_id,
+            presetId: row.style_preset_id,
+            presetVersion: row.style_preset_version,
+            styleFamily: { id: row.style_family_id, displayName: row.style_family_id },
+            preset: {
+              id: row.style_preset_id,
+              displayName: row.style_preset_id,
+              version: row.style_preset_version,
+            },
+            conditioning: row.style_configuration as ResolvedStyleSelection['conditioning'],
+          }
+        : legacyStyleSelection(),
+  };
+}
+
+function projectStyleSelection(context: ProjectGenerationContext): StyleSelection {
+  return {
+    selectionMode: context.style_selection_mode,
+    styleFamilyId: context.style_family_id,
+    presetId: context.style_preset_id,
+    presetVersion: context.style_preset_version,
+  };
+}
+
+function generationWorkSelection(): string {
+  return `SELECT g.id, g.project_id, g.status, g.raw_prompt, g.enhanced_prompt, g.prompt_metadata, g.task,
+      g.style_selection_mode, g.style_family_id, g.style_preset_id, g.style_preset_version,
+      v.configuration AS style_configuration, g.product_context, g.reference_asset_ids, g.credit_account_id
+    FROM app.generations g
+    LEFT JOIN app.style_preset_versions v ON v.style_family_id = g.style_family_id
+      AND v.preset_id = g.style_preset_id AND v.version = g.style_preset_version`;
+}
+
+function legacyStyleSelection(): ResolvedStyleSelection {
+  return {
+    selectionMode: 'AUTO',
+    styleFamilyId: 'legacy-unspecified-family',
+    presetId: 'legacy-unspecified-preset',
+    presetVersion: 1,
+    styleFamily: { id: 'legacy-unspecified-family', displayName: 'Unspecified' },
+    preset: { id: 'legacy-unspecified-preset', displayName: 'Unspecified', version: 1 },
+    conditioning: {
+      promptConditioning: {
+        family: 'Unspecified',
+        substyle: 'Unspecified',
+        direction: 'Use the preserved enhanced prompt.',
+      },
+      compositionGuidance: { focus: 'single wearable focal point', layout: 'balanced front print' },
+      typographyGuidance: { mood: 'unspecified', exactTextIsDeterministic: true },
+      colorStrategy: { considerShirtColor: true, avoidLowContrast: true },
+      textureDetailGuidance: { detailLevel: 'print-friendly', style: 'unspecified' },
+      printGuidance: { transparentBackgroundPreferred: true, avoidTinyDetails: true },
+      negativeGuidance: ['unintended readable text'],
+      routingHints: { task: 'TEXT_TO_ARTWORK' },
+    },
   };
 }
 

@@ -20,7 +20,7 @@ export class AssetService {
       `SELECT a.storage_key AS "storageKey", a.content_type AS "contentType"
        FROM app.assets a
        JOIN app.projects p ON p.id = a.project_id
-       WHERE a.id = $1 AND a.project_id = $2 AND a.asset_type = 'PREVIEW' AND a.status = 'ACTIVE'
+       WHERE a.id = $1 AND a.project_id = $2 AND a.asset_type IN ('PREVIEW', 'PREPRESS_PREVIEW') AND a.status = 'ACTIVE'
          AND ((p.owner_type = 'GUEST' AND p.owner_session_id = $3)
            OR (p.owner_type = 'USER' AND p.owner_user_id = $4::uuid))`,
       [assetId, projectId, session.id, session.userId],

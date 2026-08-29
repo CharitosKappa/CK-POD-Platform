@@ -9,7 +9,7 @@ Milestone 2 adds provider-neutral generation orchestration only. It does not add
 ```text
 POST generation request
   → verify project ownership and credit capacity
-  → capture immutable product/color prompt context
+  → capture immutable product/color and guided-style context
   → extract required exact text and create internal enhanced prompt
   → persist Generation (QUEUED)
   → enqueue durable generation job
@@ -23,6 +23,8 @@ POST generation request
 ```
 
 The consumer status API returns only status, structured exact-text metadata, and controlled preview asset metadata. It never returns enhanced prompts, provider payloads, storage keys, model/provider diagnostics, or permanent storage URLs.
+
+Milestone 4.5 extends this pipeline with a server-resolved Style Family / preset / version and private structured conditioning. It preserves exact text separately, keeps provider translation behind `ImageGenerationService`, and does not expose conditioning or routing hints through consumer APIs.
 
 ## Provider contracts and local behavior
 

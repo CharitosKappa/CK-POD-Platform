@@ -13,7 +13,6 @@ export async function POST(
   try {
     const body = (await request.json()) as {
       prompt?: string;
-      style?: string;
       referenceAssetIds?: string[];
     };
     if (typeof body.prompt !== 'string') {
@@ -23,7 +22,6 @@ export async function POST(
     const { runtime } = await generationRuntime();
     const generation = await runtime.generations.create(await requireSession(), projectId, {
       rawPrompt: body.prompt,
-      ...(typeof body.style === 'string' ? { style: body.style } : {}),
       ...(Array.isArray(body.referenceAssetIds)
         ? { referenceAssetIds: body.referenceAssetIds }
         : {}),

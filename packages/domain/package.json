@@ -17,6 +17,7 @@
     "@let-it-be/db": "workspace:*",
     "@let-it-be/editor-schema": "workspace:*",
     "@let-it-be/observability": "workspace:*",
+    "@let-it-be/prepress": "workspace:*",
     "@let-it-be/queue": "workspace:*",
     "@let-it-be/storage": "workspace:*"
   }

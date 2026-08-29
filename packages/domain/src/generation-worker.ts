@@ -12,6 +12,7 @@ import {
 import type { ProviderRegistry } from './ai-providers';
 import type { CreditService } from './credits';
 import { newPrivateAssetKey, type GenerationService, type GenerationWorkItem } from './generations';
+import { recordGenerationAnalyticsEvent } from './analytics';
 
 interface AttemptRow {
   id: string;
@@ -94,7 +95,7 @@ export class GenerationWorkerService {
             task: generation.task,
             enhancedPrompt: generation.enhancedPrompt,
             requestedExactText: generation.requestedExactText,
-            style: null,
+            styleSelection: generation.styleSelection,
             productContext: generation.productContext,
             referenceAssetIds: generation.referenceAssetIds,
           }),
@@ -312,6 +313,13 @@ export class GenerationWorkerService {
         [generation.id, source.id, preview.id],
       );
       requireRow(updated.rows[0], 'Generation was already finalized.');
+      await recordGenerationAnalyticsEvent(client, {
+        name: 'generation_succeeded',
+        projectId: generation.projectId,
+        generationId: generation.id,
+        productContext: generation.productContext,
+        styleSelection: generation.styleSelection,
+      });
     });
   }
 }

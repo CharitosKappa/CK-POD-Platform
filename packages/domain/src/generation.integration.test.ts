@@ -308,6 +308,141 @@ integrationSuite('AI generation orchestration integration', () => {
     await harness.close();
   });
 
+  it('persists stable guided-style attribution and keeps private conditioning inside the provider boundary', async () => {
+    const provider = new CapturingProvider('style-provider', 'style-v1');
+    const harness = await createHarness({
+      providers: [providerEntry('style-provider', provider, true)],
+    });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('navy'));
+    const styled = await projects.selectGuidedStyle(
+      guest,
+      project.id,
+      {
+        selectionMode: 'MANUAL',
+        styleFamilyId: 'family-vintage',
+        presetId: 'preset-vintage-engraving',
+      },
+      project.revision,
+    );
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A mountain crest with the words "STAY CURIOUS".',
+    });
+    await harness.queue.waitForIdle();
+    const delivered = await harness.generations.get(guest, project.id, created.id);
+
+    expect(delivered?.styleSelection).toEqual({
+      selectionMode: 'MANUAL',
+      styleFamilyId: 'family-vintage',
+      presetId: 'preset-vintage-engraving',
+      presetVersion: 1,
+    });
+    expect(await projects.get(guest, project.id)).toMatchObject({
+      revision: styled.revision,
+      styleSelection: delivered?.styleSelection,
+    });
+    expect(provider.requests[0]?.styleSelection.conditioning).toMatchObject({
+      promptConditioning: { family: 'Vintage', substyle: 'Vintage Engraving' },
+      colorStrategy: { considerShirtColor: true, avoidLowContrast: true },
+    });
+    expect(provider.requests[0]?.productContext.colorCode).toBe('navy');
+    expect(provider.requests[0]?.requestedExactText).toEqual(['STAY CURIOUS']);
+    expect(JSON.stringify(delivered)).not.toContain('conditioning');
+    const analytics = await pool.query<{ event_name: string; dimensions: Record<string, unknown> }>(
+      `SELECT event_name, dimensions FROM app.analytics_events WHERE generation_id = $1 ORDER BY occurred_at`,
+      [created.id],
+    );
+    expect(analytics.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event_name: 'generation_started',
+          dimensions: expect.objectContaining({
+            styleFamilyId: 'family-vintage',
+            presetId: 'preset-vintage-engraving',
+            presetVersion: 1,
+            selectionMode: 'MANUAL',
+          }),
+        }),
+        expect.objectContaining({ event_name: 'generation_succeeded' }),
+      ]),
+    );
+    await harness.close();
+  });
+
+  it('preserves the current style for regeneration until the customer deliberately changes it', async () => {
+    const harness = await createHarness({ guestFreeCredits: 3 });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('white'));
+    const vintage = await projects.selectGuidedStyle(
+      guest,
+      project.id,
+      {
+        selectionMode: 'MANUAL',
+        styleFamilyId: 'family-vintage',
+        presetId: 'preset-vintage-70s-retro',
+      },
+      project.revision,
+    );
+    const first = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A sunny coffee club.',
+    });
+    const second = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'Make it bolder.',
+      task: 'SELECTED_ELEMENT_EDITING',
+      editorMetadata: { targetLayerId: 'layer', lockedLayerIds: [] },
+    });
+    const dark = await projects.selectGuidedStyle(
+      guest,
+      project.id,
+      {
+        selectionMode: 'MANUAL',
+        styleFamilyId: 'family-dark',
+        presetId: 'preset-dark-blackwork',
+      },
+      vintage.revision,
+    );
+    const third = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A dark coffee club.',
+    });
+    await harness.queue.waitForIdle();
+
+    expect(
+      (await harness.generations.get(guest, project.id, first.id))?.styleSelection.presetId,
+    ).toBe('preset-vintage-70s-retro');
+    expect(
+      (await harness.generations.get(guest, project.id, second.id))?.styleSelection.presetId,
+    ).toBe('preset-vintage-70s-retro');
+    expect(
+      (await harness.generations.get(guest, project.id, third.id))?.styleSelection,
+    ).toMatchObject({
+      presetId: 'preset-dark-blackwork',
+      presetVersion: 1,
+    });
+    expect(dark.styleSelection.presetId).toBe('preset-dark-blackwork');
+    await harness.close();
+  });
+
+  it('attributes Let AI Decide to a resolved, deterministic preset before generation', async () => {
+    const harness = await createHarness();
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A funny moonlit raccoon with coffee.',
+    });
+    await harness.queue.waitForIdle();
+    const delivered = await harness.generations.get(guest, project.id, created.id);
+    const updatedProject = await projects.get(guest, project.id);
+
+    expect(delivered?.styleSelection).toMatchObject({
+      selectionMode: 'AUTO',
+      styleFamilyId: expect.any(String),
+      presetId: expect.any(String),
+      presetVersion: 1,
+    });
+    expect(updatedProject?.styleSelection).toEqual(delivered?.styleSelection);
+    await harness.close();
+  });
+
   it('extracts exact text as structured metadata rather than relying on model spelling', () => {
     expect(extractExactText('A shirt with the phrase "CREATE KINDLY".')).toEqual(['CREATE KINDLY']);
   });
@@ -318,12 +453,13 @@ async function createHarness(
     providers?: Array<{ configuration: ProviderConfiguration; service: ImageGenerationService }>;
     moderation?: GenerationModerationService;
     validation?: GenerationValidationService;
+    guestFreeCredits?: number;
   } = {},
 ) {
   const queue = new InMemoryJobQueue();
   const storage = new MemoryObjectStorage();
   const credits = new CreditService(integrationPool, {
-    guestFreeCredits: 1,
+    guestFreeCredits: input.guestFreeCredits ?? 1,
     registeredFreeCredits: 0,
   });
   const generations = new GenerationService(
@@ -396,6 +532,14 @@ function provider(
     },
     service,
   };
+}
+
+function providerEntry(
+  id: string,
+  service: ImageGenerationService,
+  fallbackEligible: boolean,
+): { configuration: ProviderConfiguration; service: ImageGenerationService } {
+  return provider(id, service, fallbackEligible);
 }
 
 class CapturingProvider implements ImageGenerationService {

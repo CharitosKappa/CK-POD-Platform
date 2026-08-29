@@ -1,5 +1,6 @@
 import type { AiTask, ProductGenerationContext } from './ai-contracts';
 import type { ProviderRegistry } from './ai-providers';
+import type { ResolvedStyleSelection } from './styles';
 
 export const benchmarkScoreWeights = {
   promptAdherence: 20,
@@ -20,6 +21,11 @@ export interface BenchmarkCase {
   productContext: ProductGenerationContext;
   requestedExactText?: string[];
   referenceAssetIds?: string[];
+  styleSelection?: {
+    styleFamilyId: string;
+    presetId: string;
+    presetVersion: number;
+  };
 }
 
 export interface BenchmarkDataset {
@@ -45,6 +51,7 @@ export interface BenchmarkResult {
     costCents: number | null;
     providerRequestId: string | null;
     manualScore: number | null;
+    styleSelection: BenchmarkCase['styleSelection'] | null;
   }>;
   summary: Array<{
     providerId: string;
@@ -74,7 +81,7 @@ export class G1BenchmarkHarness {
             task: fixture.task,
             enhancedPrompt: fixture.prompt,
             requestedExactText: fixture.requestedExactText ?? [],
-            style: null,
+            styleSelection: benchmarkStyleSelection(fixture),
             productContext: fixture.productContext,
             referenceAssetIds: fixture.referenceAssetIds ?? [],
           });
@@ -88,6 +95,7 @@ export class G1BenchmarkHarness {
             costCents: output.actualCostCents ?? provider.configuration.estimatedCostCents,
             providerRequestId: output.providerRequestId ?? null,
             manualScore: weightedScore(manualScores, fixture.id, provider.configuration.id),
+            styleSelection: fixture.styleSelection ?? null,
           });
         } catch {
           results.push({
@@ -100,6 +108,7 @@ export class G1BenchmarkHarness {
             costCents: null,
             providerRequestId: null,
             manualScore: weightedScore(manualScores, fixture.id, provider.configuration.id),
+            styleSelection: fixture.styleSelection ?? null,
           });
         }
       }
@@ -152,4 +161,38 @@ function summarize(results: BenchmarkResult['results']): BenchmarkResult['summar
 
 function average(values: number[]): number {
   return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function benchmarkStyleSelection(fixture: BenchmarkCase): ResolvedStyleSelection {
+  const selection = fixture.styleSelection ?? {
+    styleFamilyId: 'benchmark-auto-family',
+    presetId: 'benchmark-auto-preset',
+    presetVersion: 1,
+  };
+  return {
+    selectionMode: fixture.styleSelection ? 'MANUAL' : 'AUTO',
+    styleFamilyId: selection.styleFamilyId,
+    presetId: selection.presetId,
+    presetVersion: selection.presetVersion,
+    styleFamily: { id: selection.styleFamilyId, displayName: selection.styleFamilyId },
+    preset: {
+      id: selection.presetId,
+      displayName: selection.presetId,
+      version: selection.presetVersion,
+    },
+    conditioning: {
+      promptConditioning: {
+        family: selection.styleFamilyId,
+        substyle: selection.presetId,
+        direction: 'Benchmark fixture structured style conditioning.',
+      },
+      compositionGuidance: { focus: 'benchmark focal point', layout: 'benchmark layout' },
+      typographyGuidance: { mood: 'benchmark', exactTextIsDeterministic: true },
+      colorStrategy: { considerShirtColor: true, avoidLowContrast: true },
+      textureDetailGuidance: { detailLevel: 'print-friendly', style: 'benchmark' },
+      printGuidance: { transparentBackgroundPreferred: true, avoidTinyDetails: true },
+      negativeGuidance: ['unintended readable text'],
+      routingHints: { task: 'TEXT_TO_ARTWORK' },
+    },
+  };
 }

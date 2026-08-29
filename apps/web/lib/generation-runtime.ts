@@ -1,6 +1,10 @@
 import { parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
-import { createGenerationRuntime, startGenerationConsumer } from '@let-it-be/domain';
+import {
+  createGenerationRuntime,
+  startGenerationConsumer,
+  startPrepressConsumer,
+} from '@let-it-be/domain';
 import { createLogger } from '@let-it-be/observability';
 import { BullMqJobQueue, InMemoryJobQueue, type BackgroundJobQueue } from '@let-it-be/queue';
 import {
@@ -43,6 +47,7 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
   });
   if (environment.QUEUE_DRIVER === 'memory') {
     await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
+    await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
   }
   return { runtime, queue, storage };
 }

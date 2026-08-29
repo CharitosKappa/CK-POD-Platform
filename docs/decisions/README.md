@@ -2,6 +2,12 @@
 
 ADRs document material, implementation-level decisions that shape the modular monolith. They do not supersede the authoritative requirements in `docs/MASTER_BUILD_PROMPT.md`.
 
+The latest locked product-decision record is [ADR 0030: Meeting #004 — Guided Creation and Structured Preset Engine](0030-meeting-004-guided-creation-and-structured-presets.md). It records the supersession of the older flat style-preset requirement and the new Milestone 4.5 boundary.
+
+Milestone 4.5 implementation decisions are recorded in ADRs [0031](0031-versioned-style-catalog.md), [0032](0032-structured-preset-conditioning.md), and [0033](0033-visual-preset-metadata-and-attribution.md).
+
+Milestone 5 fulfillment decisions are recorded in ADRs [0034](0034-platform-owned-fulfillment-adapter.md), [0035](0035-provider-qualification-and-private-derivatives.md), [0036](0036-explainable-platform-routing.md), and [0037](0037-catalog-sync-and-event-reconciliation.md).
+
 ## Statuses
 
 - **Proposed** — under review; not yet used as a project decision.

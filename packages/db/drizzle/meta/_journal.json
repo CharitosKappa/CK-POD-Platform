@@ -29,6 +29,34 @@
       "when": 1787997000000,
       "tag": "0003_editor_generation_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787998000000,
+      "tag": "0004_prepress_production_rendering",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787999000000,
+      "tag": "0005_guided_style_presets",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788000000000,
+      "tag": "0006_guided_style_analytics_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788001000000,
+      "tag": "0007_printify_fulfillment_routing",
+      "breakpoints": true
     }
   ]
 }

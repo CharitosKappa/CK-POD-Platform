@@ -67,7 +67,7 @@ export interface ProviderGenerationRequest {
   task: AiTask;
   enhancedPrompt: string;
   requestedExactText: string[];
-  style: string | null;
+  styleSelection: ResolvedStyleSelection;
   productContext: ProductGenerationContext;
   referenceAssetIds: string[];
 }
@@ -105,7 +105,7 @@ export interface PreparedPrompt {
 export interface PromptPipeline {
   prepare(input: {
     rawPrompt: string;
-    style: string | null;
+    styleSelection: ResolvedStyleSelection;
     productContext: ProductGenerationContext;
     referenceAssetIds: string[];
   }): PreparedPrompt;
@@ -148,3 +148,4 @@ export class ProviderExecutionError extends Error {
 
 export class GenerationAccessError extends Error {}
 export class GenerationCreditError extends Error {}
+import type { ResolvedStyleSelection } from './styles';
