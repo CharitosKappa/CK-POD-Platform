@@ -5,16 +5,15 @@ import { requireDatabaseUrl } from './runtime-environment.js';
 const pool = new Pool({ connectionString: requireDatabaseUrl() });
 
 try {
-  const result = await pool.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-      SELECT 1
-      FROM information_schema.schemata
-      WHERE schema_name = 'app'
-    ) AS exists`,
+  const result = await pool.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.tables
+     WHERE table_schema = 'app'
+       AND table_name = ANY($1::text[])`,
+    [['sessions', 'users', 'projects', 'project_versions', 'product_models', 'product_variants']],
   );
 
-  if (!result.rows[0]?.exists) {
-    throw new Error('The app schema was not created by the Foundation migration.');
+  if (result.rows.length !== 6) {
+    throw new Error('Required application tables are missing after migrations.');
   }
 
   console.info('Database migration verification passed.');

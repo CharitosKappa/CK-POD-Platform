@@ -41,6 +41,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@let-it-be/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@let-it-be/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@let-it-be/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -98,7 +104,11 @@ importers:
         specifier: ^0.31.4
         version: 0.31.10
 
-  packages/domain: {}
+  packages/domain:
+    dependencies:
+      '@let-it-be/db':
+        specifier: workspace:*
+        version: link:../db
 
   packages/observability:
     dependencies:

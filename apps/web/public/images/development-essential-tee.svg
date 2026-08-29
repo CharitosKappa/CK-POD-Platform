@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 720" role="img" aria-labelledby="title description">
+  <title id="title">Development Essential DTG T-Shirt</title>
+  <desc id="description">A neutral placeholder T-shirt image for the local development catalog.</desc>
+  <rect width="640" height="720" fill="#e4ebe6"/>
+  <path d="M174 112 266 64h108l92 48 106 140-86 70-41-60v394H195V262l-41 60-86-70z" fill="#1c2022"/>
+  <path d="M266 64c11 41 31 59 54 59s43-18 54-59" fill="none" stroke="#50635c" stroke-width="8"/>
+</svg>

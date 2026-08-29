@@ -155,6 +155,8 @@ packages/
 
 Read [the Foundation architecture](docs/architecture/foundation.md), [local development runbook](docs/runbooks/local-development.md), and the [ADRs](docs/decisions/README.md) before adding a domain feature.
 
+Milestone 1 adds the guest-first identity, projects, product-selection, and autosave foundation described in [the Milestone 1 architecture](docs/architecture/milestone-1.md). The seeded product and price are development-only placeholders.
+
 ### Local setup
 
 ```powershell

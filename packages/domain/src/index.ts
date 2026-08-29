@@ -1,6 +1,6 @@
 /**
- * Product-domain ownership for the modular monolith.  This is a map, not an
- * implementation: Milestone 0 must not introduce later-milestone behaviour.
+ * Product-domain ownership map for the modular monolith. Implemented modules
+ * are exported below as their approved milestone foundation is established.
  */
 export const domainModules = [
   'identity',
@@ -33,3 +33,7 @@ export const domainModules = [
 ] as const;
 
 export type DomainModule = (typeof domainModules)[number];
+
+export * from './catalog';
+export * from './identity';
+export * from './projects';

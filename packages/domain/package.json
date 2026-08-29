@@ -12,5 +12,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@let-it-be/db": "workspace:*"
   }
 }

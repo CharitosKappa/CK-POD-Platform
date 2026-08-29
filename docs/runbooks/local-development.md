@@ -33,6 +33,18 @@ pnpm test
 pnpm build
 ```
 
+## Milestone 1 persistence checks
+
+With the local database running, apply and verify all checked-in migrations, then run the integration suite:
+
+```powershell
+pnpm db:migrate
+pnpm db:verify
+pnpm test:integration
+```
+
+Open `http://localhost:3000` to exercise the development-only **Choose Product → Choose Color** flow. It creates a guest project, and the following placeholder page offers account creation to transfer that guest project's state and history. The next design-generation step is intentionally not implemented until Milestone 2.
+
 ## Local services
 
 ```powershell

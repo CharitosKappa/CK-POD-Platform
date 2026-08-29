@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@let-it-be/db": "workspace:*",
+    "@let-it-be/domain": "workspace:*",
     "@let-it-be/observability": "workspace:*",
     "next": "^16.0.0",
     "react": "^19.0.0",
