@@ -12,7 +12,7 @@ export async function GET(
   try {
     const { checkoutId } = await context.params;
     return NextResponse.json({
-      checkout: await commerceRuntime().getCheckout(await requireSession(), checkoutId),
+      checkout: await (await commerceRuntime()).getCheckout(await requireSession(), checkoutId),
     });
   } catch (error) {
     return handleRouteError(error);

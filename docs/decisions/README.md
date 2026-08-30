@@ -8,7 +8,9 @@ Milestone 4.5 implementation decisions are recorded in ADRs [0031](0031-versione
 
 Milestone 5 fulfillment decisions are recorded in ADRs [0034](0034-platform-owned-fulfillment-adapter.md), [0035](0035-provider-qualification-and-private-derivatives.md), [0036](0036-explainable-platform-routing.md), and [0037](0037-catalog-sync-and-event-reconciliation.md).
 
-Milestone 6 commerce decisions are recorded in ADRs [0038](0038-platform-owned-payment-service.md) through [0045](0045-payment-does-not-submit-production.md). They preserve canonical `PAID` as the payment boundary and prohibit payment-triggered production submission.
+Milestone 6 commerce decisions are recorded in ADRs [0038](0038-platform-owned-payment-service.md) through [0046](0046-profiled-server-rendered-consumer-mockups.md). They preserve canonical `PAID` as the payment boundary, prohibit payment-triggered production submission, and require profiled consumer proofs to remain distinct from production assets.
+
+Milestone 7 is recorded in [ADR 0047](0047-order-operations-transition-authority.md). It assigns all post-payment canonical transitions to the platform-owned operations service and keeps provider updates observational until they pass the same state validator.
 
 ## Statuses
 

@@ -237,6 +237,10 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
 
 /** Deterministic, deliberately non-production catalog used in local development and CI. */
 export class FakePrintifyFulfillmentAdapter implements FulfillmentService {
+  private readonly orders = new Map<
+    string,
+    'CREATED' | 'SUBMITTED' | 'IN_PRODUCTION' | 'SHIPPED' | 'DELIVERED'
+  >();
   async syncCatalog(input: {
     externalBlueprintIds: string[];
   }): Promise<FulfillmentCatalogSnapshot> {
@@ -286,19 +290,37 @@ export class FakePrintifyFulfillmentAdapter implements FulfillmentService {
   }
 
   async createOrder(input: FulfillmentOrderRequest): Promise<FulfillmentOrderResult> {
-    return { externalOrderId: `fake-order-${input.idempotencyKey}`, state: 'CREATED' };
+    const externalOrderId = `fake-order-${input.idempotencyKey}`;
+    this.orders.set(externalOrderId, this.orders.get(externalOrderId) ?? 'CREATED');
+    return {
+      externalOrderId,
+      state: this.orders.get(externalOrderId) === 'SUBMITTED' ? 'SUBMITTED' : 'CREATED',
+    };
   }
 
-  async submitProduction(): Promise<void> {
-    throw new FulfillmentIntegrationError(
-      'CONFIGURATION_ERROR',
-      'Production submission is disabled in the development adapter.',
-      { retryable: false },
-    );
+  async submitProduction(input: {
+    idempotencyKey: string;
+    externalOrderId: string;
+  }): Promise<void> {
+    void input.idempotencyKey;
+    if (!this.orders.has(input.externalOrderId)) {
+      throw new FulfillmentIntegrationError(
+        'INVALID_RESPONSE',
+        'The fake external order is unavailable.',
+        {
+          retryable: false,
+        },
+      );
+    }
+    this.orders.set(input.externalOrderId, 'SUBMITTED');
   }
 
   async getOrderStatus(input: { externalOrderId: string }): Promise<FulfillmentStatus> {
-    return { externalOrderId: input.externalOrderId, state: 'UNKNOWN', occurredAt: null };
+    return {
+      externalOrderId: input.externalOrderId,
+      state: this.orders.get(input.externalOrderId) ?? 'UNKNOWN',
+      occurredAt: null,
+    };
   }
 
   async verifyWebhook(input: {

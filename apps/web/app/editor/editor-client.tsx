@@ -174,9 +174,17 @@ export function EditorClient() {
           generationId: generation.id,
           zIndex: history.present.layers.length,
         });
-        setHistory((current) =>
-          current ? commitEditorCommand(current, { type: 'add-layer', layer }) : current,
-        );
+        setHistory((current) => {
+          if (
+            !current ||
+            current.present.layers.some(
+              (candidate) =>
+                candidate.type === 'generated' && candidate.generationId === generation.id,
+            )
+          )
+            return current;
+          return commitEditorCommand(current, { type: 'add-layer', layer });
+        });
         setSelectedLayerId(layer.id);
       })
       .catch((reason) => setError(messageFor(reason)));

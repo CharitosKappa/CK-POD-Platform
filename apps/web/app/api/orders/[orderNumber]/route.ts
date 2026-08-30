@@ -11,7 +11,7 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const { orderNumber } = await context.params;
-    const order = await commerceRuntime().getOrder(await requireSession(), orderNumber);
+    const order = await (await commerceRuntime()).getOrder(await requireSession(), orderNumber);
     return order
       ? NextResponse.json({ order })
       : NextResponse.json({ error: 'Order not found.' }, { status: 404 });

@@ -4,9 +4,15 @@ Milestone 6 adds the platform-owned consumer commerce path from a passed or perm
 
 ## Flow
 
-`print-ready project/version → controlled prepress preview mockup → cart item → explicit immutable proof approval → validated US address → provisional shipping and tax snapshot → payment attempt → verified payment event → PAID order`
+`print-ready project/version → controlled prepress preview → profiled photorealistic garment mockup → cart item → explicit immutable proof approval → validated US address → provisional shipping and tax snapshot → payment attempt → verified payment event → PAID order`
 
-Cart items snapshot the exact project version, selected platform variant/color, prepress run, mockup, and product metadata. Changing the project version or color invalidates its approval. The proof uses only the controlled `PREPRESS_PREVIEW` asset; production masters, provider derivatives, source assets, and storage keys are never consumer-visible.
+Cart items snapshot the exact project version, selected platform variant/color, prepress run, mockup, and product metadata. Changing the project version or color invalidates its approval. The proof uses a platform-owned Sharp renderer that consumes only the controlled `PREPRESS_PREVIEW` asset. It selects an explicit product/color garment profile, maps artwork into the garment chest with a mask plus fabric shading/highlights, and writes a separate controlled `MOCKUP_PROOF` derivative. Production masters, provider derivatives, source assets, and storage keys are never consumer-visible.
+
+## Product-profiled consumer mockups
+
+Each proof records its project, immutable project version, prepress run, selected product/color, generated proof asset, garment profile/version snapshot, renderer/version, and state hash. The deterministic cache key includes all of those rendering inputs, so a changed profile or renderer cannot reuse an obsolete proof. Existing approvals are invalidated if the active design/product state changes; a stale mockup renderer/profile lineage refreshes the cart proof and requires a new approval.
+
+The initial `Essential DTG T-Shirt` black, white, and navy profiles use generated studio blank-garment imagery marked **DEVELOPMENT / UNQUALIFIED**. They are replaceable development assets, not final launch photography or product qualification. G3 and G6 remain open.
 
 ## Money and delivery
 

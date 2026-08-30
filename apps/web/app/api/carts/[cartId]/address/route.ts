@@ -12,7 +12,9 @@ export async function POST(
   try {
     const { cartId } = await context.params;
     const body = (await request.json()) as Record<string, string | undefined>;
-    const addressId = await commerceRuntime().saveShippingAddress(await requireSession(), cartId, {
+    const addressId = await (
+      await commerceRuntime()
+    ).saveShippingAddress(await requireSession(), cartId, {
       recipientName: body.recipientName ?? '',
       email: body.email ?? '',
       line1: body.line1 ?? '',

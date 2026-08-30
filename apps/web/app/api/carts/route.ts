@@ -15,7 +15,9 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 400 },
       );
     }
-    const cart = await commerceRuntime().createCart(await requireSession(), {
+    const cart = await (
+      await commerceRuntime()
+    ).createCart(await requireSession(), {
       projectId: body.projectId,
       size: body.size,
       quantity,

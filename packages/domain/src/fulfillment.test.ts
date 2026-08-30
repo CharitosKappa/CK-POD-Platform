@@ -10,25 +10,24 @@ import {
 import { FakePrintifyFulfillmentAdapter, PrintifyFulfillmentAdapter } from './printify.js';
 
 describe('Printify fulfillment boundary', () => {
-  it('provides deterministic local catalog, availability, shipping, and no production submission', async () => {
+  it('provides deterministic local catalog, availability, shipping, and explicit fake submission only after creation', async () => {
     const adapter: FulfillmentService = new FakePrintifyFulfillmentAdapter();
     const snapshot = await adapter.syncCatalog({
       externalBlueprintIds: ['fake-essential-dtg-tee-blueprint'],
     });
     expect(snapshot.blueprints[0]?.providers).toHaveLength(3);
-    await expect(
-      adapter.createOrder({
-        idempotencyKey: 'safe-retry',
-        externalProductId: 'fake-essential-dtg-tee-blueprint',
-        items: [
-          {
-            externalVariantId: 'fake-essential-dtg-tee-black-M',
-            quantity: 1,
-            artworkReference: 'private-backend-reference',
-          },
-        ],
-      }),
-    ).resolves.toMatchObject({ externalOrderId: 'fake-order-safe-retry', state: 'CREATED' });
+    const order = await adapter.createOrder({
+      idempotencyKey: 'safe-retry',
+      externalProductId: 'fake-essential-dtg-tee-blueprint',
+      items: [
+        {
+          externalVariantId: 'fake-essential-dtg-tee-black-M',
+          quantity: 1,
+          artworkReference: 'private-backend-reference',
+        },
+      ],
+    });
+    expect(order).toMatchObject({ externalOrderId: 'fake-order-safe-retry', state: 'CREATED' });
     await expect(
       adapter.quoteShipping({
         externalProviderId: 'fake-harbor',
@@ -46,10 +45,11 @@ describe('Printify fulfillment boundary', () => {
       }),
     ).rejects.toMatchObject({ code: 'DESTINATION_UNSUPPORTED' });
     await expect(
-      adapter.submitProduction({ idempotencyKey: 'test', externalOrderId: 'order' }),
-    ).rejects.toMatchObject({
-      code: 'CONFIGURATION_ERROR',
-    });
+      adapter.submitProduction({ idempotencyKey: 'test', externalOrderId: order.externalOrderId }),
+    ).resolves.toBeUndefined();
+    await expect(
+      adapter.getOrderStatus({ externalOrderId: order.externalOrderId }),
+    ).resolves.toMatchObject({ state: 'SUBMITTED' });
   });
 
   it('validates a signed Printify webhook without returning raw payload data', async () => {

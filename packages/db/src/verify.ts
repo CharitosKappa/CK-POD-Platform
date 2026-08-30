@@ -42,6 +42,7 @@ try {
         'fulfillment_events',
         'fulfillment_operational_events',
         'mockups',
+        'garment_mockup_profiles',
         'carts',
         'cart_items',
         'proof_approvals',
@@ -52,11 +53,21 @@ try {
         'orders',
         'order_items',
         'order_state_history',
+        'order_reviews',
+        'order_holds',
+        'order_final_routing',
+        'order_provider_overrides',
+        'order_readiness_evaluations',
+        'external_fulfillment_orders',
+        'order_fulfillment_actions',
+        'order_fulfillment_status_events',
+        'order_shipments',
+        'order_operational_audits',
       ],
     ],
   );
 
-  if (result.rows.length !== 41) {
+  if (result.rows.length !== 52) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

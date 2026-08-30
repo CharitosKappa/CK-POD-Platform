@@ -6,6 +6,8 @@ import {
   GenerationAccessError,
   GenerationCreditError,
   FulfillmentAccessError,
+  OrderOperationsAccessError,
+  OrderTransitionError,
   ProjectConflictError,
 } from '@let-it-be/domain';
 
@@ -13,11 +15,14 @@ export function handleRouteError(error: unknown): NextResponse {
   if (error instanceof Error && error.message === 'Authentication is required.') {
     return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   }
-  if (error instanceof FulfillmentAccessError) {
+  if (error instanceof FulfillmentAccessError || error instanceof OrderOperationsAccessError) {
     return NextResponse.json(
       { error: 'You do not have access to fulfillment operations.' },
       { status: 403 },
     );
+  }
+  if (error instanceof OrderTransitionError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof CommerceAccessError) {
     return NextResponse.json({ error: error.message }, { status: 404 });

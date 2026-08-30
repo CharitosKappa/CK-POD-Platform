@@ -17,11 +17,9 @@ export async function POST(
     const body = (await request.json()) as {
       outcome?: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'PENDING';
     };
-    const result = await commerceRuntime().simulateFakePayment(
-      await requireSession(),
-      checkoutId,
-      body.outcome ?? 'SUCCEEDED',
-    );
+    const result = await (
+      await commerceRuntime()
+    ).simulateFakePayment(await requireSession(), checkoutId, body.outcome ?? 'SUCCEEDED');
     return NextResponse.json({ ...result });
   } catch (error) {
     return handleRouteError(error);

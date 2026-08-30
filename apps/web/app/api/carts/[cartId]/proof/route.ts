@@ -11,7 +11,7 @@ export async function POST(
 ): Promise<NextResponse> {
   try {
     const { cartId } = await context.params;
-    await commerceRuntime().approveProof(await requireSession(), cartId);
+    await (await commerceRuntime()).approveProof(await requireSession(), cartId);
     return NextResponse.json({ approved: true });
   } catch (error) {
     return handleRouteError(error);

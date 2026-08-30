@@ -219,16 +219,25 @@ export function CheckoutClient() {
         {cart?.item ? (
           <>
             <section className="checkout-review">
-              <div className={`checkout-shirt checkout-shirt-${cart.item.colorCode}`}>
-                <img src={previewUrl ?? ''} alt="Your approved design preview" />
-              </div>
+              <figure className="checkout-proof">
+                <img
+                  src={previewUrl ?? ''}
+                  alt={`Your design on the ${cart.item.colorName} ${cart.item.productName}`}
+                />
+                <figcaption>Product proof</figcaption>
+              </figure>
               <div>
                 <h2>{cart.item.productName}</h2>
                 <p>
                   {cart.item.colorName} · {cart.item.size} · Quantity {cart.item.quantity}
                 </p>
                 <p className="checkout-note">
-                  This is a controlled proof preview. Production files stay private.
+                  This controlled product proof shows the approved design on your selected shirt.
+                  Production files stay private.
+                </p>
+                <p className="checkout-note">
+                  Garment photography is DEVELOPMENT / UNQUALIFIED and will be replaced with
+                  licensed launch photography before production release.
                 </p>
               </div>
             </section>

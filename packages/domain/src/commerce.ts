@@ -5,6 +5,7 @@ import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
 import type { PaymentService, TaxService, VerifiedPaymentEvent } from './commerce-contracts';
+import type { MockupService } from './mockups';
 
 const currency = 'USD' as const;
 
@@ -176,6 +177,7 @@ export class CommerceService {
     private readonly payments: PaymentService,
     private readonly taxes: TaxService,
     private readonly fulfillment: FulfillmentService,
+    private readonly mockups: MockupService,
     private readonly configuration: CommerceConfiguration = developmentCommerceConfiguration,
   ) {}
 
@@ -257,7 +259,7 @@ export class CommerceService {
        WHERE i.cart_id = $1 ORDER BY i.created_at LIMIT 1`,
       [cartId],
     );
-    const item = result.rows[0];
+    let item = result.rows[0];
     if (item) {
       const current = await this.pool.query<{
         active_version_id: string;
@@ -277,6 +279,26 @@ export class CommerceService {
           `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(), invalidation_reason = 'The design or product selection changed.' WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
           [item.id],
         );
+      } else {
+        const source = await this.projectForCart(session, item.project_id);
+        const currentMockup = await this.mockupFor(source);
+        if (currentMockup.id !== item.mockup_id) {
+          await this.pool.query(
+            `UPDATE app.cart_items SET mockup_id = $2, updated_at = now() WHERE id = $1`,
+            [item.id, currentMockup.id],
+          );
+          await this.pool.query(
+            `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
+             invalidation_reason = 'The product proof profile changed.'
+             WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
+            [item.id],
+          );
+          item = {
+            ...item,
+            mockup_id: currentMockup.id,
+            preview_asset_id: currentMockup.preview_asset_id,
+          };
+        }
       }
     }
     const approved = item
@@ -750,26 +772,19 @@ export class CommerceService {
   }
 
   private async mockupFor(source: ProjectForCartRow): Promise<MockupRow> {
-    const stateHash = proofStateHash(source);
-    const existing = await this.pool.query<MockupRow>(
-      `SELECT id, preview_asset_id, state_hash FROM app.mockups WHERE project_version_id = $1 AND prepress_run_id = $2 AND renderer = 'CONTROLLED_PREPRESS_PREVIEW' AND renderer_version = 'v1'`,
-      [source.project_version_id, source.prepress_run_id],
-    );
-    if (existing.rows[0]) return existing.rows[0];
-    const inserted = await this.pool.query<MockupRow>(
-      `INSERT INTO app.mockups (project_id, project_version_id, prepress_run_id, product_model_id, color_code, preview_asset_id, renderer, renderer_version, state_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, 'CONTROLLED_PREPRESS_PREVIEW', 'v1', $7) RETURNING id, preview_asset_id, state_hash`,
-      [
-        source.project_id,
-        source.project_version_id,
-        source.prepress_run_id,
-        source.product_model_id,
-        source.selected_color_code,
-        source.preview_asset_id,
-        stateHash,
-      ],
-    );
-    return requireRow(inserted.rows[0], 'Could not create your product proof.');
+    const mockup = await this.mockups.getOrCreate({
+      projectId: source.project_id,
+      projectVersionId: source.project_version_id,
+      prepressRunId: source.prepress_run_id,
+      prepressPreviewAssetId: source.preview_asset_id,
+      productModelId: source.product_model_id,
+      colorCode: source.selected_color_code,
+    });
+    return {
+      id: mockup.id,
+      preview_asset_id: mockup.previewAssetId,
+      state_hash: mockup.stateHash,
+    };
   }
 
   private async cart(session: ActiveSession, cartId: string): Promise<CartRow> {
@@ -822,6 +837,22 @@ export class CommerceService {
       );
       throw new CommerceValidationError(
         'Your design changed. Create a fresh cart and approve the updated proof.',
+      );
+    }
+    const currentMockup = await this.mockupFor(source);
+    if (currentMockup.id !== item.mockup_id) {
+      await this.pool.query(
+        `UPDATE app.cart_items SET mockup_id = $2, updated_at = now() WHERE id = $1`,
+        [item.id, currentMockup.id],
+      );
+      await this.pool.query(
+        `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
+         invalidation_reason = 'The product proof profile changed.'
+         WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
+        [item.id],
+      );
+      throw new CommerceValidationError(
+        'Your product proof changed. Review and approve the updated proof before payment.',
       );
     }
     requireCheckoutReady(source.prepress_status);

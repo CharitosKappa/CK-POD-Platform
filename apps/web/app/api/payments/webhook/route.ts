@@ -7,7 +7,9 @@ export const dynamic = 'force-dynamic';
 /** The authoritative payment boundary. It cannot create or submit a fulfillment order. */
 export async function POST(request: Request): Promise<NextResponse> {
   try {
-    const result = await commerceRuntime().ingestPaymentWebhook({
+    const result = await (
+      await commerceRuntime()
+    ).ingestPaymentWebhook({
       body: await request.text(),
       signature:
         request.headers.get('stripe-signature') ?? request.headers.get('x-fake-payment-signature'),

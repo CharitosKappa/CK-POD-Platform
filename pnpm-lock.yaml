@@ -148,6 +148,9 @@ importers:
       '@let-it-be/editor-schema':
         specifier: workspace:*
         version: link:../editor-schema
+      '@let-it-be/mockups':
+        specifier: workspace:*
+        version: link:../mockups
       '@let-it-be/observability':
         specifier: workspace:*
         version: link:../observability
@@ -162,6 +165,12 @@ importers:
         version: link:../storage
 
   packages/editor-schema: {}
+
+  packages/mockups:
+    dependencies:
+      sharp:
+        specifier: ^0.35.4
+        version: 0.35.4(@types/node@22.20.1)
 
   packages/observability:
     dependencies:

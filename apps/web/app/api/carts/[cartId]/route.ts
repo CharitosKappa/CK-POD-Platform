@@ -12,7 +12,7 @@ export async function GET(
   try {
     const { cartId } = await context.params;
     return NextResponse.json({
-      cart: await commerceRuntime().getCart(await requireSession(), cartId),
+      cart: await (await commerceRuntime()).getCart(await requireSession(), cartId),
     });
   } catch (error) {
     return handleRouteError(error);

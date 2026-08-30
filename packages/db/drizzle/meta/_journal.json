@@ -78,6 +78,20 @@
       "when": 1788004000000,
       "tag": "0010_checkout_active_attempt_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788005000000,
+      "tag": "0011_profiled_consumer_mockups",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788006000000,
+      "tag": "0012_order_operations",
+      "breakpoints": true
     }
   ]
 }

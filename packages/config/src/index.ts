@@ -67,6 +67,7 @@ export const serverEnvironmentSchema = z
     PRINTIFY_SHOP_ID: optionalNonEmptyString,
     PRINTIFY_API_BASE_URL: z.string().url().default('https://api.printify.com/v1'),
     PRINTIFY_WEBHOOK_SECRET: optionalNonEmptyString,
+    PRINTIFY_PRODUCTION_SUBMISSION_ENABLED: z.coerce.boolean().default(false),
     PAYMENT_ADAPTER: paymentAdapterMode.default('fake'),
     STRIPE_SECRET_KEY: optionalNonEmptyString,
     STRIPE_PUBLISHABLE_KEY: optionalNonEmptyString,

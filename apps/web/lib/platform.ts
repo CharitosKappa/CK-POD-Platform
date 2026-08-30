@@ -12,11 +12,15 @@ import {
   FulfillmentAdminService,
   FulfillmentRoutingService,
   IdentityService,
+  MockupService,
+  OrderOperationsService,
   ProjectService,
   StripePaymentService,
   StripeTaxService,
   type ActiveSession,
 } from '@let-it-be/domain';
+
+import { generationRuntime } from './generation-runtime';
 
 const sessionCookieName = 'let_it_be_session';
 
@@ -62,7 +66,7 @@ export function fulfillmentRuntime() {
   };
 }
 
-export function commerceRuntime() {
+export async function commerceRuntime() {
   const environment = parseServerEnvironment(process.env);
   const pool = databasePool();
   const fulfillment = createFulfillmentAdapter({
@@ -82,6 +86,7 @@ export function commerceRuntime() {
           environment.STRIPE_API_BASE_URL,
         )
       : new FakePaymentService();
+  const { storage } = await generationRuntime();
   return new CommerceService(
     pool,
     payments,
@@ -89,7 +94,31 @@ export function commerceRuntime() {
       ? new StripeTaxService(environment.STRIPE_SECRET_KEY!, environment.STRIPE_API_BASE_URL)
       : new FakeTaxService(environment.DEVELOPMENT_TAX_RATE_BASIS_POINTS),
     fulfillment,
+    new MockupService(pool, storage),
   );
+}
+
+/** Trusted post-payment workflow runtime. Payment routes intentionally do not call this. */
+export async function orderOperationsRuntime() {
+  const environment = parseServerEnvironment(process.env);
+  const pool = databasePool();
+  const fulfillment = createFulfillmentAdapter({
+    adapter: environment.FULFILLMENT_ADAPTER,
+    baseUrl: environment.PRINTIFY_API_BASE_URL,
+    ...(environment.PRINTIFY_API_TOKEN ? { apiToken: environment.PRINTIFY_API_TOKEN } : {}),
+    ...(environment.PRINTIFY_SHOP_ID ? { shopId: environment.PRINTIFY_SHOP_ID } : {}),
+    ...(environment.PRINTIFY_WEBHOOK_SECRET
+      ? { webhookSecret: environment.PRINTIFY_WEBHOOK_SECRET }
+      : {}),
+  });
+  const { storage } = await generationRuntime();
+  return new OrderOperationsService(pool, storage, fulfillment, {
+    fulfillmentAdapter: environment.FULFILLMENT_ADAPTER,
+    realProductionSubmissionEnabled:
+      environment.FULFILLMENT_ADAPTER === 'printify' &&
+      environment.PRINTIFY_PRODUCTION_SUBMISSION_ENABLED &&
+      environment.APP_ENV === 'production',
+  });
 }
 
 export async function requireSession(createGuest = true): Promise<ActiveSession> {

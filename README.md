@@ -167,7 +167,9 @@ Milestone 4.5 adds the consumer-first, visual Style Family → Substyle system, 
 
 Milestone 5 adds the server-only Printify adapter boundary, deterministic fake adapter, allowlisted catalog synchronization, Product + Provider + Decoration qualification data, private provider-derivative contract, trusted provider matrix, and explainable platform routing. Read [the Milestone 5 architecture](docs/architecture/milestone-5.md) and ADRs 0034–0037 before changing fulfillment or provider selection. Real Printify calls require explicit environment configuration; development combinations remain unqualified until G3/G6 evidence exists.
 
-Milestone 6 adds controlled consumer proofs, carts, server-owned USD pricing, shipping/tax snapshots, fake and Stripe payment boundaries, and paid platform orders. Read [the Milestone 6 architecture](docs/architecture/milestone-6.md) and ADRs 0038–0045 before changing checkout. A payment can only create a canonical `PAID` order; it cannot create a Printify order or submit production. G4 and G5 remain open.
+Milestone 6 adds profiled server-rendered consumer proofs, carts, server-owned USD pricing, shipping/tax snapshots, fake and Stripe payment boundaries, and paid platform orders. Read [the Milestone 6 architecture](docs/architecture/milestone-6.md) and ADRs 0038–0046 before changing checkout. A payment can only create a canonical `PAID` order; it cannot create a Printify order or submit production. G3–G6 remain open as applicable; initial garment photography is explicitly development/unqualified.
+
+Milestone 7 adds the restricted manual-review queue, canonical post-payment order transitions, final provider routing, readiness gates, provider-order creation, explicit production submission, and reconciled provider status updates. Read [the Milestone 7 architecture](docs/architecture/milestone-7.md) and ADR 0047 before changing review or fulfillment. Payment remains disconnected from operations; real Printify submission fails closed until the production environment flag and G3/G6 evidence are in place.
 
 ### Local setup
 

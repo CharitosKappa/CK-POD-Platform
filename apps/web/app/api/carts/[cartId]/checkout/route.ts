@@ -19,12 +19,9 @@ export async function POST(
       );
     return NextResponse.json(
       {
-        checkout: await commerceRuntime().startCheckout(
-          await requireSession(),
-          cartId,
-          body.addressId,
-          body.idempotencyKey,
-        ),
+        checkout: await (
+          await commerceRuntime()
+        ).startCheckout(await requireSession(), cartId, body.addressId, body.idempotencyKey),
       },
       { status: 201 },
     );
