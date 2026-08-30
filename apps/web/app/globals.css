@@ -908,6 +908,183 @@ select:focus-visible {
   background: #eef1ed;
 }
 
+.checkout-page {
+  display: block;
+  min-height: 100vh;
+  padding: clamp(1rem, 4vw, 3.5rem);
+  background: linear-gradient(135deg, #f7f5f0 0%, #edf3ee 100%);
+}
+
+.checkout-card {
+  width: min(100%, 56rem);
+  margin: 0 auto;
+  border: 1px solid #d5ddd8;
+  border-radius: 1.25rem;
+  background: #fff;
+  padding: clamp(1.25rem, 4vw, 3rem);
+  box-shadow: 0 1rem 3rem rgb(24 33 40 / 8%);
+}
+
+.checkout-heading {
+  border-bottom: 1px solid #e1e7e3;
+  padding-bottom: 1.35rem;
+}
+.checkout-heading h1,
+.checkout-confirmation h1 {
+  font-size: clamp(2rem, 6vw, 4rem);
+}
+.checkout-step {
+  margin-top: 1.5rem;
+  border: 1px solid #dce5df;
+  border-radius: 0.9rem;
+  background: #fbfcfa;
+  padding: 1rem;
+}
+.checkout-step h2 {
+  margin-top: 0;
+  font-size: 1.2rem;
+}
+.checkout-controls,
+.checkout-address {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.checkout-controls label,
+.checkout-address label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.checkout-controls input,
+.checkout-controls select,
+.checkout-address input,
+.checkout-address select {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid #aebcb6;
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  color: var(--ink);
+  font: inherit;
+}
+.checkout-address .continue {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.checkout-review {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.75fr) 1fr;
+  gap: 1.5rem;
+  align-items: center;
+  margin-top: 1.5rem;
+  border-bottom: 1px solid #e1e7e3;
+  padding-bottom: 1.5rem;
+}
+.checkout-shirt {
+  position: relative;
+  display: grid;
+  min-height: 17rem;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: #e2ebe5;
+}
+.checkout-shirt::before {
+  position: absolute;
+  width: 70%;
+  height: 88%;
+  background: #1c2022;
+  content: '';
+  clip-path: polygon(
+    18% 8%,
+    35% 0,
+    65% 0,
+    82% 8%,
+    100% 31%,
+    84% 42%,
+    77% 28%,
+    77% 100%,
+    23% 100%,
+    23% 28%,
+    16% 42%,
+    0 31%
+  );
+}
+.checkout-shirt-white::before {
+  background: #fff;
+}
+.checkout-shirt-navy::before {
+  background: #17294b;
+}
+.checkout-shirt img {
+  position: relative;
+  z-index: 1;
+  width: 38%;
+  max-height: 42%;
+  object-fit: contain;
+  mix-blend-mode: multiply;
+}
+.proof-acknowledgement {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.45;
+}
+.proof-acknowledgement input {
+  margin-top: 0.2rem;
+  width: 1.2rem;
+  height: 1.2rem;
+}
+.checkout-summary {
+  display: grid;
+  gap: 0.45rem;
+  max-width: 24rem;
+}
+.checkout-summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+}
+.checkout-summary dt {
+  color: var(--muted);
+}
+.checkout-summary dd {
+  margin: 0;
+  font-weight: 700;
+}
+.checkout-summary .checkout-total {
+  margin-top: 0.35rem;
+  border-top: 1px solid #d5ddd8;
+  padding-top: 0.65rem;
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+.checkout-delivery,
+.checkout-note {
+  font-size: 0.88rem;
+}
+@media (max-width: 620px) {
+  .checkout-review,
+  .checkout-controls,
+  .checkout-address {
+    grid-template-columns: 1fr;
+  }
+  .checkout-address .continue {
+    width: 100%;
+  }
+  .checkout-shirt {
+    min-height: 15rem;
+  }
+  .checkout-step .continue {
+    width: 100%;
+  }
+}
+
 .provider-matrix {
   width: min(100%, 78rem);
   margin: 0 auto;

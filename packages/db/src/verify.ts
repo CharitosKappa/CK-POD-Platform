@@ -41,11 +41,22 @@ try {
         'fulfillment_operations',
         'fulfillment_events',
         'fulfillment_operational_events',
+        'mockups',
+        'carts',
+        'cart_items',
+        'proof_approvals',
+        'shipping_addresses',
+        'checkout_attempts',
+        'payments',
+        'payment_events',
+        'orders',
+        'order_items',
+        'order_state_history',
       ],
     ],
   );
 
-  if (result.rows.length !== 30) {
+  if (result.rows.length !== 41) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

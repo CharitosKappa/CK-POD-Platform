@@ -18,6 +18,23 @@ Credentials are server-only. Do not use real mode in CI and do not place credent
 
 Run `pnpm fulfillment:reconcile` to perform the same bounded, idempotent catalog reconciliation used by the trusted refresh control. It only synchronizes platform-allowlisted mappings.
 
+## Milestone 6 commerce development
+
+Checkout defaults to `PAYMENT_ADAPTER=fake` and `TAX_ADAPTER=fake`; no Stripe credentials are required for local development, CI, or the deterministic payment tests. Fake checkout confirmation uses the same verified payment-event persistence path and ends with a platform order in canonical `PAID` state. It never creates a Printify order or sends a design to production.
+
+To enable Stripe PaymentIntents and Stripe-provided wallet capability, set the following server-only values in an uncommitted `.env` file, plus the matching browser-safe publishable key:
+
+```text
+PAYMENT_ADAPTER=stripe
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+STRIPE_PUBLISHABLE_KEY=...
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=...
+TAX_ADAPTER=stripe # optional; G4 remains open
+```
+
+Do not set real Stripe or tax configuration in CI. Stripe Tax integration is technical only; nexus, registrations, and legal configuration require G4. Checkout copy and policy language remain subject to G5.
+
 ## Prerequisites
 
 - Node 22.19.0 (see `.nvmrc`)

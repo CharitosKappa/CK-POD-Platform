@@ -5,11 +5,16 @@ import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
   CatalogSyncService,
+  CommerceService,
   createFulfillmentAdapter,
+  FakePaymentService,
+  FakeTaxService,
   FulfillmentAdminService,
   FulfillmentRoutingService,
   IdentityService,
   ProjectService,
+  StripePaymentService,
+  StripeTaxService,
   type ActiveSession,
 } from '@let-it-be/domain';
 
@@ -55,6 +60,36 @@ export function fulfillmentRuntime() {
     catalogSync: new CatalogSyncService(pool, adapter),
     routing: new FulfillmentRoutingService(pool, adapter),
   };
+}
+
+export function commerceRuntime() {
+  const environment = parseServerEnvironment(process.env);
+  const pool = databasePool();
+  const fulfillment = createFulfillmentAdapter({
+    adapter: environment.FULFILLMENT_ADAPTER,
+    baseUrl: environment.PRINTIFY_API_BASE_URL,
+    ...(environment.PRINTIFY_API_TOKEN ? { apiToken: environment.PRINTIFY_API_TOKEN } : {}),
+    ...(environment.PRINTIFY_SHOP_ID ? { shopId: environment.PRINTIFY_SHOP_ID } : {}),
+    ...(environment.PRINTIFY_WEBHOOK_SECRET
+      ? { webhookSecret: environment.PRINTIFY_WEBHOOK_SECRET }
+      : {}),
+  });
+  const payments =
+    environment.PAYMENT_ADAPTER === 'stripe'
+      ? new StripePaymentService(
+          environment.STRIPE_SECRET_KEY!,
+          environment.STRIPE_WEBHOOK_SECRET!,
+          environment.STRIPE_API_BASE_URL,
+        )
+      : new FakePaymentService();
+  return new CommerceService(
+    pool,
+    payments,
+    environment.TAX_ADAPTER === 'stripe'
+      ? new StripeTaxService(environment.STRIPE_SECRET_KEY!, environment.STRIPE_API_BASE_URL)
+      : new FakeTaxService(environment.DEVELOPMENT_TAX_RATE_BASIS_POINTS),
+    fulfillment,
+  );
 }
 
 export async function requireSession(createGuest = true): Promise<ActiveSession> {

@@ -107,6 +107,16 @@ export class IdentityService {
        WHERE owner_type = 'GUEST' AND owner_session_id = $2`,
       [userId, session.id],
     );
+    await client.query(
+      `UPDATE app.carts SET owner_type = 'USER', owner_user_id = $1, owner_session_id = NULL, updated_at = now()
+       WHERE owner_type = 'GUEST' AND owner_session_id = $2`,
+      [userId, session.id],
+    );
+    await client.query(
+      `UPDATE app.orders SET owner_type = 'USER', owner_user_id = $1, owner_session_id = NULL, updated_at = now()
+       WHERE owner_type = 'GUEST' AND owner_session_id = $2`,
+      [userId, session.id],
+    );
     await migrateCreditAccount(client, session.id, userId);
     const result = await client.query<SessionRow>(
       `UPDATE app.sessions

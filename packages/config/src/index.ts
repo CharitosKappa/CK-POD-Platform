@@ -4,6 +4,8 @@ const nodeEnvironment = z.enum(['development', 'test', 'production']);
 const adapterDriver = z.enum(['memory', 's3']);
 const queueDriver = z.enum(['memory', 'redis']);
 const fulfillmentAdapterMode = z.enum(['fake', 'printify']);
+const paymentAdapterMode = z.enum(['fake', 'stripe']);
+const taxAdapterMode = z.enum(['fake', 'stripe']);
 const positiveInteger = z.coerce.number().int().min(0);
 const optionalNonEmptyString = z.preprocess(
   (value) => (value === '' ? undefined : value),
@@ -65,8 +67,37 @@ export const serverEnvironmentSchema = z
     PRINTIFY_SHOP_ID: optionalNonEmptyString,
     PRINTIFY_API_BASE_URL: z.string().url().default('https://api.printify.com/v1'),
     PRINTIFY_WEBHOOK_SECRET: optionalNonEmptyString,
+    PAYMENT_ADAPTER: paymentAdapterMode.default('fake'),
+    STRIPE_SECRET_KEY: optionalNonEmptyString,
+    STRIPE_PUBLISHABLE_KEY: optionalNonEmptyString,
+    STRIPE_WEBHOOK_SECRET: optionalNonEmptyString,
+    STRIPE_API_BASE_URL: z.string().url().default('https://api.stripe.com/v1'),
+    DEVELOPMENT_TAX_RATE_BASIS_POINTS: z.coerce.number().int().min(0).max(10_000).default(0),
+    TAX_ADAPTER: taxAdapterMode.default('fake'),
   })
   .superRefine((environment, context) => {
+    if (environment.PAYMENT_ADAPTER === 'stripe') {
+      for (const key of [
+        'STRIPE_SECRET_KEY',
+        'STRIPE_PUBLISHABLE_KEY',
+        'STRIPE_WEBHOOK_SECRET',
+      ] as const) {
+        if (!environment[key]) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${key} is required when PAYMENT_ADAPTER=stripe.`,
+            path: [key],
+          });
+        }
+      }
+    }
+    if (environment.TAX_ADAPTER === 'stripe' && !environment.STRIPE_SECRET_KEY) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'STRIPE_SECRET_KEY is required when TAX_ADAPTER=stripe.',
+        path: ['STRIPE_SECRET_KEY'],
+      });
+    }
     if (environment.STORAGE_DRIVER !== 's3') {
       if (environment.FULFILLMENT_ADAPTER === 'printify') {
         for (const key of ['PRINTIFY_API_TOKEN', 'PRINTIFY_SHOP_ID'] as const) {

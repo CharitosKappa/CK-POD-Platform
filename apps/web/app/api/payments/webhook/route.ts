@@ -1,0 +1,23 @@
+import { NextResponse } from 'next/server';
+
+import { commerceRuntime } from '../../../../lib/platform';
+
+export const dynamic = 'force-dynamic';
+
+/** The authoritative payment boundary. It cannot create or submit a fulfillment order. */
+export async function POST(request: Request): Promise<NextResponse> {
+  try {
+    const result = await commerceRuntime().ingestPaymentWebhook({
+      body: await request.text(),
+      signature:
+        request.headers.get('stripe-signature') ?? request.headers.get('x-fake-payment-signature'),
+    });
+    return NextResponse.json({
+      accepted: true,
+      duplicate: result.duplicate,
+      orderNumber: result.orderNumber,
+    });
+  } catch {
+    return NextResponse.json({ error: 'Payment webhook could not be accepted.' }, { status: 401 });
+  }
+}

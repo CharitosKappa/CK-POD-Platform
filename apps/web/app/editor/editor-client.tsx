@@ -26,7 +26,7 @@ import {
   Transformer,
 } from 'react-konva';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface ProjectResponse {
   project: {
@@ -75,6 +75,7 @@ const editorAutosaveDebounceMs = publicNumber(
 );
 
 export function EditorClient() {
+  const router = useRouter();
   const search = useSearchParams();
   const projectId = search.get('project');
   const generationId = search.get('generation');
@@ -502,7 +503,7 @@ export function EditorClient() {
             className="continue"
             type="button"
             disabled={!canContinue}
-            onClick={() => setError('Product preview and ordering arrive in a later milestone.')}
+            onClick={() => router.push(`/checkout?project=${encodeURIComponent(projectId)}`)}
           >
             Continue to preview
           </button>

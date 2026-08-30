@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 
 import {
+  CommerceAccessError,
+  CommerceValidationError,
   GenerationAccessError,
   GenerationCreditError,
   FulfillmentAccessError,
@@ -16,6 +18,12 @@ export function handleRouteError(error: unknown): NextResponse {
       { error: 'You do not have access to fulfillment operations.' },
       { status: 403 },
     );
+  }
+  if (error instanceof CommerceAccessError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof CommerceValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof ProjectConflictError) {
     return NextResponse.json({ error: error.message, code: 'STALE_PROJECT' }, { status: 409 });

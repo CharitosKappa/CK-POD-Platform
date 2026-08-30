@@ -8,6 +8,8 @@ Milestone 4.5 implementation decisions are recorded in ADRs [0031](0031-versione
 
 Milestone 5 fulfillment decisions are recorded in ADRs [0034](0034-platform-owned-fulfillment-adapter.md), [0035](0035-provider-qualification-and-private-derivatives.md), [0036](0036-explainable-platform-routing.md), and [0037](0037-catalog-sync-and-event-reconciliation.md).
 
+Milestone 6 commerce decisions are recorded in ADRs [0038](0038-platform-owned-payment-service.md) through [0045](0045-payment-does-not-submit-production.md). They preserve canonical `PAID` as the payment boundary and prohibit payment-triggered production submission.
+
 ## Statuses
 
 - **Proposed** — under review; not yet used as a project decision.
