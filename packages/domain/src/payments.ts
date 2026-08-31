@@ -57,6 +57,12 @@ export class FakePaymentService implements PaymentService {
           : {},
     };
   }
+
+  async refund(input: { providerPaymentId: string; amountCents: number; idempotencyKey: string }) {
+    return {
+      providerRefundId: `fake_re_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
+    };
+  }
 }
 
 /** Minimal Stripe PaymentIntent adapter. Browser payment details stay in Stripe Elements/tokenized flows. */
@@ -129,6 +135,25 @@ export class StripePaymentService implements PaymentService {
           ? (object.metadata as Record<string, unknown>)
           : {},
     };
+  }
+
+  async refund(input: { providerPaymentId: string; amountCents: number; idempotencyKey: string }) {
+    const form = new URLSearchParams({
+      payment_intent: input.providerPaymentId,
+      amount: String(input.amountCents),
+    });
+    const response = await fetch(`${this.baseUrl}/refunds`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.secretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Idempotency-Key': input.idempotencyKey,
+      },
+      body: form,
+    });
+    if (!response.ok) throw new Error('Stripe could not process the refund.');
+    const result = (await response.json()) as { id: string };
+    return { providerRefundId: result.id };
   }
 }
 

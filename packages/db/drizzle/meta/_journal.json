@@ -99,6 +99,27 @@
       "when": 1788007000000,
       "tag": "0013_policy_compliance",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788008000000,
+      "tag": "0014_analytics_lifecycle_cx",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1788009000000,
+      "tag": "0015_cx_refund_and_defect_attribution",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788010000000,
+      "tag": "0016_analytics_optional_project_context",
+      "breakpoints": true
     }
   ]
 }

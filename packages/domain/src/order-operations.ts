@@ -14,6 +14,7 @@ import {
 } from './routing';
 import { PolicyService } from './policy';
 import type { PolicyOutcome } from './policy';
+import type { LifecycleOrchestrator } from './operations-analytics';
 
 export const canonicalOrderStates = [
   'DRAFT',
@@ -120,6 +121,7 @@ export class OrderOperationsService {
     private readonly fulfillment: FulfillmentService,
     private readonly configuration: OrderOperationsConfiguration,
     private readonly policy: PolicyService = new PolicyService(pool),
+    private readonly lifecycle?: LifecycleOrchestrator,
   ) {
     this.routing = new FulfillmentRoutingService(pool, fulfillment);
     this.derivatives = new ProviderDerivativeService(pool, storage);
@@ -555,6 +557,40 @@ export class OrderOperationsService {
         input.source,
       );
     });
+    const notification = normalizeExternalStatus(input.rawStatus);
+    if (this.lifecycle && (notification === 'SHIPPED' || notification === 'DELIVERED')) {
+      const order = await this.pool.query<{
+        id: string;
+        customer_email: string;
+        project_id: string;
+      }>(
+        `SELECT o.id, o.customer_email, i.project_id FROM app.external_fulfillment_orders e JOIN app.orders o ON o.id = e.order_id JOIN app.order_items i ON i.order_id = o.id WHERE e.external_order_id = $1`,
+        [input.externalOrderId],
+      );
+      const row = order.rows[0];
+      if (row) {
+        const type = notification === 'SHIPPED' ? 'SHIPPING_CONFIRMATION' : 'DELIVERY_CONFIRMATION';
+        await this.lifecycle.trigger({
+          type,
+          classification: 'TRANSACTIONAL',
+          recipientEmail: row.customer_email,
+          orderId: row.id,
+          projectId: row.project_id,
+          idempotencyKey: `${type.toLowerCase()}:${row.id}`,
+          payload: { orderStatus: notification },
+        });
+        if (notification === 'DELIVERED')
+          await this.lifecycle.trigger({
+            type: 'REVIEW_REQUEST',
+            classification: 'MARKETING',
+            recipientEmail: row.customer_email,
+            orderId: row.id,
+            projectId: row.project_id,
+            idempotencyKey: `review-request:${row.id}`,
+            payload: { orderStatus: notification },
+          });
+      }
+    }
   }
 
   /** A verified provider notification is evidence only; transition validation remains here. */

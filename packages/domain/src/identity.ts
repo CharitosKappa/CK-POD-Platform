@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
+import type { LifecycleOrchestrator } from './operations-analytics';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_TTL_DAYS = 7;
@@ -33,7 +34,10 @@ interface UserRow {
 }
 
 export class IdentityService {
-  public constructor(private readonly pool: SqlPool) {}
+  public constructor(
+    private readonly pool: SqlPool,
+    private readonly lifecycle?: LifecycleOrchestrator,
+  ) {}
 
   async createGuestSession(): Promise<SessionWithToken> {
     const token = randomBytes(32).toString('base64url');
@@ -66,7 +70,7 @@ export class IdentityService {
     validateCredentials(email, password);
     const normalizedEmail = email.trim().toLowerCase();
 
-    return withTransaction(this.pool, async (client) => {
+    const active = await withTransaction(this.pool, async (client) => {
       const passwordHash = await hashPassword(password);
       const userResult = await client.query<UserRow>(
         `INSERT INTO app.users (email, password_hash)
@@ -77,6 +81,15 @@ export class IdentityService {
       const user = requireRow(userResult.rows[0], 'Could not create account.');
       return this.attachUserAndMigrate(client, session, user.id);
     });
+    if (this.lifecycle)
+      await this.lifecycle.trigger({
+        type: 'WELCOME',
+        classification: 'MARKETING',
+        recipientEmail: normalizedEmail,
+        idempotencyKey: `welcome:${active.userId}`,
+        payload: {},
+      });
+    return active;
   }
 
   async login(session: ActiveSession, email: string, password: string): Promise<ActiveSession> {

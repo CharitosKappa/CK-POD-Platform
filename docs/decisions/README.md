@@ -16,6 +16,11 @@ Milestone 8 is recorded in [ADR 0048](0048-policy-engine-and-final-artwork-gate.
 provider classifiers behind platform-owned, versioned policy semantics and makes final-artwork policy
 eligibility a prerequisite for M7 production readiness; it does not complete G5.
 
+Milestone 9 is recorded in [ADR 0049](0049-analytics-cx-and-lifecycle-boundaries.md),
+[0050](0050-cx-refunds-reprints-and-defects.md), and
+[0051](0051-lifecycle-idempotency-and-trigger-semantics.md). It retains platform authority over
+metrics, CX side effects, and lifecycle idempotency.
+
 ## Statuses
 
 - **Proposed** — under review; not yet used as a project decision.

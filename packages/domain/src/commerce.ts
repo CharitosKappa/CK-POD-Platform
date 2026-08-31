@@ -6,6 +6,7 @@ import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
 import type { PaymentService, TaxService, VerifiedPaymentEvent } from './commerce-contracts';
 import type { MockupService } from './mockups';
+import type { LifecycleOrchestrator } from './operations-analytics';
 
 const currency = 'USD' as const;
 
@@ -179,6 +180,7 @@ export class CommerceService {
     private readonly fulfillment: FulfillmentService,
     private readonly mockups: MockupService,
     private readonly configuration: CommerceConfiguration = developmentCommerceConfiguration,
+    private readonly lifecycle?: LifecycleOrchestrator,
   ) {}
 
   async createCart(session: ActiveSession, input: CartLineInput): Promise<CartView> {
@@ -589,7 +591,37 @@ export class CommerceService {
   }): Promise<{ duplicate: boolean; orderNumber: string | null }> {
     const event = await this.payments.verifyWebhook(input);
     if (!event) throw new CommerceAccessError('Payment webhook signature is invalid.');
-    return withTransaction(this.pool, async (client) => this.persistPaymentEvent(client, event));
+    const result = await withTransaction(this.pool, async (client) =>
+      this.persistPaymentEvent(client, event),
+    );
+    if (result.orderNumber && !result.duplicate && this.lifecycle) {
+      const order = await this.pool.query<{
+        id: string;
+        customer_email: string;
+        project_id: string;
+      }>(
+        `SELECT o.id, o.customer_email, i.project_id FROM app.orders o JOIN app.order_items i ON i.order_id = o.id WHERE o.order_number = $1`,
+        [result.orderNumber],
+      );
+      const row = order.rows[0];
+      if (row) {
+        await this.lifecycle.suppressAbandonment({
+          recipientEmail: row.customer_email,
+          projectId: row.project_id,
+          orderId: row.id,
+        });
+        await this.lifecycle.trigger({
+          type: 'ORDER_CONFIRMATION',
+          classification: 'TRANSACTIONAL',
+          recipientEmail: row.customer_email,
+          orderId: row.id,
+          projectId: row.project_id,
+          idempotencyKey: `order-confirmation:${row.id}`,
+          payload: { orderNumber: result.orderNumber },
+        });
+      }
+    }
+    return result;
   }
 
   async getOrder(

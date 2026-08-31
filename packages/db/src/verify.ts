@@ -63,11 +63,16 @@ try {
         'order_fulfillment_status_events',
         'order_shipments',
         'order_operational_audits',
+        'order_refunds',
+        'order_reprints',
+        'provider_defects',
+        'customer_notes',
+        'lifecycle_deliveries',
       ],
     ],
   );
 
-  if (result.rows.length !== 52) {
+  if (result.rows.length !== 57) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

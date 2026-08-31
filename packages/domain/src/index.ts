@@ -60,3 +60,4 @@ export * from './policy';
 export * from './mockups';
 export * from './commerce';
 export * from './order-operations';
+export * from './operations-analytics';

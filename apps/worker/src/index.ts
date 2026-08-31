@@ -5,6 +5,9 @@ import { parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient } from '@let-it-be/db';
 import {
   createGenerationRuntime,
+  FakeLifecycleMessagingService,
+  KlaviyoLifecycleMessagingService,
+  LifecycleOrchestrator,
   startGenerationConsumer,
   startPrepressConsumer,
 } from '@let-it-be/domain';
@@ -30,8 +33,9 @@ logger.info('worker.ready', {
 });
 
 const queue = createQueue(environment.QUEUE_DRIVER, environment.REDIS_URL);
+const database = createDatabaseClient(environment.DATABASE_URL);
 const runtime = createGenerationRuntime({
-  pool: createDatabaseClient(environment.DATABASE_URL).pool,
+  pool: database.pool,
   queue,
   storage: createStorage(environment),
   logger,
@@ -45,6 +49,36 @@ await startGenerationConsumer(queue, (generationId) => runtime.worker.process(ge
 logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
 await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
 logger.info('worker.prepress_consumer_ready', { queue: 'prepress-render' });
+
+const lifecycle = new LifecycleOrchestrator(
+  database.pool,
+  environment.LIFECYCLE_ADAPTER === 'klaviyo'
+    ? new KlaviyoLifecycleMessagingService(
+        environment.KLAVIYO_API_KEY!,
+        environment.KLAVIYO_API_BASE_URL,
+      )
+    : new FakeLifecycleMessagingService(),
+  environment.LIFECYCLE_ADAPTER === 'klaviyo' ? 'KLAVIYO' : 'FAKE',
+);
+async function processLifecycle(): Promise<void> {
+  try {
+    await lifecycle.processAbandonment({
+      generatedNoPurchaseDelayMs: environment.LIFECYCLE_GENERATED_NO_PURCHASE_DELAY_MS,
+      cartDelayMs: environment.LIFECYCLE_CART_ABANDONMENT_DELAY_MS,
+      checkoutDelayMs: environment.LIFECYCLE_CHECKOUT_ABANDONMENT_DELAY_MS,
+    });
+    await lifecycle.processReorderRevisit({
+      delayMs: environment.LIFECYCLE_REORDER_REVISIT_DELAY_MS,
+    });
+  } catch (error) {
+    logger.error('worker.lifecycle_processing_failed', {
+      error: error instanceof Error ? error.message : 'unknown lifecycle processing error',
+    });
+  }
+}
+void processLifecycle();
+setInterval(() => void processLifecycle(), environment.LIFECYCLE_PROCESS_INTERVAL_MS).unref();
+logger.info('worker.lifecycle_processor_ready', { adapter: environment.LIFECYCLE_ADAPTER });
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {
   if (driver === 'memory') return new InMemoryJobQueue();

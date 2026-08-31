@@ -36,6 +36,11 @@ export interface PaymentService {
     body: string;
     signature: string | null;
   }): Promise<VerifiedPaymentEvent | null>;
+  refund(input: {
+    providerPaymentId: string;
+    amountCents: number;
+    idempotencyKey: string;
+  }): Promise<{ providerRefundId: string }>;
 }
 
 export interface TaxAddress {

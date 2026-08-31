@@ -14,6 +14,10 @@ import {
   IdentityService,
   MockupService,
   OrderOperationsService,
+  CxOperationsService,
+  LifecycleOrchestrator,
+  KlaviyoLifecycleMessagingService,
+  FakeLifecycleMessagingService,
   ProjectService,
   StripePaymentService,
   StripeTaxService,
@@ -39,9 +43,10 @@ function databasePool(): SqlPool {
 
 export function services() {
   const pool = databasePool();
+  const lifecycle = lifecycleRuntime(pool);
   return {
-    identity: new IdentityService(pool),
-    projects: new ProjectService(pool),
+    identity: new IdentityService(pool, lifecycle),
+    projects: new ProjectService(pool, {}, lifecycle),
     assets: new AssetService(pool),
     fulfillmentAdmin: new FulfillmentAdminService(pool),
     pool,
@@ -95,7 +100,22 @@ export async function commerceRuntime() {
       : new FakeTaxService(environment.DEVELOPMENT_TAX_RATE_BASIS_POINTS),
     fulfillment,
     new MockupService(pool, storage),
+    undefined,
+    lifecycleRuntime(pool, environment),
   );
+}
+
+export function cxOperationsRuntime() {
+  const environment = parseServerEnvironment(process.env);
+  const payments =
+    environment.PAYMENT_ADAPTER === 'stripe'
+      ? new StripePaymentService(
+          environment.STRIPE_SECRET_KEY!,
+          environment.STRIPE_WEBHOOK_SECRET!,
+          environment.STRIPE_API_BASE_URL,
+        )
+      : new FakePaymentService();
+  return new CxOperationsService(databasePool(), payments);
 }
 
 /** Trusted post-payment workflow runtime. Payment routes intentionally do not call this. */
@@ -112,13 +132,36 @@ export async function orderOperationsRuntime() {
       : {}),
   });
   const { storage } = await generationRuntime();
-  return new OrderOperationsService(pool, storage, fulfillment, {
-    fulfillmentAdapter: environment.FULFILLMENT_ADAPTER,
-    realProductionSubmissionEnabled:
-      environment.FULFILLMENT_ADAPTER === 'printify' &&
-      environment.PRINTIFY_PRODUCTION_SUBMISSION_ENABLED &&
-      environment.APP_ENV === 'production',
-  });
+  return new OrderOperationsService(
+    pool,
+    storage,
+    fulfillment,
+    {
+      fulfillmentAdapter: environment.FULFILLMENT_ADAPTER,
+      realProductionSubmissionEnabled:
+        environment.FULFILLMENT_ADAPTER === 'printify' &&
+        environment.PRINTIFY_PRODUCTION_SUBMISSION_ENABLED &&
+        environment.APP_ENV === 'production',
+    },
+    undefined,
+    lifecycleRuntime(pool, environment),
+  );
+}
+
+function lifecycleRuntime(pool: SqlPool, parsed?: ReturnType<typeof parseServerEnvironment>) {
+  const environment = parsed ?? parseServerEnvironment(process.env);
+  const messaging =
+    environment.LIFECYCLE_ADAPTER === 'klaviyo'
+      ? new KlaviyoLifecycleMessagingService(
+          environment.KLAVIYO_API_KEY!,
+          environment.KLAVIYO_API_BASE_URL,
+        )
+      : new FakeLifecycleMessagingService();
+  return new LifecycleOrchestrator(
+    pool,
+    messaging,
+    environment.LIFECYCLE_ADAPTER === 'klaviyo' ? 'KLAVIYO' : 'FAKE',
+  );
 }
 
 export async function requireSession(createGuest = true): Promise<ActiveSession> {

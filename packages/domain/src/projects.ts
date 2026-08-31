@@ -9,6 +9,7 @@ import {
 
 import type { ActiveSession } from './identity';
 import { StyleCatalogService, type StyleSelection } from './styles';
+import type { LifecycleOrchestrator } from './operations-analytics';
 
 export type EditorDocument = EditorDocumentV1;
 
@@ -84,6 +85,7 @@ export class ProjectService {
   public constructor(
     private readonly pool: SqlPool,
     options: ProjectServiceOptions = {},
+    private readonly lifecycle?: LifecycleOrchestrator,
   ) {
     this.guestRetentionDays = options.guestRetentionDays ?? 7;
     this.userRetentionDays = options.userRetentionDays ?? 90;
@@ -95,7 +97,7 @@ export class ProjectService {
     selection: ProjectSelection,
     document: EditorDocument | unknown = emptyEditorDocument(),
   ): Promise<Project> {
-    return withTransaction(this.pool, async (client) => {
+    const project = await withTransaction(this.pool, async (client) => {
       await assertSelectable(client, selection);
       const projectResult = await client.query<ProjectRow>(
         `INSERT INTO app.projects (
@@ -127,6 +129,22 @@ export class ProjectService {
       );
       return mapProject(requireRow(active.rows[0]));
     });
+    if (session.userId && this.lifecycle) {
+      const user = await this.pool.query<{ email: string }>(
+        'SELECT email FROM app.users WHERE id = $1',
+        [session.userId],
+      );
+      if (user.rows[0])
+        await this.lifecycle.trigger({
+          type: 'SAVED_PROJECT',
+          classification: 'MARKETING',
+          recipientEmail: user.rows[0].email,
+          projectId: project.id,
+          idempotencyKey: `saved-project:${project.id}`,
+          payload: { productModelId: project.productModelId, colorCode: project.selectedColorCode },
+        });
+    }
+    return project;
   }
 
   async get(session: ActiveSession, projectId: string): Promise<Project | null> {

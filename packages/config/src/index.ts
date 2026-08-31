@@ -6,6 +6,7 @@ const queueDriver = z.enum(['memory', 'redis']);
 const fulfillmentAdapterMode = z.enum(['fake', 'printify']);
 const paymentAdapterMode = z.enum(['fake', 'stripe']);
 const taxAdapterMode = z.enum(['fake', 'stripe']);
+const lifecycleAdapterMode = z.enum(['fake', 'klaviyo']);
 const positiveInteger = z.coerce.number().int().min(0);
 const optionalNonEmptyString = z.preprocess(
   (value) => (value === '' ? undefined : value),
@@ -75,6 +76,14 @@ export const serverEnvironmentSchema = z
     STRIPE_API_BASE_URL: z.string().url().default('https://api.stripe.com/v1'),
     DEVELOPMENT_TAX_RATE_BASIS_POINTS: z.coerce.number().int().min(0).max(10_000).default(0),
     TAX_ADAPTER: taxAdapterMode.default('fake'),
+    LIFECYCLE_ADAPTER: lifecycleAdapterMode.default('fake'),
+    KLAVIYO_API_KEY: optionalNonEmptyString,
+    KLAVIYO_API_BASE_URL: z.string().url().default('https://a.klaviyo.com/api'),
+    LIFECYCLE_GENERATED_NO_PURCHASE_DELAY_MS: positiveInteger.default(86_400_000),
+    LIFECYCLE_CART_ABANDONMENT_DELAY_MS: positiveInteger.default(3_600_000),
+    LIFECYCLE_CHECKOUT_ABANDONMENT_DELAY_MS: positiveInteger.default(1_800_000),
+    LIFECYCLE_REORDER_REVISIT_DELAY_MS: positiveInteger.default(2_592_000_000),
+    LIFECYCLE_PROCESS_INTERVAL_MS: positiveInteger.default(60_000),
   })
   .superRefine((environment, context) => {
     if (environment.PAYMENT_ADAPTER === 'stripe') {
@@ -97,6 +106,13 @@ export const serverEnvironmentSchema = z
         code: z.ZodIssueCode.custom,
         message: 'STRIPE_SECRET_KEY is required when TAX_ADAPTER=stripe.',
         path: ['STRIPE_SECRET_KEY'],
+      });
+    }
+    if (environment.LIFECYCLE_ADAPTER === 'klaviyo' && !environment.KLAVIYO_API_KEY) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'KLAVIYO_API_KEY is required when LIFECYCLE_ADAPTER=klaviyo.',
+        path: ['KLAVIYO_API_KEY'],
       });
     }
     if (environment.STORAGE_DRIVER !== 's3') {

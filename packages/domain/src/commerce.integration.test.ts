@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AssetService } from './assets.js';
 import { CommerceAccessError, CommerceService, CommerceValidationError } from './commerce.js';
@@ -10,6 +10,7 @@ import { IdentityService } from './identity.js';
 import { FakePaymentService, FakeTaxService } from './payments.js';
 import { ProjectService } from './projects.js';
 import { MockupService } from './mockups.js';
+import { CxOperationsService } from './operations-analytics.js';
 import {
   OrderOperationsAccessError,
   OrderOperationsService,
@@ -17,6 +18,7 @@ import {
 } from './order-operations.js';
 import { FakePrintifyFulfillmentAdapter } from './printify.js';
 import { FulfillmentIntegrationError } from './fulfillment-contracts.js';
+import type { PaymentService } from './commerce-contracts.js';
 import type {
   FulfillmentService,
   NormalizedShippingQuote,
@@ -274,6 +276,132 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(commerce.getCart(account, cart.id)).resolves.toMatchObject({ id: cart.id });
   });
 
+  it('keeps CX refunds idempotent and reprints isolated from the original M7 production workflow', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    await commerce.approveProof(ready.guest, cart.id);
+    const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
+    const checkout = await commerce.startCheckout(
+      ready.guest,
+      cart.id,
+      addressId,
+      `cx-${randomBytes(8).toString('hex')}`,
+    );
+    const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
+    const orderNumber = paid.orderNumber as string;
+    const operator = await identity.register(
+      await identity.createGuestSession(),
+      `cx-${randomBytes(6).toString('hex')}@example.test`,
+      'correct-horse-battery-staple',
+    );
+    await pool.query(`UPDATE app.users SET role = 'CX_OPS' WHERE id = $1`, [operator.userId]);
+    const payment = {
+      refund: vi.fn().mockResolvedValue({ providerRefundId: `refund-${orderNumber}` }),
+    } as unknown as PaymentService;
+    const cx = new CxOperationsService(pool, payment);
+
+    await expect(
+      cx.refund(ready.guest, {
+        orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: `refund-${orderNumber}`,
+      }),
+    ).rejects.toThrow('Operations access is restricted.');
+    const [first, duplicate] = await Promise.all([
+      cx.refund(operator, {
+        orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: `refund-${orderNumber}`,
+      }),
+      cx.refund(operator, {
+        orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: `refund-${orderNumber}`,
+      }),
+    ]);
+    expect(payment.refund).toHaveBeenCalledTimes(1);
+    expect([first.duplicate, duplicate.duplicate].filter(Boolean)).toHaveLength(1);
+    await expect(
+      cx.refund(operator, {
+        orderNumber,
+        amountCents: 999999,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: `over-cap-${orderNumber}`,
+      }),
+    ).rejects.toThrow('Refund exceeds the captured payment.');
+    const item = await pool.query<{ id: string }>(
+      `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+      [orderNumber],
+    );
+    const reprint = await cx.createReprint(operator, {
+      orderNumber,
+      orderItemId: item.rows[0]!.id,
+      reasonCode: 'PRODUCTION_DEFECT',
+      estimatedCostCents: 725,
+    });
+    await expect(cx.approveReprint(operator, reprint.id, true)).rejects.toThrow(
+      'Reprint provider must be requalified before approval.',
+    );
+    const original = await commerce.getOrder(ready.guest, orderNumber);
+    expect(original?.status).toBe('PAID');
+    const reprintRow = await pool.query<{ status: string; original_order_item_id: string }>(
+      `SELECT status, original_order_item_id FROM app.order_reprints WHERE id = $1`,
+      [reprint.id],
+    );
+    expect(reprintRow.rows[0]).toEqual({
+      status: 'PENDING_REVIEW',
+      original_order_item_id: item.rows[0]!.id,
+    });
+    await cx.recordProviderDefect(operator, {
+      orderNumber,
+      defectCode: 'MISPRINT',
+      reprintId: reprint.id,
+    });
+    const defect = await pool.query<{
+      defect_code: string;
+      reprint_id: string;
+      order_item_id: string;
+      product_model_id: string;
+    }>(
+      `SELECT defect_code, reprint_id, order_item_id, product_model_id FROM app.provider_defects WHERE reprint_id = $1`,
+      [reprint.id],
+    );
+    expect(defect.rows[0]).toMatchObject({
+      defect_code: 'MISPRINT',
+      reprint_id: reprint.id,
+      order_item_id: item.rows[0]!.id,
+      product_model_id: 'essential-dtg-tee',
+    });
+    await cx.addCustomerNote(operator, {
+      orderNumber,
+      customerEmail: `cx-note-${randomBytes(4).toString('hex')}@example.test`,
+      body: 'Customer requested a delivery update.',
+    });
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM app.order_operational_audits WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1) AND action = 'customer_note_added'`,
+          [orderNumber],
+        )
+      ).rows[0]?.count,
+    ).toBe('1');
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM app.external_fulfillment_orders WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+          [orderNumber],
+        )
+      ).rows[0]?.count,
+    ).toBe('0');
+  });
+
   it('uses trusted review, fresh final routing, derivative readiness, and one idempotent production boundary', async () => {
     const ready = await readyProject(pool, identity, projects, storage);
     const cart = await commerce.createCart(ready.guest, {
@@ -432,6 +560,34 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       externalEventId: `ops-delivered-${randomBytes(5).toString('hex')}`,
     });
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('DELIVERED');
+    const item = await pool.query<{ id: string }>(
+      `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+      [orderNumber],
+    );
+    const cx = new CxOperationsService(pool, new FakePaymentService());
+    const reprint = await cx.createReprint(account, {
+      orderNumber,
+      orderItemId: item.rows[0]!.id,
+      reasonCode: 'DAMAGED_IN_TRANSIT',
+      estimatedCostCents: 725,
+    });
+    await cx.approveReprint(account, reprint.id, true);
+    expect(
+      (
+        await pool.query<{ status: string; replacement_external_order_id: string | null }>(
+          `SELECT status, replacement_external_order_id FROM app.order_reprints WHERE id = $1`,
+          [reprint.id],
+        )
+      ).rows[0],
+    ).toEqual({ status: 'APPROVED', replacement_external_order_id: null });
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM app.external_fulfillment_orders WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+          [orderNumber],
+        )
+      ).rows[0]?.count,
+    ).toBe('1');
   });
 
   it('hard prepress blockers cannot create a cart', async () => {

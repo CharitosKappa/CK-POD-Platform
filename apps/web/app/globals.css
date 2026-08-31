@@ -930,6 +930,40 @@ select:focus-visible {
   display: grid;
   gap: 12px;
 }
+
+.ops-dashboard-visibility {
+  margin-top: 1.75rem;
+  border-top: 1px solid #e0e6e2;
+  padding-top: 1.25rem;
+}
+
+.ops-dashboard-queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.65rem;
+}
+
+.ops-dashboard-queue-grid p {
+  display: flex;
+  min-height: 4.6rem;
+  flex-direction: column;
+  justify-content: space-between;
+  margin: 0;
+  border: 1px solid #e0e6e2;
+  border-radius: 0.75rem;
+  background: #fbfcfa;
+  padding: 0.8rem;
+}
+
+.ops-dashboard-queue-grid strong {
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+
+.ops-dashboard-queue-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
 .ops-queue-card {
   background: #fff;
   border: 1px solid #dbe5df;
