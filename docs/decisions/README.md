@@ -12,6 +12,10 @@ Milestone 6 commerce decisions are recorded in ADRs [0038](0038-platform-owned-p
 
 Milestone 7 is recorded in [ADR 0047](0047-order-operations-transition-authority.md). It assigns all post-payment canonical transitions to the platform-owned operations service and keeps provider updates observational until they pass the same state validator.
 
+Milestone 8 is recorded in [ADR 0048](0048-policy-engine-and-final-artwork-gate.md). It keeps
+provider classifiers behind platform-owned, versioned policy semantics and makes final-artwork policy
+eligibility a prerequisite for M7 production readiness; it does not complete G5.
+
 ## Statuses
 
 - **Proposed** — under review; not yet used as a project decision.

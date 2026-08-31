@@ -148,4 +148,6 @@ export class ProviderExecutionError extends Error {
 
 export class GenerationAccessError extends Error {}
 export class GenerationCreditError extends Error {}
+/** Consumer-safe error raised before any paid provider request is made. */
+export class GenerationPolicyBlockedError extends Error {}
 import type { ResolvedStyleSelection } from './styles';

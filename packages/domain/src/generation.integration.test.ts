@@ -17,6 +17,7 @@ import type {
   ProviderGenerationOutput,
   ProviderGenerationRequest,
 } from './ai-contracts.js';
+import { GenerationPolicyBlockedError } from './ai-contracts.js';
 import {
   DeterministicSvgProvider,
   ProviderRegistry,
@@ -34,6 +35,7 @@ import {
   extractExactText,
 } from './prompt-pipeline.js';
 import { ProjectService } from './projects.js';
+import { DeterministicPolicyClassifier, PolicyService } from './policy.js';
 
 const integrationDatabaseUrl = process.env.DATABASE_URL;
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
@@ -82,6 +84,42 @@ integrationSuite('AI generation orchestration integration', () => {
     expect(await harness.storage.exists(asset.rows[0]?.storage_key as string)).toBe(true);
     expect(JSON.stringify(delivered)).not.toContain('storage_key');
     await harness.close();
+  });
+
+  it('blocks a prohibited prompt before provider work or credit consumption and persists its evaluation', async () => {
+    const queue = new InMemoryJobQueue();
+    const credits = new CreditService(pool, { guestFreeCredits: 1, registeredFreeCredits: 0 });
+    const policy = new PolicyService(pool);
+    const generations = new GenerationService(
+      pool,
+      queue,
+      credits,
+      new DefaultPromptPipeline(),
+      { allow: async () => true },
+      {},
+      policy,
+    );
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    await expect(
+      generations.create(guest, project.id, { rawPrompt: 'A Mickey fan art shirt.' }),
+    ).rejects.toBeInstanceOf(GenerationPolicyBlockedError);
+    const evaluations = await pool.query<{ machine_result: string; stage: string }>(
+      `SELECT machine_result, stage FROM app.policy_evaluations WHERE project_id = $1 ORDER BY created_at DESC`,
+      [project.id],
+    );
+    expect(evaluations.rows[0]).toEqual({
+      machine_result: 'BLOCK',
+      stage: 'PROMPT_PRE_GENERATION',
+    });
+    const consumed = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.credit_ledger l
+       JOIN app.generations g ON g.id = l.generation_id
+       WHERE l.entry_type = 'CONSUME' AND g.project_id = $1`,
+      [project.id],
+    );
+    expect(consumed.rows[0]?.count).toBe('0');
+    await queue.close();
   });
 
   it('prevents another guest session from reading a generation', async () => {
@@ -445,6 +483,39 @@ integrationSuite('AI generation orchestration integration', () => {
 
   it('extracts exact text as structured metadata rather than relying on model spelling', () => {
     expect(extractExactText('A shirt with the phrase "CREATE KINDLY".')).toEqual(['CREATE KINDLY']);
+  });
+});
+
+describe('deterministic policy classifier', () => {
+  it('keeps IP, adult/violence, protected text, and political-expression categories distinct', async () => {
+    const classifier = new DeterministicPolicyClassifier();
+    await expect(
+      classifier.classify({ stage: 'PROMPT_PRE_GENERATION', text: 'Nike-style logo' }),
+    ).resolves.toMatchObject({ outcome: 'REVIEW' });
+    await expect(
+      classifier.classify({
+        stage: 'PROMPT_PRE_GENERATION',
+        text: 'A political voting message without a likeness',
+      }),
+    ).resolves.toMatchObject({ outcome: 'ALLOW' });
+    await expect(
+      classifier.classify({
+        stage: 'PROMPT_PRE_GENERATION',
+        text: 'Bohemian Rhapsody song lyrics',
+      }),
+    ).resolves.toMatchObject({ outcome: 'REVIEW' });
+    await expect(
+      classifier.classify({ stage: 'PROMPT_PRE_GENERATION', text: 'Explicit sex merchandise' }),
+    ).resolves.toMatchObject({ outcome: 'BLOCK' });
+    await expect(
+      classifier.classify({
+        stage: 'PROMPT_PRE_GENERATION',
+        text: 'Graphic gore assault rifle shirt',
+      }),
+    ).resolves.toMatchObject({ outcome: 'BLOCK' });
+    await expect(
+      classifier.classify({ stage: 'PROMPT_PRE_GENERATION', text: 'policy:unknown' }),
+    ).resolves.toMatchObject({ outcome: 'UNKNOWN' });
   });
 });
 

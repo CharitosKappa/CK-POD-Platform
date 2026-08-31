@@ -13,6 +13,7 @@ import type { ProviderRegistry } from './ai-providers';
 import type { CreditService } from './credits';
 import { newPrivateAssetKey, type GenerationService, type GenerationWorkItem } from './generations';
 import { recordGenerationAnalyticsEvent } from './analytics';
+import type { PolicyService } from './policy';
 
 interface AttemptRow {
   id: string;
@@ -32,6 +33,7 @@ export class GenerationWorkerService {
     private readonly moderation: GenerationModerationService,
     private readonly validation: GenerationValidationService,
     private readonly logger: AppLogger,
+    private readonly policy?: PolicyService,
   ) {}
 
   async process(generationId: string): Promise<void> {
@@ -43,7 +45,24 @@ export class GenerationWorkerService {
       const referencesResult = await this.moderation.checkReferenceAssets({
         assetIds: generation.referenceAssetIds,
       });
-      if (!promptResult.accepted || !referencesResult.accepted) {
+      const referencePolicy = this.policy
+        ? await Promise.all(
+            generation.referenceAssetIds.map((assetId) =>
+              this.policy!.evaluate({
+                stage: 'REFERENCE_UPLOAD',
+                projectId: generation.projectId,
+                generationId: generation.id,
+                assetId,
+                metadata: { source: 'generation-reference' },
+              }),
+            ),
+          )
+        : [];
+      if (
+        !promptResult.accepted ||
+        !referencesResult.accepted ||
+        referencePolicy.some((evaluation) => evaluation.outcome !== 'ALLOW')
+      ) {
         await this.generations.reject(generation.id, 'MODERATION_REJECTION');
         this.logger.info('generation.rejected_internal', {
           generationId: generation.id,
@@ -140,7 +159,20 @@ export class GenerationWorkerService {
           body: output.body,
           contentType: output.contentType,
         });
-        if (!validation.accepted || !outputModeration.accepted) {
+        const outputPolicy = this.policy
+          ? await this.policy.evaluate({
+              stage: 'GENERATED_OUTPUT',
+              projectId: generation.projectId,
+              generationId: generation.id,
+              imageBytes: output.body,
+              metadata: { contentType: output.contentType, provider: provider.configuration.id },
+            })
+          : null;
+        if (
+          !validation.accepted ||
+          !outputModeration.accepted ||
+          (outputPolicy !== null && outputPolicy.outcome !== 'ALLOW')
+        ) {
           await this.storage.delete(sourceKey);
           await this.generations.reject(
             generation.id,

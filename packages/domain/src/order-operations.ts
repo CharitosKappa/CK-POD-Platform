@@ -12,6 +12,8 @@ import {
   FulfillmentRoutingService,
   type RoutingDecision,
 } from './routing';
+import { PolicyService } from './policy';
+import type { PolicyOutcome } from './policy';
 
 export const canonicalOrderStates = [
   'DRAFT',
@@ -46,7 +48,17 @@ export const operationalReasonCodes = [
   'PRODUCTION_PROFILE_MISMATCH',
   'MODERATION_REVIEW',
   'IP_REVIEW',
+  'COPYRIGHT_CHARACTER',
+  'FAN_ART',
+  'BRAND_LOGO',
+  'TRADEMARK_RISK',
   'PUBLIC_PERSON_LIKENESS',
+  'PROTECTED_LYRICS',
+  'ADULT_CONTENT',
+  'VIOLENCE_POLICY',
+  'WEAPON_POLICY',
+  'POLICY_UNCERTAIN',
+  'OTHER_COMPLIANCE_REVIEW',
   'PROTECTED_TEXT_OR_LYRICS',
   'LOGO_OR_BRAND_CONCERN',
   'POLICY_UNKNOWN',
@@ -86,6 +98,9 @@ export interface ReviewQueueItem {
   quantity: number;
   createdAt: Date;
   latestReason: string | null;
+  policyOutcome: PolicyOutcome | null;
+  policyFindingCodes: string[];
+  policyRulesetId: string | null;
 }
 
 /**
@@ -104,6 +119,7 @@ export class OrderOperationsService {
     storage: PrivateObjectStorage,
     private readonly fulfillment: FulfillmentService,
     private readonly configuration: OrderOperationsConfiguration,
+    private readonly policy: PolicyService = new PolicyService(pool),
   ) {
     this.routing = new FulfillmentRoutingService(pool, fulfillment);
     this.derivatives = new ProviderDerivativeService(pool, storage);
@@ -138,12 +154,21 @@ export class OrderOperationsService {
       quantity: number;
       created_at: Date;
       latest_reason: string | null;
+      policy_outcome: PolicyOutcome | null;
+      policy_finding_codes: string[];
+      policy_ruleset_id: string | null;
     }>(
       `SELECT o.order_number, o.status, o.customer_email, m.display_name AS product_name,
               oi.item_snapshot->>'colorCode' AS color_code, oi.quantity, o.created_at,
-              (SELECT r.reason_code FROM app.order_reviews r WHERE r.order_id = o.id ORDER BY r.created_at DESC LIMIT 1) AS latest_reason
+              (SELECT r.reason_code FROM app.order_reviews r WHERE r.order_id = o.id ORDER BY r.created_at DESC LIMIT 1) AS latest_reason,
+              pe.machine_result AS policy_outcome, pe.ruleset_id AS policy_ruleset_id,
+              COALESCE((SELECT array_agg(f.code ORDER BY f.created_at) FROM app.policy_findings f WHERE f.evaluation_id = pe.id), ARRAY[]::text[]) AS policy_finding_codes
        FROM app.orders o JOIN app.order_items oi ON oi.order_id = o.id
        JOIN app.product_models m ON m.id = oi.product_model_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM app.policy_evaluations x WHERE x.order_id = o.id
+           AND x.stage = 'FINAL_ARTWORK_PRE_PRODUCTION' ORDER BY x.created_at DESC LIMIT 1
+       ) pe ON true
        WHERE ${where.join(' AND ')} ORDER BY o.created_at ASC`,
       values,
     );
@@ -156,6 +181,9 @@ export class OrderOperationsService {
       quantity: row.quantity,
       createdAt: row.created_at,
       latestReason: row.latest_reason,
+      policyOutcome: row.policy_outcome,
+      policyFindingCodes: row.policy_finding_codes,
+      policyRulesetId: row.policy_ruleset_id,
     }));
   }
 
@@ -182,6 +210,19 @@ export class OrderOperationsService {
       session,
       input.stage === 'PREPRESS' ? ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER'] : ['ADMIN', 'CX_OPS'],
     );
+    if (input.stage === 'COMPLIANCE') {
+      const evaluation = await this.policy.evaluateFinalArtworkForOrder(input.orderNumber);
+      if (evaluation.outcome === 'BLOCK' && input.outcome !== 'REJECTED')
+        throw new OrderTransitionError('Final artwork policy blocked production eligibility.');
+      if (!session.userId) throw new OrderOperationsAccessError('Operations access is restricted.');
+      await this.policy.recordHumanDecision({
+        evaluationId: evaluation.id,
+        actorUserId: session.userId,
+        decision: input.outcome,
+        reasonCode: input.reasonCode,
+        ...(input.notes ? { notes: input.notes } : {}),
+      });
+    }
     const target = reviewTarget(input.stage, input.outcome);
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, input.orderNumber);
@@ -830,6 +871,8 @@ export class OrderOperationsService {
     if (row.derivative_status !== 'READY' || !row.derivative_asset_id || !row.derivative_id)
       blockers.push('PROVIDER_DERIVATIVE');
     if (!row.external_product_id || !row.external_variant_id) blockers.push('PROVIDER_MAPPING');
+    const policy = await this.policy.finalArtworkEligibility(orderNumber);
+    if (!policy.eligible) blockers.push(policy.code);
     return {
       ...row,
       blockers,

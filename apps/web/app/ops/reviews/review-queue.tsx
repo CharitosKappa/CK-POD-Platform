@@ -11,6 +11,9 @@ type ReviewOrder = {
   quantity: number;
   createdAt: string;
   latestReason: string | null;
+  policyOutcome: 'ALLOW' | 'BLOCK' | 'REVIEW' | 'UNKNOWN' | null;
+  policyFindingCodes: string[];
+  policyRulesetId: string | null;
 };
 
 /** Deliberately compact operational queue; deeper private detail is server-only. */
@@ -76,6 +79,15 @@ export function ReviewQueue() {
               {order.customerEmail}
               {order.latestReason ? ` · ${order.latestReason.replaceAll('_', ' ')}` : ''}
             </small>
+            {order.policyOutcome ? (
+              <p className="ops-policy-summary">
+                Policy: {order.policyOutcome}
+                {order.policyFindingCodes.length
+                  ? ` · ${order.policyFindingCodes.map((code) => code.replaceAll('_', ' ')).join(', ')}`
+                  : ''}
+                {order.policyRulesetId ? ` · ${order.policyRulesetId}` : ''}
+              </p>
+            ) : null}
             <div className="ops-queue-actions">
               {order.status === 'PAID' ? (
                 <button

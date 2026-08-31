@@ -14,6 +14,7 @@ import { CreditService } from './credits';
 import { GenerationWorkerService } from './generation-worker';
 import { GenerationService } from './generations';
 import { PrepressService } from './prepress';
+import { PolicyService } from './policy';
 import {
   AllowAllDevelopmentModeration,
   AllowAllDevelopmentValidation,
@@ -44,6 +45,7 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
   const providers = createConfiguredProviderRegistry(
     parseProviderConfigurations(options.providerConfiguration),
   );
+  const policy = new PolicyService(options.pool);
   const generations = new GenerationService(
     options.pool,
     options.queue,
@@ -51,6 +53,7 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
     options.promptPipeline ?? new DefaultPromptPipeline(),
     options.rateLimiter ?? new AllowAllGenerationRateLimiter(),
     { maxReferenceAssets: options.maxReferenceAssets },
+    policy,
   );
   const worker = new GenerationWorkerService(
     options.pool,
@@ -61,7 +64,8 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
     options.moderation ?? new AllowAllDevelopmentModeration(),
     options.validation ?? new AllowAllDevelopmentValidation(),
     options.logger,
+    policy,
   );
   const prepress = new PrepressService(options.pool, options.queue, options.storage);
-  return { credits, providers, generations, worker, prepress };
+  return { credits, providers, generations, worker, prepress, policy };
 }

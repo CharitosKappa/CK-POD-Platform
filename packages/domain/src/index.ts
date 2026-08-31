@@ -56,6 +56,7 @@ export * from './styles';
 export * from './routing';
 export * from './commerce-contracts';
 export * from './payments';
+export * from './policy';
 export * from './mockups';
 export * from './commerce';
 export * from './order-operations';

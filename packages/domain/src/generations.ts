@@ -9,6 +9,7 @@ import {
   type GenerationStatus,
   type AiTask,
   GenerationAccessError,
+  GenerationPolicyBlockedError,
   type ProductGenerationContext,
   type PromptPipeline,
 } from './ai-contracts';
@@ -20,6 +21,7 @@ import {
   type StyleSelection,
 } from './styles';
 import { recordGenerationAnalyticsEvent } from './analytics';
+import type { PolicyService } from './policy';
 
 const generationQueueName = 'ai-generation';
 const generationJobName = 'run-generation';
@@ -59,6 +61,7 @@ export interface GenerationJobPayload {
 
 interface ProjectContextRow {
   id: string;
+  active_version_id: string | null;
   product_model_id: string;
   selected_color_code: string;
   style_selection_mode: StyleSelection['selectionMode'];
@@ -70,6 +73,7 @@ interface ProjectContextRow {
 }
 
 interface ProjectGenerationContext extends ProductGenerationContext {
+  active_version_id: string | null;
   style_selection_mode: StyleSelection['selectionMode'];
   style_family_id: string | null;
   style_preset_id: string | null;
@@ -111,6 +115,7 @@ export class GenerationService {
     private readonly promptPipeline: PromptPipeline,
     private readonly rateLimiter: GenerationRateLimiter,
     options: GenerationServiceOptions = {},
+    private readonly policy?: PolicyService,
   ) {
     this.maxReferenceAssets = options.maxReferenceAssets ?? 5;
   }
@@ -163,6 +168,19 @@ export class GenerationService {
         productContext: context,
         referenceAssetIds,
       });
+      if (this.policy) {
+        const evaluation = await this.policy.evaluate({
+          stage: 'PROMPT_PRE_GENERATION',
+          projectId,
+          ...(context.active_version_id ? { projectVersionId: context.active_version_id } : {}),
+          text: [input.rawPrompt, ...prepared.metadata.requestedExactText].join('\n'),
+          metadata: { task: input.task ?? 'TEXT_TO_ARTWORK', referenceAssetIds },
+        });
+        if (evaluation.outcome === 'BLOCK')
+          throw new GenerationPolicyBlockedError(
+            'This request cannot be used to create merchandise. Please try a different idea.',
+          );
+      }
       const result = await client.query<GenerationRow>(
         `INSERT INTO app.generations (
           project_id, requested_by_session_id, requested_by_user_id, status,
@@ -336,7 +354,7 @@ async function loadProjectContext(
   projectId: string,
 ): Promise<ProjectGenerationContext | null> {
   const result = await client.query<ProjectContextRow>(
-    `SELECT p.id, p.product_model_id, p.selected_color_code, p.style_selection_mode,
+    `SELECT p.id, p.active_version_id, p.product_model_id, p.selected_color_code, p.style_selection_mode,
             p.style_family_id, p.style_preset_id, p.style_preset_version,
             model.display_name, variant.color_name
      FROM app.projects p
@@ -355,6 +373,7 @@ async function loadProjectContext(
         colorCode: row.selected_color_code,
         colorName: row.color_name,
         printArea: {},
+        active_version_id: row.active_version_id,
         style_selection_mode: row.style_selection_mode,
         style_family_id: row.style_family_id,
         style_preset_id: row.style_preset_id,
