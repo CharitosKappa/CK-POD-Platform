@@ -17,10 +17,10 @@ import { PrepressService } from './prepress';
 import { PolicyService } from './policy';
 import {
   AllowAllDevelopmentModeration,
-  AllowAllDevelopmentValidation,
   AllowAllGenerationRateLimiter,
   DefaultPromptPipeline,
 } from './prompt-pipeline';
+import { DefaultProviderOutputValidation } from './provider-output-validation';
 
 export interface GenerationRuntimeOptions {
   pool: SqlPool;
@@ -62,7 +62,7 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
     providers,
     options.storage,
     options.moderation ?? new AllowAllDevelopmentModeration(),
-    options.validation ?? new AllowAllDevelopmentValidation(),
+    options.validation ?? new DefaultProviderOutputValidation(),
     options.logger,
     policy,
   );

@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./integrity": {
+      "types": "./src/integrity.ts",
+      "default": "./src/integrity.ts"
     }
   },
   "scripts": {
@@ -17,7 +21,7 @@
   },
   "dependencies": {
     "dotenv": "^16.6.1",
-    "drizzle-orm": "^0.44.5",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.16.3"
   },
   "devDependencies": {

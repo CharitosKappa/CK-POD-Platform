@@ -34,5 +34,12 @@ describe('MemoryObjectStorage', () => {
         contentType: 'image/png',
       }),
     ).rejects.toThrow(/traversal/);
+    await expect(
+      storage.put({
+        key: '/absolute/private.png',
+        body: new Uint8Array(),
+        contentType: 'image/png',
+      }),
+    ).rejects.toThrow(/relative paths/);
   });
 });

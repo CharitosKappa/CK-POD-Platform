@@ -241,6 +241,7 @@ export class LifecycleOrchestrator {
     private readonly pool: SqlPool,
     private readonly messaging: LifecycleMessagingService = new FakeLifecycleMessagingService(),
     private readonly provider: 'FAKE' | 'KLAVIYO' = 'FAKE',
+    private readonly marketingEnabled = true,
   ) {}
 
   async trigger(input: {
@@ -252,6 +253,8 @@ export class LifecycleOrchestrator {
     projectId?: string;
     payload: Record<string, unknown>;
   }): Promise<void> {
+    // Transactional delivery is never coupled to the marketing kill switch.
+    if (input.classification === 'MARKETING' && !this.marketingEnabled) return;
     const pending = await this.pool.query<{ id: string }>(
       `INSERT INTO app.lifecycle_deliveries (message_type, channel, classification, recipient_email, order_id, project_id, idempotency_key, provider, status, payload)
        VALUES ($1, 'EMAIL', $2, $3, $4::uuid, $5::uuid, $6, $7, 'PENDING', $8::jsonb)

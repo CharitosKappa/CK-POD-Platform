@@ -45,10 +45,18 @@ const runtime = createGenerationRuntime({
   maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,
 });
 
-await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
-logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
-await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
-logger.info('worker.prepress_consumer_ready', { queue: 'prepress-render' });
+if (environment.GENERATION_ENABLED) {
+  await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
+  logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
+  await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
+  logger.info('worker.prepress_consumer_ready', { queue: 'prepress-render' });
+  const recovered = await runtime.generations.recoverStaleProcessing(15 * 60_000);
+  await Promise.all(recovered.map((generationId) => runtime.worker.process(generationId)));
+  if (recovered.length)
+    logger.warn('worker.stale_generations_recovered', { count: recovered.length });
+} else {
+  logger.warn('worker.generation_consumers_disabled');
+}
 
 const lifecycle = new LifecycleOrchestrator(
   database.pool,
@@ -59,6 +67,7 @@ const lifecycle = new LifecycleOrchestrator(
       )
     : new FakeLifecycleMessagingService(),
   environment.LIFECYCLE_ADAPTER === 'klaviyo' ? 'KLAVIYO' : 'FAKE',
+  environment.LIFECYCLE_MARKETING_ENABLED,
 );
 async function processLifecycle(): Promise<void> {
   try {

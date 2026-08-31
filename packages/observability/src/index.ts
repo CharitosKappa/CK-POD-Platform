@@ -31,7 +31,8 @@ const levelWeight: Record<LogLevel, number> = {
   error: 40,
 };
 
-const sensitiveKey = /(authorization|cookie|password|secret|token|api[-_]?key)/i;
+const sensitiveKey =
+  /(authorization|cookie|password|secret|token|api[-_]?key|prompt|exact.?text|artwork|asset|email|customer|address|payment|webhook|signature|storage|url)/i;
 
 export function parseLogLevel(value: string | undefined): LogLevel {
   return value === 'debug' || value === 'warn' || value === 'error' || value === 'info'

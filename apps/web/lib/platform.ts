@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 
-import { parseServerEnvironment } from '@let-it-be/config';
+import { operationalCapability, parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
@@ -32,7 +32,7 @@ declare global {
   var letItBePool: SqlPool | undefined;
 }
 
-function databasePool(): SqlPool {
+export function databasePool(): SqlPool {
   if (!globalThis.letItBePool) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) throw new Error('DATABASE_URL is required for application requests.');
@@ -138,10 +138,8 @@ export async function orderOperationsRuntime() {
     fulfillment,
     {
       fulfillmentAdapter: environment.FULFILLMENT_ADAPTER,
-      realProductionSubmissionEnabled:
-        environment.FULFILLMENT_ADAPTER === 'printify' &&
-        environment.PRINTIFY_PRODUCTION_SUBMISSION_ENABLED &&
-        environment.APP_ENV === 'production',
+      realProductionSubmissionEnabled: operationalCapability(environment, 'PRODUCTION_SUBMISSION')
+        .enabled,
     },
     undefined,
     lifecycleRuntime(pool, environment),
@@ -161,6 +159,7 @@ function lifecycleRuntime(pool: SqlPool, parsed?: ReturnType<typeof parseServerE
     pool,
     messaging,
     environment.LIFECYCLE_ADAPTER === 'klaviyo' ? 'KLAVIYO' : 'FAKE',
+    operationalCapability(environment, 'LIFECYCLE_MARKETING').enabled,
   );
 }
 
@@ -173,17 +172,37 @@ export async function requireSession(createGuest = true): Promise<ActiveSession>
   if (!createGuest) throw new Error('Authentication is required.');
 
   const created = await identity.createGuestSession();
-  store.set(sessionCookieName, created.token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: 60 * 60 * 24 * 7,
-  });
+  setSessionCookie(store, created.token);
   return {
     id: created.id,
     userId: created.userId,
     kind: created.kind,
     expiresAt: created.expiresAt,
   };
+}
+
+export function setSessionCookie(store: Awaited<ReturnType<typeof cookies>>, token: string): void {
+  store.set(sessionCookieName, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure:
+      process.env.SESSION_COOKIE_SECURE === 'true' ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.APP_ENV === 'production',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 7,
+  });
+}
+
+export function clearSessionCookie(store: Awaited<ReturnType<typeof cookies>>): void {
+  store.set(sessionCookieName, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure:
+      process.env.SESSION_COOKIE_SECURE === 'true' ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.APP_ENV === 'production',
+    path: '/',
+    maxAge: 0,
+  });
 }

@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { handleRouteError } from '../../../../../../lib/http';
 import { orderOperationsRuntime, requireSession } from '../../../../../../lib/platform';
 import { isOperationalReasonCode, type OperationalReasonCode } from '@let-it-be/domain';
+import { createLogger, parseLogLevel } from '@let-it-be/observability';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,8 +50,16 @@ export async function POST(
       });
     else if (body.action === 'SUBMIT_PRODUCTION') {
       const result = await operations.submitProduction(session, orderNumber);
+      createLogger({ service: 'web', minimumLevel: parseLogLevel(process.env.LOG_LEVEL) }).info(
+        'operations.order_action_completed',
+        { requestId: request.headers.get('x-request-id'), orderNumber, action: body.action },
+      );
       return NextResponse.json({ ok: true, result });
     } else return NextResponse.json({ error: 'Unsupported operations action.' }, { status: 400 });
+    createLogger({ service: 'web', minimumLevel: parseLogLevel(process.env.LOG_LEVEL) }).info(
+      'operations.order_action_completed',
+      { requestId: request.headers.get('x-request-id'), orderNumber, action: body.action },
+    );
     return NextResponse.json({ ok: true });
   } catch (error) {
     return handleRouteError(error);

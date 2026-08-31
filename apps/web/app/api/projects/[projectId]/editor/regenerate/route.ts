@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 
+import { operationalCapability, parseServerEnvironment } from '@let-it-be/config';
 import { selectedGeneratedLayer } from '@let-it-be/domain';
 
 import { generationRuntime } from '../../../../../../lib/generation-runtime';
 import { handleRouteError } from '../../../../../../lib/http';
 import { requireSession, services } from '../../../../../../lib/platform';
+import { enforceRateLimit } from '../../../../../../lib/security';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +15,9 @@ export async function POST(
   context: { params: Promise<{ projectId: string }> },
 ): Promise<NextResponse> {
   try {
+    const capability = operationalCapability(parseServerEnvironment(process.env), 'GENERATION');
+    if (!capability.enabled)
+      return NextResponse.json({ error: capability.message }, { status: 503 });
     const { projectId } = await context.params;
     const body = (await request.json()) as { layerId?: string; prompt?: string };
     if (
@@ -26,6 +31,12 @@ export async function POST(
       );
     }
     const session = await requireSession();
+    await enforceRateLimit(request, {
+      action: 'regeneration',
+      subject: session.userId ?? session.id,
+      maxRequests: 10,
+      windowMs: 60 * 60_000,
+    });
     const versions = await services().projects.getVersions(session, projectId);
     const active = versions[0];
     if (!active) return NextResponse.json({ error: 'Project not found.' }, { status: 404 });

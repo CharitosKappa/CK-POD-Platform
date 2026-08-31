@@ -35,6 +35,7 @@ import {
   extractExactText,
 } from './prompt-pipeline.js';
 import { ProjectService } from './projects.js';
+import { DefaultProviderOutputValidation } from './provider-output-validation.js';
 import { DeterministicPolicyClassifier, PolicyService } from './policy.js';
 
 const integrationDatabaseUrl = process.env.DATABASE_URL;
@@ -283,6 +284,34 @@ integrationSuite('AI generation orchestration integration', () => {
     await timeoutHarness.close();
   });
 
+  it('recovers a stale claimed generation after worker restart without duplicate credits', async () => {
+    const harness = await createHarness({ startConsumer: false });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A recovery-safe mountain badge.',
+    });
+    await pool.query(
+      `UPDATE app.generations
+       SET status = 'PROCESSING', started_at = now() - interval '16 minutes'
+       WHERE id = $1`,
+      [created.id],
+    );
+    expect(await harness.generations.recoverStaleProcessing(15 * 60_000)).toEqual([created.id]);
+    await harness.worker.process(created.id);
+    expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
+      status: 'SUCCEEDED',
+      creditStatus: 'CONSUMED',
+    });
+    const consumes = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.credit_ledger
+       WHERE generation_id = $1 AND entry_type = 'CONSUME'`,
+      [created.id],
+    );
+    expect(consumes.rows[0]?.count).toBe('1');
+    await harness.close();
+  });
+
   it('retries/falls back without double-consuming a credit and records every attempt', async () => {
     const fallback = new CapturingProvider('fallback-provider', 'fallback-v1');
     const harness = await createHarness({
@@ -342,6 +371,32 @@ integrationSuite('AI generation orchestration integration', () => {
       creditStatus: 'NOT_CONSUMED',
     });
     expect(second).toEqual(first);
+    expect(await harness.credits.getBalance(guest)).toMatchObject({ balance: 1 });
+    await harness.close();
+  });
+
+  it('rejects MIME-spoofed provider artwork before persistent assets or renderer work', async () => {
+    const harness = await createHarness({
+      providers: [provider('malformed-provider', new MalformedProvider(), false)],
+      validation: new DefaultProviderOutputValidation(),
+    });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A malformed-provider safety test.',
+    });
+    await harness.queue.waitForIdle();
+    expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
+      status: 'REJECTED_INTERNAL',
+      creditStatus: 'NOT_CONSUMED',
+      failureCategory: 'INTERNAL_VALIDATION_FAILURE',
+    });
+    expect(
+      await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM app.assets WHERE generation_id = $1`,
+        [created.id],
+      ),
+    ).toMatchObject({ rows: [{ count: '0' }] });
     expect(await harness.credits.getBalance(guest)).toMatchObject({ balance: 1 });
     await harness.close();
   });
@@ -525,6 +580,7 @@ async function createHarness(
     moderation?: GenerationModerationService;
     validation?: GenerationValidationService;
     guestFreeCredits?: number;
+    startConsumer?: boolean;
   } = {},
 ) {
   const queue = new InMemoryJobQueue();
@@ -565,9 +621,10 @@ async function createHarness(
     input.validation ?? { validate: async () => ({ accepted: true }) },
     createLogger({ service: 'test', write: () => undefined }),
   );
-  const consumer = await startGenerationConsumer(queue, (generationId) =>
-    worker.process(generationId),
-  );
+  const consumer =
+    input.startConsumer === false
+      ? null
+      : await startGenerationConsumer(queue, (generationId) => worker.process(generationId));
   return {
     queue,
     storage,
@@ -575,7 +632,7 @@ async function createHarness(
     generations,
     worker,
     close: async () => {
-      await consumer.close();
+      await consumer?.close();
       await queue.close();
     },
   };
@@ -634,6 +691,24 @@ class CapturingProvider implements ImageGenerationService {
 class RejectingValidation implements GenerationValidationService {
   async validate(): Promise<ModerationResult> {
     return { accepted: false, reason: 'development rejection' };
+  }
+}
+
+class MalformedProvider implements ImageGenerationService {
+  readonly id = 'malformed-provider';
+  readonly model = 'malformed-v1';
+
+  supports(): boolean {
+    return true;
+  }
+
+  async generate(): Promise<ProviderGenerationOutput> {
+    return {
+      body: new TextEncoder().encode('<svg></svg>'),
+      contentType: 'image/png',
+      width: 100,
+      height: 100,
+    };
   }
 }
 

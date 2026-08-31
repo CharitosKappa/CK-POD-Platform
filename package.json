@@ -23,7 +23,12 @@
     "db:up": "docker compose up -d postgres redis",
     "db:down": "docker compose down",
     "db:migrate": "pnpm --filter @let-it-be/db migrate",
-    "db:verify": "pnpm --filter @let-it-be/db verify"
+    "db:verify": "pnpm --filter @let-it-be/db verify",
+    "db:integrity": "tsx scripts/verify-integrity.ts",
+    "rate-limit:prune": "tsx scripts/prune-rate-limits.ts",
+    "load:m10-rate-limit": "tsx scripts/m10-rate-limit-load.ts",
+    "load:m10-mixed-db": "tsx scripts/m10-mixed-db-load.ts",
+    "load:m10-sharp": "tsx scripts/m10-sharp-stress.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",

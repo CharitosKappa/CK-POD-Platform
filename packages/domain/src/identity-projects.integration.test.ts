@@ -53,6 +53,9 @@ integrationSuite('identity, projects, and catalog integration', () => {
     const accessible = await projects.get(account, project.id);
 
     expect(account.kind).toBe('AUTHENTICATED');
+    expect(account.token).not.toBe(guest.token);
+    expect(await identity.getSession(guest.token)).toBeNull();
+    expect((await identity.getSession(account.token))?.id).toBe(account.id);
     expect(accessible).toMatchObject({ id: project.id, selectedColorCode: 'white' });
     expect(
       (await projects.getVersions(account, project.id)).map((version) => version.id),
@@ -71,6 +74,8 @@ integrationSuite('identity, projects, and catalog integration', () => {
       'another-secure-password',
     );
     expect(await projects.get(otherAccount, project.id)).toBeNull();
+    await identity.invalidate(account);
+    expect(await identity.getSession(account.token)).toBeNull();
   });
 
   it('persists versions, skips unchanged autosave documents, and rejects stale writes', async () => {

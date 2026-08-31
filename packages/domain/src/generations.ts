@@ -275,6 +275,23 @@ export class GenerationService {
     return result.rows[0] ? this.getForWorker(generationId) : null;
   }
 
+  /**
+   * Startup recovery for a worker that died after claiming a job. Returning to
+   * QUEUED does not consume a credit or create an asset; the normal atomic
+   * claim/finalization path remains the sole delivery boundary.
+   */
+  async recoverStaleProcessing(maxAgeMs: number): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>(
+      `UPDATE app.generations
+       SET status = 'QUEUED', started_at = NULL
+       WHERE status = 'PROCESSING'
+         AND started_at < now() - ($1::text || ' milliseconds')::interval
+       RETURNING id`,
+      [String(maxAgeMs)],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
   async reject(
     generationId: string,
     category: Extract<

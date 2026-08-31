@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { integrityViolationCounts } from '@let-it-be/db/integrity';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -259,6 +260,23 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(
       commerce.getOrder(await identity.createGuestSession(), paid.orderNumber as string),
     ).resolves.toBeNull();
+
+    const orderId = (
+      await pool.query<{ id: string }>(`SELECT id FROM app.orders WHERE order_number = $1`, [
+        paid.orderNumber,
+      ])
+    ).rows[0]!.id;
+    await pool.query(`UPDATE app.orders SET status = 'DELIVERED' WHERE id = $1`, [orderId]);
+    expect((await integrityViolationCounts(pool)).delivered_without_shipment).toBe(1);
+
+    // A canonical provider delivery event is authoritative even before a carrier record arrives.
+    await pool.query(
+      `INSERT INTO app.order_fulfillment_status_events
+         (order_id, source, raw_status, normalized_status, disposition)
+       VALUES ($1, 'WEBHOOK', 'delivered', 'DELIVERED', 'APPLIED')`,
+      [orderId],
+    );
+    expect((await integrityViolationCounts(pool)).delivered_without_shipment).toBe(0);
   });
 
   it('preserves guest cart and order ownership when the guest becomes an account', async () => {
@@ -312,6 +330,31 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         idempotencyKey: `refund-${orderNumber}`,
       }),
     ).rejects.toThrow('Operations access is restricted.');
+    const reviewer = await identity.register(
+      await identity.createGuestSession(),
+      `reviewer-${randomBytes(6).toString('hex')}@example.test`,
+      'correct-horse-battery-staple',
+    );
+    await pool.query(`UPDATE app.users SET role = 'PREPRESS_REVIEWER' WHERE id = $1`, [
+      reviewer.userId,
+    ]);
+    await expect(cx.search(reviewer, orderNumber)).rejects.toThrow(
+      'Operations access is restricted.',
+    );
+    await expect(
+      cx.createReprint(reviewer, {
+        orderNumber,
+        orderItemId: '00000000-0000-0000-0000-000000000000',
+        reasonCode: 'PRODUCTION_DEFECT',
+      }),
+    ).rejects.toThrow('Operations access is restricted.');
+    await expect(
+      cx.dashboard(reviewer, new Date('2020-01-01T00:00:00.000Z'), new Date()),
+    ).rejects.toThrow('Operations access is restricted.');
+    await expect(
+      cx.analyticsReport(reviewer, new Date('2020-01-01T00:00:00.000Z'), new Date()),
+    ).rejects.toThrow('Operations access is restricted.');
+    await expect(cx.visibility(reviewer)).rejects.toThrow('Operations access is restricted.');
     const [first, duplicate] = await Promise.all([
       cx.refund(operator, {
         orderNumber,
@@ -473,6 +516,18 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(fulfillment.submitCalls).toBe(0);
     await expect(operations.submitProduction(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
+    );
+    expect(fulfillment.createCalls).toBe(0);
+    expect(fulfillment.submitCalls).toBe(0);
+    const productionKillSwitch = new OrderOperationsService(pool, storage, fulfillment, {
+      fulfillmentAdapter: 'printify',
+      realProductionSubmissionEnabled: false,
+    });
+    await expect(productionKillSwitch.submitProduction(account, orderNumber)).rejects.toThrow(
+      'Real production submission is disabled by environment safety configuration.',
+    );
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
+      'READY_FOR_PRODUCTION',
     );
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);

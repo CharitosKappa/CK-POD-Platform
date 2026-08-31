@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   FulfillmentIntegrationError,
@@ -85,5 +85,53 @@ describe('Printify fulfillment boundary', () => {
       code: 'UNKNOWN',
       retryable: false,
     });
+  });
+
+  it('maps real-adapter provider failures to safe operational categories', async () => {
+    for (const [status, code, retryable] of [
+      [401, 'AUTHENTICATION_ERROR', false],
+      [429, 'RATE_LIMIT', true],
+      [503, 'PROVIDER_ERROR', true],
+    ] as const) {
+      const adapter = new PrintifyFulfillmentAdapter({
+        apiToken: 'provider-secret-never-returned',
+        shopId: '123',
+        baseUrl: 'https://print.example.test',
+        fetch: vi.fn().mockResolvedValue(new Response('{}', { status })) as unknown as typeof fetch,
+      });
+      await expect(
+        adapter.createOrder({
+          idempotencyKey: `provider-${status}`,
+          externalProductId: '1',
+          items: [],
+        }),
+      ).rejects.toMatchObject({ code, retryable });
+    }
+
+    const networkFailure = new PrintifyFulfillmentAdapter({
+      apiToken: 'provider-secret-never-returned',
+      shopId: '123',
+      baseUrl: 'https://print.example.test',
+      fetch: vi.fn().mockRejectedValue(new Error('network unavailable')) as unknown as typeof fetch,
+    });
+    await expect(
+      networkFailure.createOrder({ idempotencyKey: 'network', externalProductId: '1', items: [] }),
+    ).rejects.toMatchObject({ code: 'NETWORK_ERROR', retryable: true });
+
+    const malformedResponse = new PrintifyFulfillmentAdapter({
+      apiToken: 'provider-secret-never-returned',
+      shopId: '123',
+      baseUrl: 'https://print.example.test',
+      fetch: vi
+        .fn()
+        .mockResolvedValue(new Response('not-json', { status: 200 })) as unknown as typeof fetch,
+    });
+    await expect(
+      malformedResponse.createOrder({
+        idempotencyKey: 'malformed',
+        externalProductId: '1',
+        items: [],
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE', retryable: false });
   });
 });

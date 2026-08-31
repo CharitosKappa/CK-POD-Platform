@@ -11,7 +11,15 @@ import {
   ProjectConflictError,
 } from '@let-it-be/domain';
 
+import { ApiRateLimitError } from './security';
+
 export function handleRouteError(error: unknown): NextResponse {
+  if (error instanceof ApiRateLimitError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 429, headers: { 'retry-after': '60' } },
+    );
+  }
   if (error instanceof Error && error.message === 'Authentication is required.') {
     return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   }

@@ -66,7 +66,11 @@ export class IdentityService {
       : null;
   }
 
-  async register(session: ActiveSession, email: string, password: string): Promise<ActiveSession> {
+  async register(
+    session: ActiveSession,
+    email: string,
+    password: string,
+  ): Promise<SessionWithToken> {
     validateCredentials(email, password);
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -92,7 +96,7 @@ export class IdentityService {
     return active;
   }
 
-  async login(session: ActiveSession, email: string, password: string): Promise<ActiveSession> {
+  async login(session: ActiveSession, email: string, password: string): Promise<SessionWithToken> {
     const normalizedEmail = email.trim().toLowerCase();
     const userResult = await this.pool.query<UserRow>(
       'SELECT id, email, password_hash FROM app.users WHERE email = $1',
@@ -112,7 +116,7 @@ export class IdentityService {
     client: SqlClient,
     session: ActiveSession,
     userId: string,
-  ): Promise<ActiveSession> {
+  ): Promise<SessionWithToken> {
     await client.query(
       `UPDATE app.projects
        SET owner_type = 'USER', owner_user_id = $1, owner_session_id = NULL,
@@ -131,15 +135,26 @@ export class IdentityService {
       [userId, session.id],
     );
     await migrateCreditAccount(client, session.id, userId);
+    const token = randomBytes(32).toString('base64url');
     const result = await client.query<SessionRow>(
-      `UPDATE app.sessions
-       SET user_id = $1, session_kind = 'AUTHENTICATED', last_seen_at = now()
-       WHERE id = $2
+      `INSERT INTO app.sessions (token_hash, user_id, session_kind, expires_at)
+       VALUES ($1, $2, 'AUTHENTICATED', now() + ($3::text || ' days')::interval)
        RETURNING id, user_id, session_kind, expires_at`,
-      [userId, session.id],
+      [hashToken(token), userId, String(SESSION_TTL_DAYS)],
     );
     const row = requireRow(result.rows[0], 'Could not establish authenticated session.');
-    return { id: row.id, userId: row.user_id, kind: row.session_kind, expiresAt: row.expires_at };
+    await client.query(`DELETE FROM app.sessions WHERE id = $1`, [session.id]);
+    return {
+      id: row.id,
+      userId: row.user_id,
+      kind: row.session_kind,
+      expiresAt: row.expires_at,
+      token,
+    };
+  }
+
+  async invalidate(session: ActiveSession): Promise<void> {
+    await this.pool.query(`DELETE FROM app.sessions WHERE id = $1`, [session.id]);
   }
 }
 

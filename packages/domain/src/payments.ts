@@ -260,6 +260,8 @@ function verifyStripeSignature(body: string, signature: string, secret: string):
   const timestamp = signature.match(/(?:^|,)t=(\d+)/)?.[1];
   const supplied = signature.match(/(?:^|,)v1=([a-f0-9]+)/)?.[1];
   if (!timestamp || !supplied) return false;
+  const ageSeconds = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+  if (!Number.isFinite(ageSeconds) || ageSeconds > 300) return false;
   const expected = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
   const expectedBuffer = Buffer.from(expected, 'hex');
   const suppliedBuffer = Buffer.from(supplied, 'hex');

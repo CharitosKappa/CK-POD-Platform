@@ -68,11 +68,12 @@ try {
         'provider_defects',
         'customer_notes',
         'lifecycle_deliveries',
+        'api_rate_limit_buckets',
       ],
     ],
   );
 
-  if (result.rows.length !== 57) {
+  if (result.rows.length !== 58) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

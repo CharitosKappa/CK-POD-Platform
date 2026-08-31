@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FakeLifecycleMessagingService,
   KlaviyoLifecycleMessagingService,
+  LifecycleOrchestrator,
 } from './operations-analytics.js';
 
 describe('lifecycle messaging adapters', () => {
@@ -40,5 +41,33 @@ describe('lifecycle messaging adapters', () => {
     ).resolves.toEqual({ providerMessageId: 'req-1' });
     expect(String(fetch.mock.calls[0]?.[1]?.body)).not.toContain('production');
     expect(String(fetch.mock.calls[0]?.[1]?.body)).not.toContain('prompt');
+  });
+
+  it('suppresses marketing with the kill switch without suppressing transactional delivery', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ id: 'delivery-1' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const send = vi.fn().mockResolvedValue({ providerMessageId: 'transactional-1' });
+    const lifecycle = new LifecycleOrchestrator({ query } as never, { send }, 'FAKE', false);
+    await lifecycle.trigger({
+      type: 'WELCOME',
+      classification: 'MARKETING',
+      recipientEmail: 'customer@example.test',
+      idempotencyKey: 'welcome:disabled',
+      payload: {},
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+
+    await lifecycle.trigger({
+      type: 'ORDER_CONFIRMATION',
+      classification: 'TRANSACTIONAL',
+      recipientEmail: 'customer@example.test',
+      idempotencyKey: 'order:1',
+      payload: { orderNumber: 'LIB-1' },
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });

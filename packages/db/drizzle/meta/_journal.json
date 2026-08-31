@@ -120,6 +120,13 @@
       "when": 1788010000000,
       "tag": "0016_analytics_optional_project_context",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788011000000,
+      "tag": "0017_api_rate_limit_buckets",
+      "breakpoints": true
     }
   ]
 }

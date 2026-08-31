@@ -53,7 +53,7 @@ describe('platform payment and tax adapters', () => {
       type: 'payment_intent.succeeded',
       data: { object: { id: 'pi_1', amount: 1200, currency: 'usd' } },
     });
-    const timestamp = '1700000000';
+    const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = createHmac('sha256', 'whsec_test')
       .update(`${timestamp}.${body}`)
       .digest('hex');
@@ -62,6 +62,13 @@ describe('platform payment and tax adapters', () => {
     ).resolves.toMatchObject({ provider: 'STRIPE', outcome: 'SUCCEEDED' });
     await expect(
       service.verifyWebhook({ body: `${body}x`, signature: `t=${timestamp},v1=${signature}` }),
+    ).resolves.toBeNull();
+    const staleTimestamp = String(Math.floor(Date.now() / 1000) - 301);
+    const staleSignature = createHmac('sha256', 'whsec_test')
+      .update(`${staleTimestamp}.${body}`)
+      .digest('hex');
+    await expect(
+      service.verifyWebhook({ body, signature: `t=${staleTimestamp},v1=${staleSignature}` }),
     ).resolves.toBeNull();
   });
 });

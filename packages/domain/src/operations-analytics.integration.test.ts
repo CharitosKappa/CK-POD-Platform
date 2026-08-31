@@ -111,4 +111,27 @@ integrationSuite('M9 analytics and lifecycle integration', () => {
     );
     expect(suppressed.rows[0]?.status).toBe('SUPPRESSED');
   });
+
+  it('records a provider delivery failure once without retrying the same idempotency key blindly', async () => {
+    const send = vi
+      .fn<LifecycleMessagingService['send']>()
+      .mockRejectedValue(new Error('synthetic lifecycle provider outage'));
+    const lifecycle = new LifecycleOrchestrator(pool, { send }, 'FAKE');
+    const key = `lifecycle-failure-${randomBytes(6).toString('hex')}`;
+    const input = {
+      type: 'WELCOME' as const,
+      classification: 'MARKETING' as const,
+      recipientEmail: `failure-${randomBytes(6).toString('hex')}@example.test`,
+      idempotencyKey: key,
+      payload: { projectId: 'safe-project-id' },
+    };
+    await lifecycle.trigger(input);
+    await lifecycle.trigger(input);
+    expect(send).toHaveBeenCalledTimes(1);
+    const delivery = await pool.query<{ status: string; provider_message_id: string | null }>(
+      `SELECT status, provider_message_id FROM app.lifecycle_deliveries WHERE idempotency_key = $1`,
+      [key],
+    );
+    expect(delivery.rows[0]).toEqual({ status: 'FAILED', provider_message_id: null });
+  });
 });

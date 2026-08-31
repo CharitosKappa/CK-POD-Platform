@@ -164,3 +164,13 @@ export class BullMqJobQueue implements BackgroundJobQueue {
     return queue;
   }
 }
+
+/** A short-lived Redis probe for readiness checks; it creates no job or queue state. */
+export async function verifyRedisConnection(connection: ConnectionOptions): Promise<void> {
+  const queue = new Queue('let-it-be-readiness-probe', { connection });
+  try {
+    await queue.waitUntilReady();
+  } finally {
+    await queue.close();
+  }
+}

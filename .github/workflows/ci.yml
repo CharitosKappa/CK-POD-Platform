@@ -59,4 +59,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:migrate
       - run: pnpm db:verify
+      - run: pnpm db:integrity
       - run: pnpm test:integration

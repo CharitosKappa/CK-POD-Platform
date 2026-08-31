@@ -49,6 +49,7 @@ export * from './generation-worker';
 export * from './generations';
 export * from './identity';
 export * from './prompt-pipeline';
+export * from './provider-output-validation';
 export * from './projects';
 export * from './prepress';
 export * from './printify';
