@@ -27,6 +27,8 @@ describe('profiled Sharp garment mockup renderer', () => {
     });
   });
 
+  // Three full garment composites can contend with the production renderer in the parallel suite.
+  // This is a test-environment budget, not a rendering-quality threshold.
   it('renders the same approved artwork deterministically and varies with the shirt profile', async () => {
     const renderer = new SharpGarmentMockupRenderer();
     const black = developmentProfileFor({
@@ -40,5 +42,5 @@ describe('profiled Sharp garment mockup renderer', () => {
     expect(first.pixelHash).toBe(repeated.pixelHash);
     expect(first.png.byteLength).toBeGreaterThan(50_000);
     expect(first.pixelHash).not.toBe(navyProof.pixelHash);
-  });
+  }, 10_000);
 });

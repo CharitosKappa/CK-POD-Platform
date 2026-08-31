@@ -11,7 +11,7 @@ Milestone 7 begins after the immutable payment boundary. The approved lifecycle 
 
 Use a platform-owned `OrderOperationsService` as the sole post-payment writer of canonical order transitions. It locks the order row before every transition, writes state history plus a structured operational audit, persists review/hold/routing/readiness decisions, and checks the current qualified provider, variant, profile mapping, proof approval, prepress state, and derivative immediately before readiness.
 
-Provider order creation and production submission are separate persisted idempotent actions. A real Printify submit is fail-closed: it requires a trusted operations action, the real adapter, the explicit production flag, and a production environment. Verified provider webhooks and trusted polling are observations; they are normalized and reconciled through the same transition validator rather than setting state directly.
+Provider order creation and production submission are separate persisted idempotent actions. Each action claims the current `READY_FOR_PRODUCTION` order before it may call a provider, and an in-progress claim rejects concurrent holds. A real Printify submit is fail-closed: it requires a trusted operations action, the real adapter, the explicit production flag, and a production environment. Verified provider webhooks and trusted polling are observations; they are normalized and reconciled through the same transition validator rather than setting state directly.
 
 ## Consequences
 

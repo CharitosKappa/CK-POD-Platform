@@ -68,6 +68,13 @@ pnpm test
 pnpm build
 ```
 
+The repository owns text line endings: `.gitattributes` and Prettier require LF for text files on
+every operating system. Do not override that policy with a per-machine Git EOL setting.
+
+The two full-resolution Sharp renderer tests have a local 10-second Vitest budget because they can
+contend with other image workers in the parallel suite. The budget is test infrastructure only;
+their rendering assertions and production performance expectations are unchanged.
+
 ## Milestone 1 persistence checks
 
 With the local database running, apply and verify all checked-in migrations, then run the integration suite:

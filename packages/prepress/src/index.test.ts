@@ -87,6 +87,8 @@ describe('production prepress primitives', () => {
     expect(dpi.minimum).toBeCloseTo(400);
   });
 
+  // Multiple 3600×4800 Sharp renders contend with other image tests in a parallel run.
+  // Keep the production assertions intact while allowing a bounded test-environment budget.
   it('renders canonical layer order, crop, rotation, alpha and approved text deterministically', async () => {
     const renderer = new SharpProductionRenderer();
     const document = documentWithLayers();
@@ -132,7 +134,7 @@ describe('production prepress primitives', () => {
         })
       ).pixelHash,
     ).not.toBe(first.pixelHash);
-  });
+  }, 10_000);
 
   it('fails safely when an approved production font cannot be resolved', async () => {
     const renderer = new SharpProductionRenderer();

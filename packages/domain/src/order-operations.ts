@@ -73,6 +73,8 @@ export interface OrderOperationsConfiguration {
   /** Real Printify side effects require this flag in addition to the trusted action. */
   realProductionSubmissionEnabled: boolean;
   fulfillmentAdapter: 'fake' | 'printify';
+  /** A stale action can be retried with its original provider idempotency key. */
+  fulfillmentActionLeaseMs?: number;
 }
 
 export interface ReviewQueueItem {
@@ -95,6 +97,7 @@ export interface ReviewQueueItem {
 export class OrderOperationsService {
   private readonly routing: FulfillmentRoutingService;
   private readonly derivatives: ProviderDerivativeService;
+  private readonly fulfillmentActionLeaseMs: number;
 
   public constructor(
     private readonly pool: SqlPool,
@@ -104,6 +107,7 @@ export class OrderOperationsService {
   ) {
     this.routing = new FulfillmentRoutingService(pool, fulfillment);
     this.derivatives = new ProviderDerivativeService(pool, storage);
+    this.fulfillmentActionLeaseMs = configuration.fulfillmentActionLeaseMs ?? 5 * 60 * 1000;
   }
 
   async listReviewQueue(
@@ -363,7 +367,7 @@ export class OrderOperationsService {
     orderNumber: string,
   ): Promise<{ ready: boolean; blockers: string[] }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
-    const snapshot = await this.readinessSnapshot(orderNumber);
+    const snapshot = await this.readinessSnapshot(orderNumber, { allowRouting: true });
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
       await client.query(
@@ -435,14 +439,13 @@ export class OrderOperationsService {
       await withTransaction(this.pool, async (client) => {
         await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         const order = await lockOrder(client, orderNumber);
-        if (order.status === 'READY_FOR_PRODUCTION')
-          await this.transitionLocked(
-            client,
-            order,
-            'SUBMITTED_TO_PRINTIFY',
-            session,
-            'PRINTIFY_ERROR',
-          );
+        await this.transitionLocked(
+          client,
+          order,
+          'SUBMITTED_TO_PRINTIFY',
+          session,
+          'PRINTIFY_ERROR',
+        );
         await client.query(
           `UPDATE app.external_fulfillment_orders SET submission_state = 'SUBMITTED', submitted_at = now(), updated_at = now() WHERE order_id = $1`,
           [order.id],
@@ -664,20 +667,46 @@ export class OrderOperationsService {
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
+      if (order.status !== 'READY_FOR_PRODUCTION') {
+        throw new OrderTransitionError(
+          'External fulfillment actions require an order that is ready for production.',
+        );
+      }
       const idempotencyKey = `order:${order.id}:${action}:v1`;
       const existing = await client.query<{
         id: string;
         status: string;
         external_order_id: string | null;
         idempotency_key: string;
+        updated_at: Date;
       }>(
-        `SELECT id, status, external_order_id, idempotency_key FROM app.order_fulfillment_actions WHERE order_id = $1 AND action = $2 FOR UPDATE`,
+        `SELECT id, status, external_order_id, idempotency_key, updated_at
+         FROM app.order_fulfillment_actions WHERE order_id = $1 AND action = $2 FOR UPDATE`,
         [order.id, action],
       );
       if (existing.rows[0]) {
         const row = existing.rows[0];
-        if (row.status === 'PROCESSING')
-          throw new OrderTransitionError('This fulfillment action is already in progress.');
+        if (row.status === 'PROCESSING') {
+          if (Date.now() - row.updated_at.getTime() < this.fulfillmentActionLeaseMs) {
+            throw new OrderTransitionError('This fulfillment action is already in progress.');
+          }
+          await client.query(
+            `UPDATE app.order_fulfillment_actions
+             SET attempt_count = attempt_count + 1, updated_at = now()
+             WHERE id = $1`,
+            [row.id],
+          );
+          await this.audit(client, order.id, 'fulfillment_action_reclaimed', session, null, {
+            action,
+            idempotencyKey: row.idempotency_key,
+          });
+          return {
+            id: row.id,
+            idempotencyKey: row.idempotency_key,
+            status: 'RETRYING',
+            externalOrderId: row.external_order_id,
+          };
+        }
         if (row.status === 'SUCCEEDED') {
           return {
             id: row.id,
@@ -687,9 +716,15 @@ export class OrderOperationsService {
           };
         }
         await client.query(
-          `UPDATE app.order_fulfillment_actions SET status = 'PROCESSING', attempt_count = attempt_count + 1, updated_at = now() WHERE id = $1`,
+          `UPDATE app.order_fulfillment_actions
+           SET status = 'PROCESSING', attempt_count = attempt_count + 1, updated_at = now()
+           WHERE id = $1`,
           [row.id],
         );
+        await this.audit(client, order.id, 'fulfillment_action_retried', session, null, {
+          action,
+          idempotencyKey: row.idempotency_key,
+        });
         return {
           id: row.id,
           idempotencyKey: row.idempotency_key,
@@ -729,7 +764,10 @@ export class OrderOperationsService {
     );
   }
 
-  private async readinessSnapshot(orderNumber: string): Promise<ReadinessSnapshot> {
+  private async readinessSnapshot(
+    orderNumber: string,
+    options: { allowRouting?: boolean } = {},
+  ): Promise<ReadinessSnapshot> {
     const result = await this.pool.query<ReadinessRow>(
       `SELECT o.id, o.status, oi.project_id AS "projectId", oi.project_version_id AS "projectVersionId",
               oi.prepress_run_id AS "prepressRunId", oi.product_model_id AS "productModelId",
@@ -763,7 +801,11 @@ export class OrderOperationsService {
     );
     const row = required(result.rows[0], 'Order not found.');
     const blockers: string[] = [];
-    if (!['ROUTING', 'READY_FOR_PRODUCTION'].includes(row.status)) blockers.push('ORDER_STAGE');
+    if (
+      row.status !== 'READY_FOR_PRODUCTION' &&
+      !(options.allowRouting && row.status === 'ROUTING')
+    )
+      blockers.push('ORDER_STAGE');
     if (row.approved_proofs !== 1) blockers.push('PROOF_APPROVAL');
     if (
       !['PASSED', 'REVIEW_REQUIRED'].includes(row.prepress_status) ||
@@ -862,6 +904,16 @@ export class OrderOperationsService {
   ) {
     if (order.status === 'ON_HOLD')
       throw new OrderTransitionError('This order is already on hold.');
+    const activeAction = await client.query<{ action: string }>(
+      `SELECT action FROM app.order_fulfillment_actions
+       WHERE order_id = $1 AND status = 'PROCESSING' FOR KEY SHARE`,
+      [order.id],
+    );
+    if (activeAction.rows[0]) {
+      throw new OrderTransitionError(
+        'An external fulfillment action is in progress; the order cannot be placed on hold.',
+      );
+    }
     await client.query(
       `INSERT INTO app.order_holds (order_id, previous_state, reason_code, notes, held_by_user_id) VALUES ($1, $2, $3, $4, $5)`,
       [order.id, order.status, reasonCode, notes ?? null, session.userId],

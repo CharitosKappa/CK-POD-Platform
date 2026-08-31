@@ -1,0 +1,16 @@
+# Keep repository text deterministic across Windows, macOS, and Linux.
+* text=auto eol=lf
+
+# Never subject binary assets to text normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary

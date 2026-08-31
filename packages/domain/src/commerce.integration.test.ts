@@ -10,7 +10,11 @@ import { IdentityService } from './identity.js';
 import { FakePaymentService, FakeTaxService } from './payments.js';
 import { ProjectService } from './projects.js';
 import { MockupService } from './mockups.js';
-import { OrderOperationsAccessError, OrderOperationsService } from './order-operations.js';
+import {
+  OrderOperationsAccessError,
+  OrderOperationsService,
+  OrderTransitionError,
+} from './order-operations.js';
 import { FakePrintifyFulfillmentAdapter } from './printify.js';
 import { FulfillmentIntegrationError } from './fulfillment-contracts.js';
 import type {
@@ -337,17 +341,67 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'READY_FOR_PRODUCTION',
     );
+    expect(fulfillment.createCalls).toBe(0);
+    expect(fulfillment.submitCalls).toBe(0);
+    await expect(operations.submitProduction(ready.guest, orderNumber)).rejects.toBeInstanceOf(
+      OrderOperationsAccessError,
+    );
+    expect(fulfillment.createCalls).toBe(0);
+    expect(fulfillment.submitCalls).toBe(0);
+
+    await pool.query(`UPDATE app.orders SET status = 'ROUTING' WHERE order_number = $1`, [
+      orderNumber,
+    ]);
+    await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
+      OrderTransitionError,
+    );
+    expect(fulfillment.createCalls).toBe(0);
+    expect(fulfillment.submitCalls).toBe(0);
+    await pool.query(
+      `UPDATE app.orders SET status = 'READY_FOR_PRODUCTION' WHERE order_number = $1`,
+      [orderNumber],
+    );
 
     fulfillment.failNextCreate = true;
     await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
       FulfillmentIntegrationError,
     );
-    const first = await operations.submitProduction(account, orderNumber);
+    await pool.query(
+      `UPDATE app.order_fulfillment_actions
+       SET status = 'PROCESSING', updated_at = now() - interval '6 minutes'
+       WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+         AND action = 'CREATE_EXTERNAL_ORDER'`,
+      [orderNumber],
+    );
+    const gate = fulfillment.pauseNextSubmission();
+    const pendingFirst = operations.submitProduction(account, orderNumber);
+    await gate.started;
+    await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
+      OrderTransitionError,
+    );
+    await expect(
+      operations.hold(account, orderNumber, 'OPERATIONAL_HOLD', 'Concurrent hold fixture.'),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+    gate.release();
+    const first = await pendingFirst;
     const second = await operations.submitProduction(account, orderNumber);
     expect(first.duplicate).toBe(false);
     expect(second).toEqual({ externalOrderId: first.externalOrderId, duplicate: true });
     expect(fulfillment.createCalls).toBe(2);
     expect(fulfillment.submitCalls).toBe(1);
+    const externalOrders = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.external_fulfillment_orders e
+       JOIN app.orders o ON o.id = e.order_id WHERE o.order_number = $1`,
+      [orderNumber],
+    );
+    expect(externalOrders.rows[0]?.count).toBe('1');
+    const reclaimedActions = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.order_operational_audits a
+       JOIN app.orders o ON o.id = a.order_id
+       WHERE o.order_number = $1 AND a.action = 'fulfillment_action_reclaimed'`,
+      [orderNumber],
+    );
+    expect(reclaimedActions.rows[0]?.count).toBe('1');
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'SUBMITTED_TO_PRINTIFY',
     );
@@ -365,6 +419,19 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       externalEventId: providerEventId,
     });
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('IN_PRODUCTION');
+    await operations.reconcileStatus({
+      externalOrderId: first.externalOrderId,
+      rawStatus: 'shipped',
+      source: 'POLLING',
+    });
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('SHIPPED');
+    await operations.reconcileStatus({
+      externalOrderId: first.externalOrderId,
+      rawStatus: 'delivered',
+      source: 'WEBHOOK',
+      externalEventId: `ops-delivered-${randomBytes(5).toString('hex')}`,
+    });
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('DELIVERED');
   });
 
   it('hard prepress blockers cannot create a cart', async () => {
@@ -430,6 +497,23 @@ class OperationsFulfillment extends FakePrintifyFulfillmentAdapter {
   createCalls = 0;
   submitCalls = 0;
   failNextCreate = false;
+  private submitGate: {
+    markStarted: () => void;
+    waitForRelease: Promise<void>;
+  } | null = null;
+
+  pauseNextSubmission(): { started: Promise<void>; release: () => void } {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const waitForRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.submitGate = { markStarted, waitForRelease };
+    return { started, release };
+  }
   override async quoteShipping(): Promise<NormalizedShippingQuote> {
     return {
       method: 'Operations Ground',
@@ -454,6 +538,12 @@ class OperationsFulfillment extends FakePrintifyFulfillmentAdapter {
   }
   override async submitProduction(input: Parameters<FulfillmentService['submitProduction']>[0]) {
     this.submitCalls += 1;
+    const gate = this.submitGate;
+    this.submitGate = null;
+    if (gate) {
+      gate.markStarted();
+      await gate.waitForRelease;
+    }
     return super.submitProduction(input);
   }
 }

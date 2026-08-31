@@ -16,7 +16,7 @@ Readiness re-evaluates immutable proof approval, the exact project version/prepr
 
 ## Fulfillment boundary
 
-`OrderOperationsService` owns post-payment transitions, external-order creation, explicit submission, and status reconciliation. Payment and checkout do not import or invoke it. Provider order creation and production submission are separate database-backed idempotent actions; retries reuse the same idempotency key. A real Printify submission requires `APP_ENV=production`, `FULFILLMENT_ADAPTER=printify`, and `PRINTIFY_PRODUCTION_SUBMISSION_ENABLED=true`; otherwise it fails closed.
+`OrderOperationsService` owns post-payment transitions, external-order creation, explicit submission, and status reconciliation. Payment and checkout do not import or invoke it. Provider order creation and production submission are separate database-backed idempotent actions; retries and reclaimed stale actions reuse the same idempotency key. Both actions require the canonical `READY_FOR_PRODUCTION` state, and an active action blocks a concurrent operational hold until it completes or fails. A real Printify submission requires `APP_ENV=production`, `FULFILLMENT_ADAPTER=printify`, and `PRINTIFY_PRODUCTION_SUBMISSION_ENABLED=true`; otherwise it fails closed.
 
 Verified webhooks and trusted polling only normalize status evidence. They can advance an order only through the canonical allowed-transition table, and every duplicate, conflict, or unknown update is retained for audit. Consumer clients still receive controlled proof assets only; production masters, provider derivatives, sources, and storage keys remain private.
 
