@@ -53,3 +53,27 @@ The integrity diagnostic rejects an unexplained `DELIVERED` order: it must have 
 ## Availability target
 
 99.9% is an operational target, not a locally proven guarantee. It depends on web/worker replicas, PostgreSQL, Redis, object storage, Stripe, Printify and DNS/hosting. Load balancers should use liveness for restart decisions and readiness for traffic admission. Non-critical lifecycle failures must alert operators without failing readiness.
+
+## Browser and accessibility evidence
+
+**BROWSER QA — PASS (manual host-browser evidence)** as of 2026-09-01. The initial Firefox `localhost:3000` connection refusal coincided with no Next.js development process listening on port 3000; it was not sufficient evidence of a Codex in-app Browser URL-policy-only blocker. The supported development command now starts a process listening on `0.0.0.0:3000` and `[::]:3000`; host-loopback requests to both `localhost` and `127.0.0.1`, including health and readiness, return 200. Manual execution against the reachable host application passed in Firefox desktop at 1440×900, Chrome desktop at 1440×900, Chrome tablet at 768×1024, and Chrome mobile at 390×844. Keyboard navigation, focus behavior, forms/errors, dialogs, accessible names/semantics, contrast/readability, and catalog failure/retry also passed with no defects reported. Browser version and session type were not recorded in the supplied evidence.
+
+The Codex in-app browser still blocks `/api/catalog/products` with `net::ERR_BLOCKED_BY_CLIENT`; host requests to that endpoint return 200. It is therefore a tooling limitation, not catalog API evidence, and is not used for the manual browser QA result. No browser policy, firewall, tunnel, or public deployment was changed.
+
+The product-selector catalog request has explicit loading, ready, and error states. A bounded ten-second request timeout prevents an indefinitely pending network request from leaving a consumer on a loading message. Its retry repeats only the read-only catalog request; a project is still created solely by the existing continuation action after a successful selection.
+
+### Manual browser QA checklist
+
+Run this in a normal desktop Firefox, Chrome, or Edge session against `http://localhost:3000` with the local database and Redis running. Record browser/version, viewport, account/session type, PASS/FAIL, and defects for every row. Use no real payment or production provider credentials.
+
+| Viewport          | Required journey evidence                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop, 1440×900 | Product/color selection; Describe Your Idea; Style Family/Substyle; generation loading/error; editor controls; proof approval; cart and fake checkout; login/register; Ops queue/dashboard with an authorized local account. |
+| Tablet, 768×1024  | Product/color selection, guided creation, editor initialization, proof/cart/checkout, and responsive navigation without horizontal overflow.                                                                                 |
+| Mobile, 390×844   | Product/color selection, guided creation, editor initialization/controls, proof/cart/checkout, auth forms, focus visibility, and touch targets without horizontal overflow.                                                  |
+
+For each viewport, complete keyboard-only `Tab`/`Shift+Tab` traversal, activate primary actions with the keyboard, confirm a visible logical focus order, inspect accessible names for buttons/links, verify every form field has a label and errors are associated with the relevant field, check modal/dialog focus containment and return, and review primary landmarks/headings plus obvious text/background contrast. Capture screenshots and the browser accessibility tree where the normal browser tooling permits it. Log any failure before declaring launch readiness.
+
+## Development environment loader
+
+The development-only root `.env` loader uses the Node 22 `process.loadEnvFile` runtime API after locating the repository root from `pnpm-workspace.yaml`. It never runs outside `NODE_ENV=development`, tolerates an absent optional root `.env`, and preserves already-supplied process environment values. The prior loader imported `dotenv` and used a static `new URL('../../.env', import.meta.url)` path; Next bundled instrumentation code and tried to resolve both as application dependencies, which caused `next dev` to fail before listening. The replacement keeps environment-file resolution inside the Node runtime and has regression tests for root discovery, development-only loading, and production non-loading.

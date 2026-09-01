@@ -20,7 +20,6 @@
     "@let-it-be/observability": "workspace:*",
     "@let-it-be/queue": "workspace:*",
     "@let-it-be/storage": "workspace:*",
-    "dotenv": "^16.6.1",
     "konva": "^10.3.2",
     "next": "^16.0.0",
     "react": "^19.0.0",

@@ -71,9 +71,6 @@ importers:
       '@let-it-be/storage':
         specifier: workspace:*
         version: link:../../packages/storage
-      dotenv:
-        specifier: ^16.6.1
-        version: 16.6.1
       konva:
         specifier: ^10.3.2
         version: 10.3.2
