@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 
-import { operationalCapability, parseServerEnvironment } from '@let-it-be/config';
+import { operationalCapability, type ServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
@@ -25,6 +25,7 @@ import {
 } from '@let-it-be/domain';
 
 import { generationRuntime } from './generation-runtime';
+import { serverEnvironment } from './runtime-environment';
 
 const sessionCookieName = 'let_it_be_session';
 
@@ -33,6 +34,7 @@ declare global {
 }
 
 export function databasePool(): SqlPool {
+  serverEnvironment();
   if (!globalThis.letItBePool) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) throw new Error('DATABASE_URL is required for application requests.');
@@ -54,7 +56,7 @@ export function services() {
 }
 
 export function fulfillmentRuntime() {
-  const environment = parseServerEnvironment(process.env);
+  const environment = serverEnvironment();
   const pool = databasePool();
   const adapter = createFulfillmentAdapter({
     adapter: environment.FULFILLMENT_ADAPTER,
@@ -72,7 +74,7 @@ export function fulfillmentRuntime() {
 }
 
 export async function commerceRuntime() {
-  const environment = parseServerEnvironment(process.env);
+  const environment = serverEnvironment();
   const pool = databasePool();
   const fulfillment = createFulfillmentAdapter({
     adapter: environment.FULFILLMENT_ADAPTER,
@@ -106,7 +108,7 @@ export async function commerceRuntime() {
 }
 
 export function cxOperationsRuntime() {
-  const environment = parseServerEnvironment(process.env);
+  const environment = serverEnvironment();
   const payments =
     environment.PAYMENT_ADAPTER === 'stripe'
       ? new StripePaymentService(
@@ -120,7 +122,7 @@ export function cxOperationsRuntime() {
 
 /** Trusted post-payment workflow runtime. Payment routes intentionally do not call this. */
 export async function orderOperationsRuntime() {
-  const environment = parseServerEnvironment(process.env);
+  const environment = serverEnvironment();
   const pool = databasePool();
   const fulfillment = createFulfillmentAdapter({
     adapter: environment.FULFILLMENT_ADAPTER,
@@ -146,8 +148,8 @@ export async function orderOperationsRuntime() {
   );
 }
 
-function lifecycleRuntime(pool: SqlPool, parsed?: ReturnType<typeof parseServerEnvironment>) {
-  const environment = parsed ?? parseServerEnvironment(process.env);
+function lifecycleRuntime(pool: SqlPool, parsed?: ServerEnvironment) {
+  const environment = parsed ?? serverEnvironment();
   const messaging =
     environment.LIFECYCLE_ADAPTER === 'klaviyo'
       ? new KlaviyoLifecycleMessagingService(

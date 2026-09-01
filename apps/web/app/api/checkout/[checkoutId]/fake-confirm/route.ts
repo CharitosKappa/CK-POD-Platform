@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 
-import { parseServerEnvironment } from '@let-it-be/config';
-
 import { handleRouteError } from '../../../../../lib/http';
 import { commerceRuntime, requireSession } from '../../../../../lib/platform';
+import { serverEnvironment } from '../../../../../lib/runtime-environment';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +12,7 @@ export async function POST(
   context: { params: Promise<{ checkoutId: string }> },
 ): Promise<NextResponse> {
   try {
-    if (parseServerEnvironment(process.env).PAYMENT_ADAPTER !== 'fake')
+    if (serverEnvironment().PAYMENT_ADAPTER !== 'fake')
       return NextResponse.json({ error: 'Not found.' }, { status: 404 });
     const { checkoutId } = await context.params;
     const body = (await request.json()) as {

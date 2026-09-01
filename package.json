@@ -15,7 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.config.ts packages/domain/src/identity-projects.integration.test.ts packages/domain/src/generation.integration.test.ts packages/domain/src/prepress.integration.test.ts packages/domain/src/styles.integration.test.ts packages/domain/src/fulfillment-routing.integration.test.ts packages/domain/src/commerce.integration.test.ts packages/domain/src/operations-analytics.integration.test.ts",
+    "test:integration": "vitest run --config vitest.config.ts packages/domain/src/identity-projects.integration.test.ts packages/domain/src/generation.integration.test.ts packages/domain/src/prepress.integration.test.ts packages/domain/src/styles.integration.test.ts packages/domain/src/fulfillment-routing.integration.test.ts packages/domain/src/commerce.integration.test.ts packages/domain/src/operations-analytics.integration.test.ts packages/domain/src/privacy-lifecycle.integration.test.ts",
     "benchmark:g1": "tsx scripts/g1-benchmark.ts",
     "fulfillment:reconcile": "tsx scripts/fulfillment-reconcile.ts",
     "test:watch": "vitest",
@@ -28,7 +28,8 @@
     "rate-limit:prune": "tsx scripts/prune-rate-limits.ts",
     "load:m10-rate-limit": "tsx scripts/m10-rate-limit-load.ts",
     "load:m10-mixed-db": "tsx scripts/m10-mixed-db-load.ts",
-    "load:m10-sharp": "tsx scripts/m10-sharp-stress.ts"
+    "load:m10-sharp": "tsx scripts/m10-sharp-stress.ts",
+    "drill:m10-queue-recovery": "tsx scripts/m10-queue-recovery-drill.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.35.0",

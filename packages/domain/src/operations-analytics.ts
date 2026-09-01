@@ -1,6 +1,7 @@
 import { type SqlPool, withTransaction } from '@let-it-be/db';
 import type { PaymentService } from './commerce-contracts';
 import type { ActiveSession } from './identity';
+import { hashLifecycleIdentifier } from './privacy-lifecycle';
 
 export type LifecycleClassification = 'TRANSACTIONAL' | 'MARKETING';
 export type LifecycleMessageType =
@@ -255,6 +256,14 @@ export class LifecycleOrchestrator {
   }): Promise<void> {
     // Transactional delivery is never coupled to the marketing kill switch.
     if (input.classification === 'MARKETING' && !this.marketingEnabled) return;
+    if (input.classification === 'MARKETING') {
+      const suppression = await this.pool.query<{ user_id: string }>(
+        `SELECT user_id FROM app.privacy_subject_controls
+         WHERE marketing_identifier_hash = $1 AND marketing_suppressed_at IS NOT NULL LIMIT 1`,
+        [hashLifecycleIdentifier(input.recipientEmail)],
+      );
+      if (suppression.rows[0]) return;
+    }
     const pending = await this.pool.query<{ id: string }>(
       `INSERT INTO app.lifecycle_deliveries (message_type, channel, classification, recipient_email, order_id, project_id, idempotency_key, provider, status, payload)
        VALUES ($1, 'EMAIL', $2, $3, $4::uuid, $5::uuid, $6, $7, 'PENDING', $8::jsonb)

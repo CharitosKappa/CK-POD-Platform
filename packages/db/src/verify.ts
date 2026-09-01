@@ -69,11 +69,13 @@ try {
         'customer_notes',
         'lifecycle_deliveries',
         'api_rate_limit_buckets',
+        'privacy_subject_controls',
+        'privacy_data_actions',
       ],
     ],
   );
 
-  if (result.rows.length !== 58) {
+  if (result.rows.length !== 60) {
     throw new Error('Required application tables are missing after migrations.');
   }
 

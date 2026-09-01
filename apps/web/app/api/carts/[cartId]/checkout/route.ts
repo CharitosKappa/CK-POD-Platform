@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 
-import { operationalCapability, parseServerEnvironment } from '@let-it-be/config';
+import { operationalCapability } from '@let-it-be/config';
 import { createLogger, parseLogLevel } from '@let-it-be/observability';
 import { handleRouteError } from '../../../../../lib/http';
 import { commerceRuntime, requireSession } from '../../../../../lib/platform';
 import { enforceRateLimit } from '../../../../../lib/security';
+import { serverEnvironment } from '../../../../../lib/runtime-environment';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,10 +14,7 @@ export async function POST(
   context: { params: Promise<{ cartId: string }> },
 ): Promise<NextResponse> {
   try {
-    const capability = operationalCapability(
-      parseServerEnvironment(process.env),
-      'CHECKOUT_CREATION',
-    );
+    const capability = operationalCapability(serverEnvironment(), 'CHECKOUT_CREATION');
     if (!capability.enabled)
       return NextResponse.json({ error: capability.message }, { status: 503 });
     const { cartId } = await context.params;

@@ -18,6 +18,23 @@ describe('parseServerEnvironment', () => {
     expect(environment.SESSION_COOKIE_SECURE).toBe(false);
   });
 
+  it('treats blank optional local provider and observability fields as absent', () => {
+    expect(
+      parseServerEnvironment({
+        ...baseEnvironment,
+        OTEL_EXPORTER_OTLP_ENDPOINT: '',
+        S3_BUCKET: '',
+        S3_ENDPOINT: '',
+        S3_ACCESS_KEY_ID: '',
+        S3_SECRET_ACCESS_KEY: '',
+      }),
+    ).toMatchObject({
+      OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+      S3_BUCKET: undefined,
+      S3_ENDPOINT: undefined,
+    });
+  });
+
   it('requires S3 credentials only when S3 is selected', () => {
     expect(() =>
       parseServerEnvironment({

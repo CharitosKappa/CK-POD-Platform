@@ -18,6 +18,10 @@ const optionalNonEmptyString = z.preprocess(
   (value) => (value === '' ? undefined : value),
   z.string().min(1).optional(),
 );
+const optionalUrl = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().url().optional(),
+);
 
 const defaultProviderConfiguration = JSON.stringify([
   {
@@ -54,13 +58,13 @@ export const serverEnvironmentSchema = z
     REDIS_URL: z.string().url(),
     NEXT_PUBLIC_APP_URL: z.string().url(),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+    OTEL_EXPORTER_OTLP_ENDPOINT: optionalUrl,
     STORAGE_DRIVER: adapterDriver.default('memory'),
-    S3_BUCKET: z.string().min(1).optional(),
+    S3_BUCKET: optionalNonEmptyString,
     S3_REGION: z.string().min(1).default('us-east-1'),
-    S3_ENDPOINT: z.string().url().optional(),
-    S3_ACCESS_KEY_ID: z.string().min(1).optional(),
-    S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    S3_ENDPOINT: optionalUrl,
+    S3_ACCESS_KEY_ID: optionalNonEmptyString,
+    S3_SECRET_ACCESS_KEY: optionalNonEmptyString,
     QUEUE_DRIVER: queueDriver.default('memory'),
     AI_PROVIDER_CONFIG: z.string().min(2).default(defaultProviderConfiguration),
     AI_GUEST_FREE_CREDITS: positiveInteger.default(1),

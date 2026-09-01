@@ -12,6 +12,22 @@ Take PostgreSQL backups with `pg_dump -Fc --schema=app`; retain encrypted backup
 - Payment/refund incident: inspect payment events and refund idempotency records before contacting Stripe or retrying.
 - Queue backlog: confirm Redis health and worker replicas, then restart workers; generation startup recovers stale `PROCESSING` claims older than fifteen minutes. Duplicate deliveries are expected and must remain idempotent. Inspect retained failed BullMQ jobs after bounded retries before deciding whether an idempotent replay is safe; do not delete a poison job as a substitute for diagnosis.
 
+The executed 2026-09-01 local drill is recorded in the M10 architecture evidence: an interrupted
+child worker recovered one active job with one canonical side effect, while a three-attempt poison
+job remained retained and was recovered only by trusted `job.retry()` using its original identity.
+Never replay an ambiguous external fulfillment, refund, or lifecycle operation merely because a
+queue job failed; inspect its persistent idempotency/audit record first.
+
+## Privacy lifecycle operations
+
+Use `PrivacyLifecycleService` to inspect a user-linked dry-run inventory before any action. A
+retention hold blocks anonymization and unfinished-project deletion. Account anonymization
+invalidates sessions, suppresses marketing, pseudonymizes eligible profile/lifecycle fields, and
+preserves orders, payments, refunds, fulfillment, and immutable audit relationships. Expired
+unfinished projects are deletable only when they have no cart or order-item lineage; use the
+private storage adapter and the explicit service method, never a bulk database cascade. Counsel
+controls the legal retention conditions and durations; see the M10 architecture evidence and G5.
+
 ## Incident containment and kill switches
 
 Set an explicit kill switch and roll web/worker configuration normally: `GENERATION_ENABLED=false` stops generation intake and consumers, `CHECKOUT_ENABLED=false` stops new checkout creation without interrupting already-created payments, `PRINTIFY_PRODUCTION_SUBMISSION_ENABLED=false` blocks trusted production submission, and `LIFECYCLE_MARKETING_ENABLED=false` suppresses marketing only while preserving transactional lifecycle delivery. Production-submission shutdown leaves paid orders in their existing canonical state for later trusted review; it never deletes fulfillment action history. Preserve logs and operational audits. Credential-suspicion incidents require secret rotation, webhook-secret rotation and session invalidation review.
@@ -20,7 +36,7 @@ Set an explicit kill switch and roll web/worker configuration normally: `GENERAT
 
 1. Run migrations before deploying code that requires them.
 2. Deploy web and workers with validated production configuration.
-3. Check `/api/health`, `/api/ready`, worker logs, and the launch smoke checklist with sandbox adapters.
+3. Check `/api/health`, `/api/ready`, worker logs, and the [canonical launch smoke checklist](./launch-smoke-checklist.md) with sandbox adapters.
 4. Roll back application code only if its database migration is backward compatible; otherwise use a forward fix. Never roll back a destructive migration without a tested restore plan.
 
 Schedule `pnpm rate-limit:prune` once per day with the same database credentials as the web service. The reverse proxy must remove incoming `X-Forwarded-For` and inject the canonical client address before requests reach the web application.

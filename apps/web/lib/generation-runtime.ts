@@ -1,4 +1,4 @@
-import { parseServerEnvironment } from '@let-it-be/config';
+import type { ServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   createGenerationRuntime,
@@ -12,6 +12,8 @@ import {
   S3PrivateObjectStorage,
   type PrivateObjectStorage,
 } from '@let-it-be/storage';
+
+import { serverEnvironment } from './runtime-environment';
 
 interface WebGenerationRuntime {
   runtime: ReturnType<typeof createGenerationRuntime>;
@@ -31,7 +33,7 @@ export async function generationRuntime(): Promise<WebGenerationRuntime> {
 }
 
 async function createRuntime(): Promise<WebGenerationRuntime> {
-  const environment = parseServerEnvironment(process.env);
+  const environment = serverEnvironment();
   const pool: SqlPool = createDatabaseClient(environment.DATABASE_URL).pool;
   const queue = createQueue(environment.QUEUE_DRIVER, environment.REDIS_URL);
   const storage = createStorage(environment);
@@ -63,9 +65,7 @@ function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJo
   });
 }
 
-function createStorage(
-  environment: ReturnType<typeof parseServerEnvironment>,
-): PrivateObjectStorage {
+function createStorage(environment: ServerEnvironment): PrivateObjectStorage {
   if (environment.STORAGE_DRIVER === 'memory') return new MemoryObjectStorage();
   return new S3PrivateObjectStorage({
     bucket: environment.S3_BUCKET as string,

@@ -127,6 +127,13 @@
       "when": 1788011000000,
       "tag": "0017_api_rate_limit_buckets",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788012000000,
+      "tag": "0018_privacy_lifecycle_controls",
+      "breakpoints": true
     }
   ]
 }

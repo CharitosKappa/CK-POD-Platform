@@ -30,6 +30,23 @@ Generation workers recover `PROCESSING` generations older than fifteen minutes a
 
 The local Redis-backed queue drill verifies a failed job is retried once and that its completed side effect happens exactly once. Application-specific recovery additionally relies on the generation claim/finalization record, fulfillment-action idempotency record, refund idempotency record, and lifecycle-delivery idempotency key. A lifecycle provider failure is persisted as `FAILED`; an operator must diagnose it before a deliberate replay rather than automatically issuing a second customer message from the same trigger.
 
+### Executed queue crash and poison-job drill — 2026-09-01
+
+Using local Redis/BullMQ only, a real child worker accepted job
+`m10-crash-job-e240874b-3fab-4a12-b943-64694c234d5c` and entered `active` processing.
+The child worker process was terminated while it held the job lock. A replacement worker
+started after the process exit, BullMQ recovered the job, and it completed with exactly one
+synthetic canonical `generation-credit-consume-once` side effect. The recovered job had one
+completed attempt; the original interrupted process made no side effect.
+
+The second job, `m10-poison-job-28fe04bd-ea5d-4276-8480-2e2e660bfef8`, was configured for
+three attempts and deliberately failed all three. It ended in retained BullMQ `failed` state,
+with zero side effects and no retry loop. The trusted operator recovery procedure used
+`job.retry()` on the same job identity only after explicit approval. The job then completed
+on attempt four with exactly one side effect. The drill created no refund, lifecycle delivery,
+external fulfillment order, or production submission. Existing domain regressions separately
+verify idempotency for those persistent operations.
+
 The middleware creates or forwards `x-request-id` into handlers and response headers. Representative web logs correlate `requestId → projectId → generationId`, `requestId → cartId → checkoutId`, and `requestId → orderNumber → trusted operations action`; workers log the generation identifier and fulfillment audit records retain the order/action relationship. The logger redacts prompts, exact text, customer/address/payment fields, artwork/asset/storage fields, URLs, credentials, signatures, webhook material, cookies, and tokens by key name. Safe opaque identifiers (`requestId`, `generationId`, `orderId`, `jobId`, and `externalActionId`) remain available for debugging.
 
 The local 100-request/10-concurrency rate-limit contention smoke recorded 0% errors, p50 3.42 ms, p95 109.27 ms, p99 111.55 ms, and 176.6 MB RSS, with its temporary keys removed and database integrity clean. The separate local mixed PostgreSQL smoke interleaved ordinary project reads, generation rate-limit checks, checkout and payment-webhook reads, and Ops order reads at the same request/concurrency count: 0% errors, p50 1.93 ms, p95 35.96 ms, p99 36.93 ms, and 175.2 MB RSS. Both are bounded local database probes, not production capacity claims or browser/API end-to-end measurements.
@@ -49,6 +66,39 @@ The current application has no browser upload route and accepts no user-controll
 The local M10 restore drill used `pg_dump -Fc --schema=app` from `letitbe`, restored it into isolated database `letitbe_m10_restore`, provisioned only the required empty `app` schema and `pgcrypto` extension, and verified 66 restored tables plus users/projects/orders/payments/refunds/audit records. This validates database schema/data recovery only; S3 durability and object restore are provider-managed and require deployment-specific evidence.
 
 The integrity diagnostic rejects an unexplained `DELIVERED` order: it must have either an `order_shipments` row or authoritative normalized fulfillment history of `SHIPPED`/`DELIVERED`. This deliberately permits a provider event that has not yet produced carrier details, but never treats raw, unnormalized provider text as evidence of delivery.
+
+### Privacy lifecycle technical model
+
+`PrivacyLifecycleService` is a platform-owned, operator-invoked technical boundary. It creates
+a dry-run inventory and supports explicit deletion only for expired, unfinished user projects
+that have no cart or order-item lineage. Private assets are identified by opaque IDs and removed
+through the private-object storage contract during that explicit operation; no destructive
+cleanup scheduler is enabled. Guest unfinished projects retain the locked seven-day default;
+registered unfinished projects retain the locked 90-day-from-last-activity default.
+
+| Data class                                                  | Technical state                                                                                                                         |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Guest/session data                                          | Expiry/deletion eligible after the guest lifecycle; sessions are invalidated on account anonymization.                                  |
+| Account/customer profile                                    | Eligible for pseudonymization unless a retention hold applies.                                                                          |
+| Unfinished projects and their private assets                | Eligible only after expiry and only without cart/order lineage.                                                                         |
+| Purchased projects/artwork                                  | Retention required; never selected by unfinished cleanup.                                                                               |
+| Orders, payments, refunds, and accounting records           | Retention period externally configured; never cascade-deleted by account anonymization.                                                 |
+| Fulfillment/shipping and customer-service records           | Retention period externally configured.                                                                                                 |
+| Policy, moderation, security, and operational audit records | Hold/audit protected.                                                                                                                   |
+| Lifecycle/marketing records                                 | Marketing can be independently suppressed; historical lifecycle email/payload is pseudonymized on account anonymization where eligible. |
+| Analytics events                                            | Retained as non-email, pseudonymous/aggregate technical evidence pending policy.                                                        |
+| Production/source/private assets                            | Private by default; only assets belonging solely to eligible unfinished projects may be selected for explicit deletion.                 |
+
+Retention holds cover financial/accounting, chargeback/dispute, fraud/security, legal hold,
+audit/compliance, and fulfillment/customer-service obligations through policy-controlled reason
+codes. The service preserves user-linked immutable relationships by anonymizing the account
+email/password rather than deleting order, payment, refund, or audit rows. Marketing suppression
+is stored independently from transactional delivery; account anonymization writes suppression
+before identity removal, so it cannot reactivate marketing.
+
+**GDPR TECHNICAL READINESS — PASS.** This is a technical lifecycle capability, not a legal
+determination. **G5 LEGAL/PRIVACY APPROVAL — OPEN** until counsel approves conditions,
+durations, notices, and retention policy.
 
 ## Availability target
 

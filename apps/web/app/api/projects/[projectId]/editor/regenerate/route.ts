@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 
-import { operationalCapability, parseServerEnvironment } from '@let-it-be/config';
+import { operationalCapability } from '@let-it-be/config';
 import { selectedGeneratedLayer } from '@let-it-be/domain';
 
 import { generationRuntime } from '../../../../../../lib/generation-runtime';
 import { handleRouteError } from '../../../../../../lib/http';
 import { requireSession, services } from '../../../../../../lib/platform';
 import { enforceRateLimit } from '../../../../../../lib/security';
+import { serverEnvironment } from '../../../../../../lib/runtime-environment';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ export async function POST(
   context: { params: Promise<{ projectId: string }> },
 ): Promise<NextResponse> {
   try {
-    const capability = operationalCapability(parseServerEnvironment(process.env), 'GENERATION');
+    const capability = operationalCapability(serverEnvironment(), 'GENERATION');
     if (!capability.enabled)
       return NextResponse.json({ error: capability.message }, { status: 503 });
     const { projectId } = await context.params;
