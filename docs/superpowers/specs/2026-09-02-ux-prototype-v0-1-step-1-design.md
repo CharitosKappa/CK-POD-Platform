@@ -81,7 +81,7 @@ Prototype controls expose three non-consumer, headerless composition exploration
 
 All use a single floating overflow affordance for the existing drawer. The fixed prototype-only credit fixture appears below the CTA rather than in a header. They are for CEO comparison only and do not change the Step 1 flow.
 
-The Creative canvas is the current hybrid review direction: its headline is intentionally set over two lines, its supporting sentence is a single line, and its composer overlaps the lower garment area. The visible prompt label is removed while its accessible label remains. Before focus, the composer has a subtle transparent lower fade; it becomes an ordinary opaque composer on focus so prompt entry stays clear.
+The Creative canvas is the current hybrid review direction: its headline is intentionally set over two lines, its supporting sentence is a single line, and its composer overlaps the lower garment area. The visible prompt label is removed while its accessible label remains. Before focus, the composer itself visibly fades to transparent at its lower edge so the garment remains perceptible; it becomes an ordinary opaque composer with a complete border on focus so prompt entry stays clear.
 
 ## Asset approach
 

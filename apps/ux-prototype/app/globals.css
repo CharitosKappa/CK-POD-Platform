@@ -323,37 +323,29 @@ input:focus-visible {
 .composition-canvas .composer {
   position: relative;
   overflow: hidden;
-  border-color: color-mix(in srgb, var(--border) 72%, transparent);
-  background: color-mix(in srgb, var(--surface) 93%, transparent);
-  box-shadow: 0 10px 25px rgb(20 20 18 / 10%);
+  border-color: color-mix(in srgb, var(--border) 78%, transparent);
+  border-bottom-color: transparent;
+  background: linear-gradient(
+    to bottom,
+    var(--surface) 8%,
+    color-mix(in srgb, var(--surface) 82%, transparent) 57%,
+    transparent 100%
+  );
+  box-shadow: 0 -2px 18px rgb(20 20 18 / 7%);
   padding: 8px 15px 9px;
 }
 .composition-canvas .composer::after {
-  position: absolute;
-  z-index: 1;
-  right: 1px;
-  bottom: 29px;
-  left: 1px;
-  height: 48px;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--surface) 0%, transparent),
-    color-mix(in srgb, var(--surface) 94%, transparent)
-  );
-  content: '';
-  pointer-events: none;
-  transition: opacity 0.16s ease;
+  display: none;
 }
 .composition-canvas .composer:focus-within {
+  border-bottom-color: var(--action-primary);
   background: var(--surface);
-}
-.composition-canvas .composer:focus-within::after {
-  opacity: 0;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--action-primary) 20%, transparent);
 }
 .composition-canvas .composer textarea,
 .composition-canvas .composer span {
   position: relative;
-  z-index: 2;
+  z-index: 1;
 }
 .composition-canvas .composer textarea {
   min-height: 105px;
