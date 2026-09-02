@@ -81,6 +81,8 @@ Prototype controls expose three non-consumer, headerless composition exploration
 
 All use a single floating overflow affordance for the existing drawer. The fixed prototype-only credit fixture appears below the CTA rather than in a header. They are for CEO comparison only and do not change the Step 1 flow.
 
+The Creative canvas is the current hybrid review direction: its headline is intentionally set over two lines, its supporting sentence is a single line, and its composer overlaps the lower garment area. The visible prompt label is removed while its accessible label remains. Before focus, the composer has a subtle transparent lower fade; it becomes an ordinary opaque composer on focus so prompt entry stays clear.
+
 ## Asset approach
 
 Use a premium front-facing White static garment fixture on a neutral soft-stone presentation stage for Step 1. Black and Navy local fixtures are reserved for the later Color / Size step. Each must read as a garment with fabric, collar, sleeve, and soft studio-light detail rather than a flat silhouette. The fixture set is documented in the app readme as replaceable and prototype-only; it is not derived from production rendering.

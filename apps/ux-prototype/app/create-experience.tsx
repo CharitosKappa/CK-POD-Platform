@@ -188,7 +188,16 @@ export function CreateExperience() {
         <div className="create-flow">
           <section className="intro" aria-labelledby="create-heading">
             <p className="eyebrow">{composition === 'object' ? 'Create / 01' : 'Make it yours'}</p>
-            <h1 id="create-heading">{COPY.headline}</h1>
+            <h1 id="create-heading">
+              {composition === 'canvas' ? (
+                <>
+                  Turn your idea into
+                  <br />a shirt worth wearing.
+                </>
+              ) : (
+                COPY.headline
+              )}
+            </h1>
             <p>{COPY.supporting}</p>
           </section>
 
@@ -199,7 +208,12 @@ export function CreateExperience() {
           </section>
 
           <section className="prompt-section">
-            <label htmlFor="shirt-prompt">What should we put on your shirt?</label>
+            <label
+              className={composition === 'canvas' ? 'sr-only' : undefined}
+              htmlFor="shirt-prompt"
+            >
+              What should we put on your shirt?
+            </label>
             <div className={`composer ${promptError ? 'has-error' : ''}`}>
               <textarea
                 id="shirt-prompt"
@@ -209,7 +223,11 @@ export function CreateExperience() {
                   if (promptError) setPromptError('');
                 }}
                 onKeyDown={handlePromptKeyDown}
-                placeholder="A funny Viking drinking coffee..."
+                placeholder={
+                  composition === 'canvas'
+                    ? 'Describe your idea...'
+                    : 'A funny Viking drinking coffee...'
+                }
                 rows={4}
                 value={prompt}
               />
