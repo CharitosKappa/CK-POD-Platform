@@ -18,11 +18,17 @@ const THEMES = {
 
 type ThemeId = keyof typeof THEMES;
 type CompositionVariant = 'canvas' | 'editorial' | 'object';
+type ComposerTreatment = 'fade' | 'glass';
 
 const COMPOSITION_VARIANTS: Record<CompositionVariant, { label: string; name: string }> = {
   canvas: { label: '1', name: 'Creative canvas' },
   editorial: { label: '2', name: 'Editorial poster' },
   object: { label: '3', name: 'Object-first' },
+};
+
+const COMPOSER_TREATMENTS: Record<ComposerTreatment, { label: string; name: string }> = {
+  fade: { label: 'Fade', name: 'Transparent fade composer' },
+  glass: { label: 'Glass', name: 'Liquid glass composer' },
 };
 
 function Icon({ children }: { children: string }) {
@@ -32,6 +38,7 @@ function Icon({ children }: { children: string }) {
 export function CreateExperience() {
   const [theme, setTheme] = useState<ThemeId>('a');
   const [composition, setComposition] = useState<CompositionVariant>('canvas');
+  const [composerTreatment, setComposerTreatment] = useState<ComposerTreatment>('glass');
   const [previewWidth, setPreviewWidth] = useState('390');
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
@@ -124,7 +131,7 @@ export function CreateExperience() {
   }
 
   return (
-    <main className={`prototype ${THEMES[theme].className}`}>
+    <main className={`prototype ${THEMES[theme].className} composer-${composerTreatment}`}>
       <aside className="prototype-controls" aria-label="Prototype controls">
         <span>Prototype controls</span>
         <div className="theme-controls" role="group" aria-label="Visual direction">
@@ -152,6 +159,20 @@ export function CreateExperience() {
               type="button"
             >
               {COMPOSITION_VARIANTS[variant].label}
+            </button>
+          ))}
+        </div>
+        <div className="treatment-controls" role="group" aria-label="Composer treatment">
+          <span>Input</span>
+          {(Object.keys(COMPOSER_TREATMENTS) as ComposerTreatment[]).map((treatment) => (
+            <button
+              aria-label={COMPOSER_TREATMENTS[treatment].name}
+              aria-pressed={composerTreatment === treatment}
+              key={treatment}
+              onClick={() => setComposerTreatment(treatment)}
+              type="button"
+            >
+              {COMPOSER_TREATMENTS[treatment].label}
             </button>
           ))}
         </div>

@@ -74,6 +74,7 @@ input:focus-visible {
   display: flex;
   width: min(100%, 720px);
   align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 9px;
   margin: 0 auto 14px;
@@ -95,7 +96,8 @@ input:focus-visible {
   gap: 4px;
 }
 .theme-controls button,
-.composition-controls button {
+.composition-controls button,
+.treatment-controls button {
   min-width: 30px;
   height: 30px;
   border: 1px solid #bdb9af;
@@ -106,7 +108,8 @@ input:focus-visible {
   font-weight: 800;
 }
 .theme-controls button[aria-pressed='true'],
-.composition-controls button[aria-pressed='true'] {
+.composition-controls button[aria-pressed='true'],
+.treatment-controls button[aria-pressed='true'] {
   border-color: var(--action-primary);
   background: var(--action-primary);
   color: var(--action-text);
@@ -117,6 +120,16 @@ input:focus-visible {
   gap: 4px;
 }
 .composition-controls > span {
+  margin-right: 1px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.treatment-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.treatment-controls > span {
   margin-right: 1px;
   font-size: 10px;
   text-transform: uppercase;
@@ -320,7 +333,7 @@ input:focus-visible {
   z-index: 3;
   margin: -104px 10px 0;
 }
-.composition-canvas .composer {
+.composer-fade .composition-canvas .composer {
   position: relative;
   overflow: hidden;
   border-color: color-mix(in srgb, var(--border) 78%, transparent);
@@ -334,22 +347,68 @@ input:focus-visible {
   box-shadow: 0 -2px 18px rgb(20 20 18 / 7%);
   padding: 8px 15px 9px;
 }
-.composition-canvas .composer::after {
+.composer-fade .composition-canvas .composer::after {
   display: none;
 }
-.composition-canvas .composer:focus-within {
+.composer-fade .composition-canvas .composer:focus-within {
   border-bottom-color: var(--action-primary);
   background: var(--surface);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--action-primary) 20%, transparent);
 }
-.composition-canvas .composer textarea,
-.composition-canvas .composer span {
+.composer-fade .composition-canvas .composer textarea,
+.composer-fade .composition-canvas .composer span {
   position: relative;
   z-index: 1;
 }
 .composition-canvas .composer textarea {
   min-height: 105px;
   padding-top: 9px;
+}
+.composer-glass .composition-canvas .composer {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--surface) 76%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--surface) 82%, transparent),
+    color-mix(in srgb, var(--surface) 52%, transparent) 55%,
+    color-mix(in srgb, var(--surface) 34%, transparent)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--surface) 94%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--text-primary) 9%, transparent),
+    0 14px 30px rgb(20 20 18 / 15%);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  padding: 8px 15px 9px;
+}
+.composer-glass .composition-canvas .composer::after {
+  position: absolute;
+  z-index: 0;
+  top: -42px;
+  left: -18px;
+  width: 72%;
+  height: 78px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgb(255 255 255 / 42%), transparent 68%);
+  content: '';
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+.composer-glass .composition-canvas .composer textarea,
+.composer-glass .composition-canvas .composer span {
+  position: relative;
+  z-index: 1;
+}
+.composer-glass .composition-canvas .composer:focus-within {
+  border-color: var(--action-primary);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--action-primary) 20%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.composer-glass .composition-canvas .composer:focus-within::after {
+  opacity: 0;
 }
 .composition-editorial .create-flow {
   gap: 16px;
@@ -920,6 +979,7 @@ input:focus-visible {
   }
   .prototype-controls {
     width: 100%;
+    justify-content: center;
     padding: 8px 11px;
     margin: 0;
     background: color-mix(in srgb, var(--background) 85%, #999);
