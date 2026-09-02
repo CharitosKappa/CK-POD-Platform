@@ -35,7 +35,7 @@ Small components separate the visual areas and make their responsibilities clear
 - `NavigationDrawer` renders the agreed future structure and a bottom sign-in link. Items are intentionally inert.
 - `GarmentHero` renders the reusable static garment fixture and color-dependent visual treatment.
 - `ProductConfiguration` renders product summary plus color and size controls.
-- `BottomSheet` provides accessible dialog semantics, backdrop click and close-button dismissal, focus-safe behavior, and vertically scrollable content.
+- `BottomSheet` provides accessible dialog semantics, backdrop click and close-button dismissal, focus-safe behavior, and vertically scrollable content. It is used for color, size, and the lightweight prototype-only size guide.
 - `PromptComposer` renders prompt entry, count, focus style, and contextual error.
 - `ReferenceImage` creates an in-browser object URL only, previews it, and revokes it on replacement/removal/unmount.
 - `PrototypeControls` sits outside the consumer composition and switches token sets A, B, and C.
@@ -44,7 +44,7 @@ Fixture availability is defined locally. Black is initially selected; size has n
 
 ## Interaction and validation
 
-Color and size controls each open a mobile bottom sheet rather than a desktop-centered dialog. Color options have circular swatches, names, selection text/iconography in addition to color, and large touch targets. Size options contain S, M, L, XL, and 2XL; unavailable combinations are visibly disabled. The size sheet includes an inert `Size guide` affordance.
+Color and size controls each open a mobile bottom sheet rather than a desktop-centered dialog. Color options have circular swatches, names, selection text/iconography in addition to color, and large touch targets. Size options contain S, M, L, XL, and 2XL; unavailable combinations are visibly disabled. The size sheet includes a `Size guide` affordance. It opens a lightweight prototype-only sheet with mock sizing information and a simple “How to measure” treatment; it has no production data dependency.
 
 The CTA does not issue a request. It requires non-empty prompt and selected size. On invalid submit, errors appear adjacent to the relevant control in human language. On valid submit, a local completion state appears: “Step 1 complete — Style selection coming next.” This is the explicit boundary of the prototype.
 
@@ -54,18 +54,18 @@ The drawer and sheets use labelled buttons, escape/backdrop close where appropri
 
 The `Prototype controls` switcher exposes three token-only explorations:
 
-- **A — Ink & Ivory:** editorial white/ink palette with warm paper surfaces and a strong black primary action.
-- **B — Studio:** cooler charcoal, high-contrast neutral surfaces, and a saturated electric-blue action accent.
-- **C — Atelier:** deep near-black canvas, cream type, and a restrained rich-red action accent.
+- **A — Ink / Bone / Vermilion:** editorial ink and bone surfaces with a vermilion primary action.
+- **B — Ink / Porcelain / Cobalt:** crisp ink and porcelain surfaces with a cobalt primary action.
+- **C — Warm Black / Cream / Oxblood:** deep warm-black canvas, cream type, and an oxblood primary action.
 
 All three directions share layout and components. CSS variables centrally define background, primary/secondary text, primary action and text, borders, surfaces, selected state, radius, spacing, and typography scale. These directions are review controls and are not consumer UI.
 
 ## Asset approach
 
-Use a premium front-facing garment fixture stored under `apps/ux-prototype/public`. It may be an image asset paired with CSS color treatment or multiple static local color variants. It must read as a garment with fabric, collar, sleeve, and soft studio-light detail rather than a flat silhouette. It is clearly documented in the app readme as a replaceable prototype-only fixture; it is not derived from production rendering.
+Use premium front-facing Black, Navy, and White static garment fixtures stored under `apps/ux-prototype/public`. Each must read as a garment with fabric, collar, sleeve, and soft studio-light detail rather than a flat silhouette. CSS tinting is only an explicit fallback when independently credible static variants would be disproportionately expensive. The fixture set is documented in the app readme as replaceable and prototype-only; it is not derived from production rendering.
 
 ## Commands, local network, and verification
 
-The prototype package exposes `dev`, `lint`, `typecheck`, `build`, and format-check commands compatible with repository tooling. The dev command binds to `0.0.0.0` on port 3001, allowing `http://localhost:3001` and a LAN address based on the host’s active private IPv4 address. No tunnel or deployment is created.
+The prototype package exposes `dev`, `lint`, `typecheck`, `build`, and format-check commands compatible with repository tooling. The dev command binds to `0.0.0.0` on port 3001, allowing `http://localhost:3001` and a LAN address based on the host’s active private IPv4 address. No tunnel or deployment is created. `Prototype controls` is deliberately easy to reach during review and exposes A/B/C palette selection; on desktop it may also expose a non-consumer 360/390/430 preview-width control.
 
 Verification covers format, lint, type checking, and prototype build; manual/reasoned checks at 360, 390, and 430 pixels; color and size sheets; no default size; unavailable and invalidated-size behavior; prompt validation; reference preview/removal; zero backend side effects from CTA; and all three themes. The final report explicitly confirms the absence of backend/database/provider connectivity and unchanged production/domain behavior.
