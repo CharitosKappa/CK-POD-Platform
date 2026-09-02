@@ -340,9 +340,11 @@ input:focus-visible {
   border-bottom-color: transparent;
   background: linear-gradient(
     to bottom,
-    var(--surface) 8%,
-    color-mix(in srgb, var(--surface) 82%, transparent) 57%,
-    transparent 100%
+    var(--surface) 0%,
+    color-mix(in srgb, var(--surface) 74%, transparent) 14%,
+    color-mix(in srgb, var(--surface) 32%, transparent) 42%,
+    color-mix(in srgb, var(--surface) 8%, transparent) 62%,
+    transparent 76%
   );
   box-shadow: 0 -2px 18px rgb(20 20 18 / 7%);
   padding: 8px 15px 9px;
