@@ -15,3 +15,5 @@ The command binds to `0.0.0.0:3001`. Use `http://localhost:3001` locally, or rep
 `public/garments/classic-tee-{black,navy,white}.png` are generated, replaceable, local-only static fixtures used exclusively by this prototype. Step 1 uses White only as a neutral garment presentation—not a selected product color. They are not production garment rendering and may be removed with the application.
 
 The optional reference image preview remains in browser memory through an object URL and is never uploaded or persisted.
+
+The displayed `1 credit` balance is a fixed, prototype-only guest fixture. It has no account lookup, billing effect, or backend connection.

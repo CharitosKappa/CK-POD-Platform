@@ -23,15 +23,15 @@ Only **Step 1 — Idea** is implemented in UX Prototype v0.1. Steps 2–4 remain
 
 The initial consumer screen contains only the mobile header, value proposition, a neutral premium blank garment as product context, prompt composer, optional reference image, a `Choose a Style →` CTA, and the low-emphasis “Free to create · Pay when you order” reassurance. It contains no color or size controls, color/size sheets, size guide, or color/size validation.
 
-The neutral hero does not imply a selected garment variant. It uses the replaceable white static garment fixture on a soft stone stage with no color name, swatch, or selection state.
+The neutral hero does not imply a selected garment variant. It uses the replaceable white static garment fixture without a visual card/frame, color name, swatch, product name, price, or selection state.
 
 The design authority is a 390 × 844 CSS-pixel mobile viewport. The screen remains usable at 360 × 800, 430 × 932, and widths down to approximately 320 pixels without horizontal scrolling. Desktop is supported incidentally, not designed first.
 
 The screen presents this order:
 
-1. Compact header: menu button, `LET IT BE`, and cart affordance with a conditional mock-count badge.
-2. Value proposition: “Turn your idea into a shirt worth wearing.” with supporting copy, “Describe what you want. We’ll handle the rest.”
-3. Large, centered, front-facing neutral photorealistic static garment fixture and `Classic T-Shirt` / `$39.99` product context.
+1. Compact header: menu button, `LET IT BE`, fixed prototype-only `1 credit` remaining indicator, and cart affordance with a conditional mock-count badge.
+2. Value proposition: a smaller, condensed treatment of “Turn your idea into a shirt worth wearing.” with supporting copy, “Describe what you want. We’ll handle the rest.”
+3. Large, centered, front-facing neutral photorealistic static garment fixture with no product context copy.
 4. Creative prompt composer labelled `What should we put on your shirt?` with the example placeholder `A funny Viking drinking coffee...`, multiline entry, visible focus, and character count.
 5. Optional local-only reference image with image picker, thumbnail preview, and removal control.
 6. Dominant `Choose a Style →` CTA, prompt-only contextual validation, and low-emphasis “Free to create · Pay when you order” reassurance.
@@ -40,7 +40,7 @@ No Step 2 styling options, cart flow, checkout, account pages, editor, generatio
 
 ## Components and state
 
-For the approved Idea-first implementation, `CreateExperience` owns only active theme, prompt, selected local image URL, drawer visibility, prompt validation, mock cart count, and local completion message. Existing color/size fixture and bottom-sheet code may remain as isolated, unused future-step scaffolding, but is not rendered or reachable from Step 1.
+For the approved Idea-first implementation, `CreateExperience` owns only active theme, prompt, selected local image URL, drawer visibility, prompt validation, fixed prototype-only credit balance, mock cart count, and local completion message. Existing color/size fixture and bottom-sheet code may remain as isolated, unused future-step scaffolding, but is not rendered or reachable from Step 1.
 
 Small components separate the visual areas and make their responsibilities clear:
 

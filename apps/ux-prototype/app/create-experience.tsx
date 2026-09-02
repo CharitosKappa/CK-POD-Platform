@@ -33,6 +33,7 @@ export function CreateExperience() {
   const triggerRef = useRef<HTMLElement | null>(null);
   const dialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const mockCartCount = 0;
+  const mockCreditBalance = 1;
 
   useEffect(() => {
     if (!drawerOpen) {
@@ -156,10 +157,15 @@ export function CreateExperience() {
             <Icon>☰</Icon>
           </button>
           <strong className="wordmark">LET IT BE</strong>
-          <button aria-label="View cart" className="cart-button" type="button">
-            Cart
-            {mockCartCount > 0 ? <span className="cart-badge">{mockCartCount}</span> : null}
-          </button>
+          <div className="header-utilities">
+            <span aria-label={`${mockCreditBalance} credit remaining`} className="credit-balance">
+              {mockCreditBalance} credit
+            </span>
+            <button aria-label="View cart" className="cart-button" type="button">
+              Cart
+              {mockCartCount > 0 ? <span className="cart-badge">{mockCartCount}</span> : null}
+            </button>
+          </div>
         </header>
 
         <div className="create-flow">
@@ -169,13 +175,9 @@ export function CreateExperience() {
             <p>{COPY.supporting}</p>
           </section>
 
-          <section className="garment-section" aria-label="Classic T-Shirt preview">
+          <section className="garment-section" aria-label="Garment preview">
             <div className="garment-stage">
               <img alt="Blank Classic T-Shirt" src={NEUTRAL_GARMENT_ASSET} />
-            </div>
-            <div className="product-summary">
-              <strong>Classic T-Shirt</strong>
-              <span>$39.99</span>
             </div>
           </section>
 
