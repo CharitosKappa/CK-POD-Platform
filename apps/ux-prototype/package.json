@@ -8,7 +8,7 @@
     "build": "next build",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "format:check": "prettier --check app package.json README.md tsconfig.json next.config.ts next-env.d.ts"
+    "format:check": "prettier --check app package.json README.md tsconfig.json next.config.ts"
   },
   "dependencies": {
     "next": "^16.0.0",
