@@ -8,18 +8,7 @@ const COPY = {
   supporting: 'Describe what you want. We’ll handle the rest.',
 };
 
-const COLORS = [
-  { id: 'black', label: 'Black', hex: '#171717', asset: '/garments/classic-tee-black.png' },
-  { id: 'navy', label: 'Navy', hex: '#182b4f', asset: '/garments/classic-tee-navy.png' },
-  { id: 'white', label: 'White', hex: '#f7f6f2', asset: '/garments/classic-tee-white.png' },
-] as const;
-
-const SIZES = ['S', 'M', 'L', 'XL', '2XL'] as const;
-const UNAVAILABLE: Record<(typeof COLORS)[number]['id'], readonly string[]> = {
-  black: [],
-  navy: ['M'],
-  white: ['2XL'],
-};
+const NEUTRAL_GARMENT_ASSET = '/garments/classic-tee-white.png';
 
 const THEMES = {
   a: { name: 'A — Ink / Bone / Vermilion', className: 'theme-a' },
@@ -27,8 +16,6 @@ const THEMES = {
   c: { name: 'C — Warm Black / Cream / Oxblood', className: 'theme-c' },
 } as const;
 
-type ColorId = (typeof COLORS)[number]['id'];
-type Sheet = 'color' | 'size' | 'guide' | null;
 type ThemeId = keyof typeof THEMES;
 
 function Icon({ children }: { children: string }) {
@@ -38,23 +25,17 @@ function Icon({ children }: { children: string }) {
 export function CreateExperience() {
   const [theme, setTheme] = useState<ThemeId>('a');
   const [previewWidth, setPreviewWidth] = useState('390');
-  const [color, setColor] = useState<ColorId>('black');
-  const [size, setSize] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
-  const [sheet, setSheet] = useState<Sheet>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [errors, setErrors] = useState({ prompt: '', size: '' });
+  const [promptError, setPromptError] = useState('');
   const [notice, setNotice] = useState('');
-  const [cartCount, setCartCount] = useState(0);
   const triggerRef = useRef<HTMLElement | null>(null);
   const dialogCloseRef = useRef<HTMLButtonElement | null>(null);
-
-  const selectedColor = COLORS.find((item) => item.id === color) ?? COLORS[0];
-  const unavailableSizes = UNAVAILABLE[color];
+  const mockCartCount = 0;
 
   useEffect(() => {
-    if (!sheet && !drawerOpen) {
+    if (!drawerOpen) {
       return;
     }
 
@@ -65,16 +46,14 @@ export function CreateExperience() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [drawerOpen, sheet]);
+  }, [drawerOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') {
         return;
       }
-      if (sheet) {
-        closeSheet();
-      } else if (drawerOpen) {
+      if (drawerOpen) {
         closeDrawer();
       }
     };
@@ -91,16 +70,6 @@ export function CreateExperience() {
     };
   }, [reference]);
 
-  function openSheet(nextSheet: Exclude<Sheet, null>, trigger: HTMLElement) {
-    triggerRef.current = trigger;
-    setSheet(nextSheet);
-  }
-
-  function closeSheet() {
-    setSheet(null);
-    window.setTimeout(() => triggerRef.current?.focus(), 0);
-  }
-
   function openDrawer(trigger: HTMLElement) {
     triggerRef.current = trigger;
     setDrawerOpen(true);
@@ -109,29 +78,6 @@ export function CreateExperience() {
   function closeDrawer() {
     setDrawerOpen(false);
     window.setTimeout(() => triggerRef.current?.focus(), 0);
-  }
-
-  function chooseColor(nextColor: ColorId) {
-    const nextUnavailable = UNAVAILABLE[nextColor];
-    if (size && nextUnavailable.includes(size)) {
-      setSize(null);
-      setErrors((current) => ({
-        ...current,
-        size: `${size} isn’t available in ${labelFor(nextColor)}. Choose another size.`,
-      }));
-    }
-    setColor(nextColor);
-    closeSheet();
-  }
-
-  function chooseSize(nextSize: string) {
-    setSize(nextSize);
-    setErrors((current) => ({ ...current, size: '' }));
-    closeSheet();
-  }
-
-  function labelFor(id: ColorId) {
-    return COLORS.find((item) => item.id === id)?.label ?? id;
   }
 
   function onReferenceChange(event: ChangeEvent<HTMLInputElement>) {
@@ -154,16 +100,12 @@ export function CreateExperience() {
   }
 
   function submit() {
-    const nextErrors = {
-      prompt: prompt.trim() ? '' : 'Tell us what you’d like on your shirt to continue.',
-      size: size ? '' : 'Choose your size to continue.',
-    };
-    setErrors(nextErrors);
-    if (nextErrors.prompt || nextErrors.size) {
+    if (!prompt.trim()) {
+      setPromptError('Tell us what you’d like on your shirt to continue.');
       setNotice('');
       return;
     }
-    setCartCount(1);
+    setPromptError('');
     setNotice('Step 1 complete — Style selection coming next.');
   }
 
@@ -216,7 +158,7 @@ export function CreateExperience() {
           <strong className="wordmark">LET IT BE</strong>
           <button aria-label="View cart" className="cart-button" type="button">
             Cart
-            {cartCount > 0 ? <span className="cart-badge">{cartCount}</span> : null}
+            {mockCartCount > 0 ? <span className="cart-badge">{mockCartCount}</span> : null}
           </button>
         </header>
 
@@ -227,12 +169,9 @@ export function CreateExperience() {
             <p>{COPY.supporting}</p>
           </section>
 
-          <section
-            className="garment-section"
-            aria-label={`${selectedColor.label} Classic T-Shirt preview`}
-          >
+          <section className="garment-section" aria-label="Classic T-Shirt preview">
             <div className="garment-stage">
-              <img alt={`Blank ${selectedColor.label} Classic T-Shirt`} src={selectedColor.asset} />
+              <img alt="Blank Classic T-Shirt" src={NEUTRAL_GARMENT_ASSET} />
             </div>
             <div className="product-summary">
               <strong>Classic T-Shirt</strong>
@@ -240,44 +179,15 @@ export function CreateExperience() {
             </div>
           </section>
 
-          <div className="configuration">
-            <button
-              className="config-button"
-              onClick={(event) => openSheet('color', event.currentTarget)}
-              type="button"
-            >
-              <span>Color</span>
-              <strong>
-                <i className="color-dot" style={{ backgroundColor: selectedColor.hex }} />
-                {selectedColor.label}
-              </strong>
-              <Icon>›</Icon>
-            </button>
-            <button
-              className={`config-button ${errors.size ? 'has-error' : ''}`}
-              onClick={(event) => openSheet('size', event.currentTarget)}
-              type="button"
-            >
-              <span>Size</span>
-              <strong>{size ?? 'Select'}</strong>
-              <Icon>›</Icon>
-            </button>
-          </div>
-          {errors.size ? (
-            <p className="field-error" role="alert">
-              {errors.size}
-            </p>
-          ) : null}
-
           <section className="prompt-section">
             <label htmlFor="shirt-prompt">What should we put on your shirt?</label>
-            <div className={`composer ${errors.prompt ? 'has-error' : ''}`}>
+            <div className={`composer ${promptError ? 'has-error' : ''}`}>
               <textarea
                 id="shirt-prompt"
                 maxLength={280}
                 onChange={(event) => {
                   setPrompt(event.target.value);
-                  if (errors.prompt) setErrors((current) => ({ ...current, prompt: '' }));
+                  if (promptError) setPromptError('');
                 }}
                 onKeyDown={handlePromptKeyDown}
                 placeholder="A funny Viking drinking coffee..."
@@ -286,9 +196,9 @@ export function CreateExperience() {
               />
               <span>{prompt.length}/280</span>
             </div>
-            {errors.prompt ? (
+            {promptError ? (
               <p className="field-error" role="alert">
-                {errors.prompt}
+                {promptError}
               </p>
             ) : null}
           </section>
@@ -316,7 +226,7 @@ export function CreateExperience() {
           </section>
 
           <button className="create-button" onClick={submit} type="button">
-            Create My Shirt <Icon>→</Icon>
+            Choose a Style <Icon>→</Icon>
           </button>
           {notice ? (
             <p className="completion-notice" role="status">
@@ -330,30 +240,6 @@ export function CreateExperience() {
       </section>
 
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={dialogCloseRef} /> : null}
-      {sheet ? (
-        <BottomSheet
-          close={closeSheet}
-          closeRef={dialogCloseRef}
-          title={
-            sheet === 'color'
-              ? 'Choose a color'
-              : sheet === 'size'
-                ? 'Choose your size'
-                : 'Size guide'
-          }
-        >
-          {sheet === 'color' ? <ColorSheet color={color} chooseColor={chooseColor} /> : null}
-          {sheet === 'size' ? (
-            <SizeSheet
-              color={color}
-              chooseSize={chooseSize}
-              openGuide={(trigger) => openSheet('guide', trigger)}
-              unavailableSizes={unavailableSizes}
-            />
-          ) : null}
-          {sheet === 'guide' ? <SizeGuide /> : null}
-        </BottomSheet>
-      ) : null}
     </main>
   );
 }
@@ -409,146 +295,4 @@ function NavigationDrawer({
       </nav>
     </div>
   );
-}
-
-function BottomSheet({
-  children,
-  close,
-  closeRef,
-  title,
-}: {
-  children: React.ReactNode;
-  close: () => void;
-  closeRef: React.RefObject<HTMLButtonElement | null>;
-  title: string;
-}) {
-  return (
-    <div
-      className="overlay sheet-overlay"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
-      <section
-        aria-labelledby="sheet-title"
-        aria-modal="true"
-        className="bottom-sheet"
-        role="dialog"
-      >
-        <div className="sheet-handle" />
-        <div className="sheet-header">
-          <h2 id="sheet-title">{title}</h2>
-          <button aria-label={`Close ${title}`} onClick={close} ref={closeRef} type="button">
-            ×
-          </button>
-        </div>
-        {children}
-      </section>
-    </div>
-  );
-}
-
-function ColorSheet({
-  chooseColor,
-  color,
-}: {
-  chooseColor: (color: ColorId) => void;
-  color: ColorId;
-}) {
-  return (
-    <div className="color-list">
-      {COLORS.map((item) => (
-        <button
-          aria-pressed={color === item.id}
-          key={item.id}
-          onClick={() => chooseColor(item.id)}
-          type="button"
-        >
-          <i className="sheet-swatch" style={{ backgroundColor: item.hex }} />
-          <span>{item.label}</span>
-          <b>{color === item.id ? 'Selected' : ''}</b>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function SizeSheet({
-  chooseSize,
-  color,
-  openGuide,
-  unavailableSizes,
-}: {
-  chooseSize: (size: string) => void;
-  color: ColorId;
-  openGuide: (trigger: HTMLElement) => void;
-  unavailableSizes: readonly string[];
-}) {
-  return (
-    <>
-      <p className="sheet-description">Choose the fit that feels right for you.</p>
-      <div className="size-list">
-        {SIZES.map((item) => (
-          <button
-            disabled={unavailableSizes.includes(item)}
-            key={item}
-            onClick={() => chooseSize(item)}
-            type="button"
-          >
-            {item}
-            {unavailableSizes.includes(item) ? (
-              <small>Unavailable in {labelForColor(color)}</small>
-            ) : null}
-          </button>
-        ))}
-      </div>
-      <button
-        className="size-guide-link"
-        onClick={(event) => openGuide(event.currentTarget)}
-        type="button"
-      >
-        Size guide <Icon>›</Icon>
-      </button>
-    </>
-  );
-}
-
-function SizeGuide() {
-  return (
-    <div className="size-guide">
-      <p>Mock sizing for prototype review.</p>
-      <div className="guide-table">
-        <span>Size</span>
-        <span>Chest</span>
-        <span>Length</span>
-        <span>S</span>
-        <span>34–36 in</span>
-        <span>28 in</span>
-        <span>M</span>
-        <span>38–40 in</span>
-        <span>29 in</span>
-        <span>L</span>
-        <span>42–44 in</span>
-        <span>30 in</span>
-        <span>XL</span>
-        <span>46–48 in</span>
-        <span>31 in</span>
-        <span>2XL</span>
-        <span>50–52 in</span>
-        <span>32 in</span>
-      </div>
-      <section>
-        <h3>How to measure</h3>
-        <p>
-          Lay a shirt that fits you flat. Measure across the chest, then from the highest shoulder
-          point to the hem.
-        </p>
-      </section>
-    </div>
-  );
-}
-
-function labelForColor(color: ColorId) {
-  return COLORS.find((item) => item.id === color)?.label ?? color;
 }
