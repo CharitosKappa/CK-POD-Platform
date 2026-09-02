@@ -44,7 +44,7 @@ For the approved Idea-first implementation, `CreateExperience` owns only active 
 
 Small components separate the visual areas and make their responsibilities clear:
 
-- `MobileHeader` opens the drawer and renders the mock cart badge.
+- `CanvasMenu` is a single floating overflow affordance that opens the drawer; it is not a persistent header.
 - `NavigationDrawer` renders the agreed future structure and a bottom sign-in link. Items are intentionally inert.
 - `GarmentHero` renders the neutral reusable static garment fixture and product context.
 - `PromptComposer` renders prompt entry, count, focus style, and contextual error.
@@ -71,15 +71,15 @@ The `Prototype controls` switcher exposes three token-only explorations:
 
 All three directions share layout and components. CSS variables centrally define background, primary/secondary text, primary action and text, borders, surfaces, selected state, radius, spacing, and typography scale. These directions are review controls and are not consumer UI.
 
-## Header comparison controls
+## Canvas composition controls
 
-Prototype controls also expose three non-consumer header explorations, independent of the A/B/C visual themes:
+Prototype controls expose three non-consumer, headerless composition explorations, independent of the A/B/C visual themes:
 
-1. **Gallery:** centered `LET IT BE`, compact numeric credit token, and bag icon.
-2. **Brand-led:** centered wordmark with a second utility line for the full credit balance.
-3. **Utility:** menu, `Create` context label, full credit badge, and bag icon; the wordmark is intentionally absent.
+1. **Creative canvas:** generous garment space and centered prompt hierarchy.
+2. **Editorial poster:** a small vertical `LET IT BE` signature with left-aligned editorial copy.
+3. **Object-first:** garment-led top half with the composer emerging below it.
 
-They preserve the same working menu drawer, cart affordance, and fixed prototype-only credit fixture. They are for CEO comparison only and do not change the Step 1 flow.
+All use a single floating overflow affordance for the existing drawer. The fixed prototype-only credit fixture appears below the CTA rather than in a header. They are for CEO comparison only and do not change the Step 1 flow.
 
 ## Asset approach
 

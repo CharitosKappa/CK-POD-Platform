@@ -95,7 +95,7 @@ input:focus-visible {
   gap: 4px;
 }
 .theme-controls button,
-.header-controls button {
+.composition-controls button {
   min-width: 30px;
   height: 30px;
   border: 1px solid #bdb9af;
@@ -106,17 +106,17 @@ input:focus-visible {
   font-weight: 800;
 }
 .theme-controls button[aria-pressed='true'],
-.header-controls button[aria-pressed='true'] {
+.composition-controls button[aria-pressed='true'] {
   border-color: var(--action-primary);
   background: var(--action-primary);
   color: var(--action-text);
 }
-.header-controls {
+.composition-controls {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.header-controls > span {
+.composition-controls > span {
   margin-right: 1px;
   font-size: 10px;
   text-transform: uppercase;
@@ -137,6 +137,7 @@ input:focus-visible {
 }
 
 .phone-stage {
+  position: relative;
   width: min(100%, var(--preview-width));
   margin: 0 auto;
   overflow: hidden;
@@ -144,6 +145,37 @@ input:focus-visible {
   border-radius: clamp(0px, 2vw, 30px);
   background: var(--background);
   box-shadow: 0 20px 55px rgb(25 24 20 / 15%);
+}
+.canvas-menu-button {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--background) 82%, transparent);
+  color: var(--text-primary);
+  backdrop-filter: blur(8px);
+  font-size: 17px;
+  letter-spacing: 0.08em;
+}
+.editorial-wordmark {
+  position: absolute;
+  z-index: 1;
+  top: 64px;
+  left: 13px;
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  color: var(--action-primary);
+  font-family: Georgia, serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
 }
 .mobile-header {
   display: grid;
@@ -261,7 +293,58 @@ input:focus-visible {
 .create-flow {
   display: grid;
   gap: 20px;
-  padding: 20px 16px max(26px, env(safe-area-inset-bottom));
+  padding: 62px 16px max(26px, env(safe-area-inset-bottom));
+}
+.composition-canvas .create-flow {
+  gap: 18px;
+}
+.composition-canvas .garment-stage {
+  min-height: 260px;
+}
+.composition-canvas .intro h1 {
+  max-width: 15ch;
+}
+.composition-editorial .create-flow {
+  gap: 16px;
+  padding-left: 39px;
+}
+.composition-editorial .intro {
+  text-align: left;
+}
+.composition-editorial .intro h1,
+.composition-editorial .intro p:last-child {
+  margin-left: 0;
+}
+.composition-editorial .garment-stage {
+  min-height: 250px;
+}
+.composition-editorial .composer {
+  border-radius: 4px 16px 16px 16px;
+}
+.composition-object .create-flow {
+  gap: 17px;
+  padding-top: 48px;
+}
+.composition-object .garment-section {
+  order: -1;
+}
+.composition-object .garment-stage {
+  min-height: 300px;
+}
+.composition-object .intro {
+  text-align: left;
+}
+.composition-object .intro h1,
+.composition-object .intro p:last-child {
+  max-width: none;
+  margin-left: 0;
+}
+.composition-object .intro h1 {
+  font-size: 23px;
+}
+.composition-object .prompt-section {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
 }
 .intro {
   text-align: center;
@@ -520,11 +603,24 @@ input:focus-visible {
   line-height: 1.4;
 }
 .reassurance {
-  margin: -9px 0 0;
+  margin: 0;
   color: var(--text-secondary);
   text-align: center;
   font-size: 11px;
   font-weight: 700;
+}
+.creation-meta {
+  display: grid;
+  gap: 5px;
+  margin-top: -8px;
+  text-align: center;
+}
+.credit-copy {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 .reassurance span {
   margin: 0 4px;

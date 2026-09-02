@@ -17,12 +17,12 @@ const THEMES = {
 } as const;
 
 type ThemeId = keyof typeof THEMES;
-type HeaderVariant = 'gallery' | 'brand' | 'utility';
+type CompositionVariant = 'canvas' | 'editorial' | 'object';
 
-const HEADER_VARIANTS: Record<HeaderVariant, { label: string; name: string }> = {
-  gallery: { label: '1', name: 'Gallery header' },
-  brand: { label: '2', name: 'Brand-led header' },
-  utility: { label: '3', name: 'Utility header' },
+const COMPOSITION_VARIANTS: Record<CompositionVariant, { label: string; name: string }> = {
+  canvas: { label: '1', name: 'Creative canvas' },
+  editorial: { label: '2', name: 'Editorial poster' },
+  object: { label: '3', name: 'Object-first' },
 };
 
 function Icon({ children }: { children: string }) {
@@ -31,7 +31,7 @@ function Icon({ children }: { children: string }) {
 
 export function CreateExperience() {
   const [theme, setTheme] = useState<ThemeId>('a');
-  const [headerVariant, setHeaderVariant] = useState<HeaderVariant>('gallery');
+  const [composition, setComposition] = useState<CompositionVariant>('canvas');
   const [previewWidth, setPreviewWidth] = useState('390');
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
@@ -40,7 +40,6 @@ export function CreateExperience() {
   const [notice, setNotice] = useState('');
   const triggerRef = useRef<HTMLElement | null>(null);
   const dialogCloseRef = useRef<HTMLButtonElement | null>(null);
-  const mockCartCount = 0;
   const mockCreditBalance = 1;
 
   useEffect(() => {
@@ -141,18 +140,18 @@ export function CreateExperience() {
             </button>
           ))}
         </div>
-        <div className="header-controls" role="group" aria-label="Header direction">
-          <span>Header</span>
-          {(Object.keys(HEADER_VARIANTS) as HeaderVariant[]).map((variant) => (
+        <div className="composition-controls" role="group" aria-label="Canvas direction">
+          <span>Canvas</span>
+          {(Object.keys(COMPOSITION_VARIANTS) as CompositionVariant[]).map((variant) => (
             <button
-              aria-label={HEADER_VARIANTS[variant].name}
-              aria-pressed={headerVariant === variant}
+              aria-label={COMPOSITION_VARIANTS[variant].name}
+              aria-pressed={composition === variant}
               key={variant}
-              onClick={() => setHeaderVariant(variant)}
-              title={HEADER_VARIANTS[variant].name}
+              onClick={() => setComposition(variant)}
+              title={COMPOSITION_VARIANTS[variant].name}
               type="button"
             >
-              {HEADER_VARIANTS[variant].label}
+              {COMPOSITION_VARIANTS[variant].label}
             </button>
           ))}
         </div>
@@ -167,19 +166,28 @@ export function CreateExperience() {
       </aside>
 
       <section
-        className="phone-stage"
+        className={`phone-stage composition-${composition}`}
         style={{ '--preview-width': `${previewWidth}px` } as React.CSSProperties}
       >
-        <MobileHeader
-          cartCount={mockCartCount}
-          creditBalance={mockCreditBalance}
-          onOpenMenu={openDrawer}
-          variant={headerVariant}
-        />
+        <button
+          aria-label="Open menu"
+          className="canvas-menu-button"
+          onClick={(event) => openDrawer(event.currentTarget)}
+          type="button"
+        >
+          <Icon>•••</Icon>
+        </button>
+        {composition === 'editorial' ? (
+          <p aria-hidden="true" className="editorial-wordmark">
+            <span>LET</span>
+            <span>IT</span>
+            <span>BE</span>
+          </p>
+        ) : null}
 
         <div className="create-flow">
           <section className="intro" aria-labelledby="create-heading">
-            <p className="eyebrow">Make it yours</p>
+            <p className="eyebrow">{composition === 'object' ? 'Create / 01' : 'Make it yours'}</p>
             <h1 id="create-heading">{COPY.headline}</h1>
             <p>{COPY.supporting}</p>
           </section>
@@ -244,99 +252,17 @@ export function CreateExperience() {
               {notice}
             </p>
           ) : null}
-          <p className="reassurance">
-            Free to create <span>·</span> Pay when you order
-          </p>
+          <div className="creation-meta">
+            <span className="credit-copy">{mockCreditBalance} credit available</span>
+            <p className="reassurance">
+              Free to create <span>·</span> Pay when you order
+            </p>
+          </div>
         </div>
       </section>
 
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={dialogCloseRef} /> : null}
     </main>
-  );
-}
-
-function MobileHeader({
-  cartCount,
-  creditBalance,
-  onOpenMenu,
-  variant,
-}: {
-  cartCount: number;
-  creditBalance: number;
-  onOpenMenu: (trigger: HTMLElement) => void;
-  variant: HeaderVariant;
-}) {
-  const menuButton = (
-    <button
-      aria-label="Open menu"
-      className="header-button"
-      onClick={(event) => onOpenMenu(event.currentTarget)}
-      type="button"
-    >
-      <Icon>☰</Icon>
-    </button>
-  );
-  const cartButton = (
-    <button aria-label="View cart" className="cart-button" type="button">
-      <BagIcon />
-      {cartCount > 0 ? <span className="cart-badge">{cartCount}</span> : null}
-    </button>
-  );
-
-  if (variant === 'brand') {
-    return (
-      <header className="mobile-header header-brand">
-        <div className="brand-main">
-          {menuButton}
-          <strong className="wordmark">LET IT BE</strong>
-          {cartButton}
-        </div>
-        <div className="credit-strip">
-          <span>Generation balance</span>
-          <strong>{creditBalance} credit remaining</strong>
-        </div>
-      </header>
-    );
-  }
-
-  if (variant === 'utility') {
-    return (
-      <header className="mobile-header header-utility">
-        {menuButton}
-        <strong className="header-context">Create</strong>
-        <div className="header-utilities">
-          <span aria-label={`${creditBalance} credit remaining`} className="credit-balance">
-            {creditBalance} credit
-          </span>
-          {cartButton}
-        </div>
-      </header>
-    );
-  }
-
-  return (
-    <header className="mobile-header header-gallery">
-      {menuButton}
-      <strong className="wordmark">LET IT BE</strong>
-      <div className="header-utilities">
-        <span
-          aria-label={`${creditBalance} credit remaining`}
-          className="credit-balance credit-token"
-        >
-          {creditBalance}
-        </span>
-        {cartButton}
-      </div>
-    </header>
-  );
-}
-
-function BagIcon() {
-  return (
-    <svg aria-hidden="true" fill="none" height="19" viewBox="0 0 24 24" width="19">
-      <path d="M5.5 8.5h13l-1 11h-11l-1-11Z" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M9 9V6.8a3 3 0 0 1 6 0V9" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
   );
 }
 
