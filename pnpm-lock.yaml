@@ -39,6 +39,25 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.1)(tsx@4.23.12)
 
+  apps/ux-prototype:
+    dependencies:
+      next:
+        specifier: ^16.0.0
+        version: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.5(@types/react@19.2.18)
+
   apps/web:
     dependencies:
       '@fontsource/inter':
