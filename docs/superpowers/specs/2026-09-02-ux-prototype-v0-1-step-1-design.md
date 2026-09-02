@@ -71,6 +71,16 @@ The `Prototype controls` switcher exposes three token-only explorations:
 
 All three directions share layout and components. CSS variables centrally define background, primary/secondary text, primary action and text, borders, surfaces, selected state, radius, spacing, and typography scale. These directions are review controls and are not consumer UI.
 
+## Header comparison controls
+
+Prototype controls also expose three non-consumer header explorations, independent of the A/B/C visual themes:
+
+1. **Gallery:** centered `LET IT BE`, compact numeric credit token, and bag icon.
+2. **Brand-led:** centered wordmark with a second utility line for the full credit balance.
+3. **Utility:** menu, `Create` context label, full credit badge, and bag icon; the wordmark is intentionally absent.
+
+They preserve the same working menu drawer, cart affordance, and fixed prototype-only credit fixture. They are for CEO comparison only and do not change the Step 1 flow.
+
 ## Asset approach
 
 Use a premium front-facing White static garment fixture on a neutral soft-stone presentation stage for Step 1. Black and Navy local fixtures are reserved for the later Color / Size step. Each must read as a garment with fabric, collar, sleeve, and soft studio-light detail rather than a flat silhouette. The fixture set is documented in the app readme as replaceable and prototype-only; it is not derived from production rendering.

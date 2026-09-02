@@ -17,6 +17,13 @@ const THEMES = {
 } as const;
 
 type ThemeId = keyof typeof THEMES;
+type HeaderVariant = 'gallery' | 'brand' | 'utility';
+
+const HEADER_VARIANTS: Record<HeaderVariant, { label: string; name: string }> = {
+  gallery: { label: '1', name: 'Gallery header' },
+  brand: { label: '2', name: 'Brand-led header' },
+  utility: { label: '3', name: 'Utility header' },
+};
 
 function Icon({ children }: { children: string }) {
   return <span aria-hidden="true">{children}</span>;
@@ -24,6 +31,7 @@ function Icon({ children }: { children: string }) {
 
 export function CreateExperience() {
   const [theme, setTheme] = useState<ThemeId>('a');
+  const [headerVariant, setHeaderVariant] = useState<HeaderVariant>('gallery');
   const [previewWidth, setPreviewWidth] = useState('390');
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
@@ -133,6 +141,21 @@ export function CreateExperience() {
             </button>
           ))}
         </div>
+        <div className="header-controls" role="group" aria-label="Header direction">
+          <span>Header</span>
+          {(Object.keys(HEADER_VARIANTS) as HeaderVariant[]).map((variant) => (
+            <button
+              aria-label={HEADER_VARIANTS[variant].name}
+              aria-pressed={headerVariant === variant}
+              key={variant}
+              onClick={() => setHeaderVariant(variant)}
+              title={HEADER_VARIANTS[variant].name}
+              type="button"
+            >
+              {HEADER_VARIANTS[variant].label}
+            </button>
+          ))}
+        </div>
         <label className="preview-control">
           Preview width
           <select onChange={(event) => setPreviewWidth(event.target.value)} value={previewWidth}>
@@ -147,26 +170,12 @@ export function CreateExperience() {
         className="phone-stage"
         style={{ '--preview-width': `${previewWidth}px` } as React.CSSProperties}
       >
-        <header className="mobile-header">
-          <button
-            aria-label="Open menu"
-            className="header-button"
-            onClick={(event) => openDrawer(event.currentTarget)}
-            type="button"
-          >
-            <Icon>☰</Icon>
-          </button>
-          <strong className="wordmark">LET IT BE</strong>
-          <div className="header-utilities">
-            <span aria-label={`${mockCreditBalance} credit remaining`} className="credit-balance">
-              {mockCreditBalance} credit
-            </span>
-            <button aria-label="View cart" className="cart-button" type="button">
-              Cart
-              {mockCartCount > 0 ? <span className="cart-badge">{mockCartCount}</span> : null}
-            </button>
-          </div>
-        </header>
+        <MobileHeader
+          cartCount={mockCartCount}
+          creditBalance={mockCreditBalance}
+          onOpenMenu={openDrawer}
+          variant={headerVariant}
+        />
 
         <div className="create-flow">
           <section className="intro" aria-labelledby="create-heading">
@@ -243,6 +252,91 @@ export function CreateExperience() {
 
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={dialogCloseRef} /> : null}
     </main>
+  );
+}
+
+function MobileHeader({
+  cartCount,
+  creditBalance,
+  onOpenMenu,
+  variant,
+}: {
+  cartCount: number;
+  creditBalance: number;
+  onOpenMenu: (trigger: HTMLElement) => void;
+  variant: HeaderVariant;
+}) {
+  const menuButton = (
+    <button
+      aria-label="Open menu"
+      className="header-button"
+      onClick={(event) => onOpenMenu(event.currentTarget)}
+      type="button"
+    >
+      <Icon>☰</Icon>
+    </button>
+  );
+  const cartButton = (
+    <button aria-label="View cart" className="cart-button" type="button">
+      <BagIcon />
+      {cartCount > 0 ? <span className="cart-badge">{cartCount}</span> : null}
+    </button>
+  );
+
+  if (variant === 'brand') {
+    return (
+      <header className="mobile-header header-brand">
+        <div className="brand-main">
+          {menuButton}
+          <strong className="wordmark">LET IT BE</strong>
+          {cartButton}
+        </div>
+        <div className="credit-strip">
+          <span>Generation balance</span>
+          <strong>{creditBalance} credit remaining</strong>
+        </div>
+      </header>
+    );
+  }
+
+  if (variant === 'utility') {
+    return (
+      <header className="mobile-header header-utility">
+        {menuButton}
+        <strong className="header-context">Create</strong>
+        <div className="header-utilities">
+          <span aria-label={`${creditBalance} credit remaining`} className="credit-balance">
+            {creditBalance} credit
+          </span>
+          {cartButton}
+        </div>
+      </header>
+    );
+  }
+
+  return (
+    <header className="mobile-header header-gallery">
+      {menuButton}
+      <strong className="wordmark">LET IT BE</strong>
+      <div className="header-utilities">
+        <span
+          aria-label={`${creditBalance} credit remaining`}
+          className="credit-balance credit-token"
+        >
+          {creditBalance}
+        </span>
+        {cartButton}
+      </div>
+    </header>
+  );
+}
+
+function BagIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="19" viewBox="0 0 24 24" width="19">
+      <path d="M5.5 8.5h13l-1 11h-11l-1-11Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M9 9V6.8a3 3 0 0 1 6 0V9" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
   );
 }
 

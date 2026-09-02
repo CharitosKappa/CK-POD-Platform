@@ -94,7 +94,8 @@ input:focus-visible {
   display: flex;
   gap: 4px;
 }
-.theme-controls button {
+.theme-controls button,
+.header-controls button {
   min-width: 30px;
   height: 30px;
   border: 1px solid #bdb9af;
@@ -104,10 +105,21 @@ input:focus-visible {
   font-size: 11px;
   font-weight: 800;
 }
-.theme-controls button[aria-pressed='true'] {
+.theme-controls button[aria-pressed='true'],
+.header-controls button[aria-pressed='true'] {
   border-color: var(--action-primary);
   background: var(--action-primary);
   color: var(--action-text);
+}
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.header-controls > span {
+  margin-right: 1px;
+  font-size: 10px;
+  text-transform: uppercase;
 }
 .preview-control {
   display: flex;
@@ -142,6 +154,41 @@ input:focus-visible {
   padding: 0 8px;
   background: color-mix(in srgb, var(--background) 88%, var(--surface));
 }
+.header-brand {
+  display: block;
+  min-height: 0;
+  padding: 0;
+}
+.brand-main {
+  display: grid;
+  grid-template-columns: 48px 1fr 48px;
+  min-height: 52px;
+  align-items: center;
+  padding: 0 8px;
+}
+.credit-strip {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 0 15px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.credit-strip strong {
+  color: var(--text-primary);
+  font-size: 10px;
+}
+.header-utility {
+  grid-template-columns: 48px 1fr auto;
+}
+.header-context {
+  font-size: 15px;
+  letter-spacing: -0.03em;
+}
 .header-button,
 .cart-button {
   display: inline-flex;
@@ -153,6 +200,10 @@ input:focus-visible {
   background: transparent;
   color: var(--text-primary);
   font-size: 14px;
+}
+.cart-button svg {
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .header-utilities {
   display: flex;
@@ -169,6 +220,15 @@ input:focus-visible {
   font-weight: 800;
   line-height: 1;
   white-space: nowrap;
+}
+.credit-token {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  color: var(--action-primary);
+  font-size: 11px;
 }
 .header-button {
   font-size: 23px;
