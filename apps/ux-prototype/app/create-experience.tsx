@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent } from 'react';
+import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 const NEUTRAL_GARMENT_ASSET = '/garments/classic-tee-white.png';
 const GARMENT_ASSETS = {
@@ -314,15 +314,14 @@ export function CreateExperience() {
   const [lookPickerOpen, setLookPickerOpen] = useState(false);
   const [color, setColor] = useState<ColorId>('black');
   const [size, setSize] = useState<SizeId | null>(null);
-  const [moreColorsOpen, setMoreColorsOpen] = useState(false);
-  const [sizeGuideOpen, setSizeGuideOpen] = useState(false);
+  const [selectionSheet, setSelectionSheet] = useState<'color' | 'size' | null>(null);
+  const [productInfoOpen, setProductInfoOpen] = useState(false);
   const [sizeError, setSizeError] = useState('');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const triggerRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const toneSectionRef = useRef<HTMLElement | null>(null);
-  const styleIntroRef = useRef<HTMLElement | null>(null);
-  const productIntroRef = useRef<HTMLElement | null>(null);
+  const productInfoRef = useRef<HTMLDivElement | null>(null);
   const recommendation = useMemo(
     () => (style ? recommendedLook(style, tone, prompt) : null),
     [style, tone, prompt],
@@ -351,20 +350,34 @@ export function CreateExperience() {
     };
   }, [drawerOpen]);
   useEffect(() => {
-    if (step === 'style') {
-      window.requestAnimationFrame(() => {
-        styleIntroRef.current?.scrollIntoView({ block: 'start' });
-      });
-      return;
-    }
-    if (step === 'product') {
-      window.requestAnimationFrame(() => {
-        productIntroRef.current?.scrollIntoView({ block: 'start' });
-      });
-      return;
-    }
-    if (step === 'boundary') window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+    if (!selectionSheet) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectionSheet]);
+  useEffect(() => {
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+    setProductInfoOpen(false);
   }, [step]);
+  useEffect(() => {
+    if (!productInfoOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setProductInfoOpen(false);
+    };
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !productInfoRef.current?.contains(event.target)) {
+        setProductInfoOpen(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+    };
+  }, [productInfoOpen]);
   const openMenu = (element: HTMLButtonElement) => {
     triggerRef.current = element;
     setDrawerOpen(true);
@@ -403,6 +416,7 @@ export function CreateExperience() {
   };
   const chooseColor = (id: ColorId) => {
     setColor(id);
+    setSelectionSheet(null);
     setAvailabilityMessage('');
     if (id === 'navy' && size === 'm') {
       setSize(null);
@@ -412,6 +426,7 @@ export function CreateExperience() {
   const chooseSize = (id: SizeId) => {
     if (unavailableSize(id)) return;
     setSize(id);
+    setSelectionSheet(null);
     setSizeError('');
     setAvailabilityMessage('');
   };
@@ -529,7 +544,7 @@ export function CreateExperience() {
           </div>
         ) : step === 'style' ? (
           <div className="style-flow">
-            <section className="style-intro" aria-labelledby="style-heading" ref={styleIntroRef}>
+            <section className="style-intro" aria-labelledby="style-heading">
               <h1 id="style-heading">Choose the vibe.</h1>
             </section>
             <section aria-labelledby="style-heading-label">
@@ -654,13 +669,8 @@ export function CreateExperience() {
           </div>
         ) : step === 'product' ? (
           <div className="product-flow">
-            <section
-              className="product-intro"
-              aria-labelledby="product-heading"
-              ref={productIntroRef}
-            >
-              <span className="product-progress">3 / 4</span>
-              <h1 id="product-heading">Choose your shirt.</h1>
+            <section className="product-intro" aria-labelledby="product-heading">
+              <h1 id="product-heading">Choose color &amp; size.</h1>
             </section>
             <section
               className="product-garment"
@@ -670,94 +680,74 @@ export function CreateExperience() {
                 <img alt={`${selectedColor.name} Classic T-Shirt`} src={garmentAsset} />
               </div>
               <div className="product-meta-row">
-                <strong>Classic T-Shirt</strong>
-                <span>$39.99</span>
-              </div>
-            </section>
-            <section className="product-option-section" aria-labelledby="color-heading">
-              <div className="product-option-heading">
-                <h2 id="color-heading">Color</h2>
-                <strong>{selectedColor.name}</strong>
-              </div>
-              <div className="color-swatch-row" role="group" aria-label="Choose a color">
-                {POPULAR_COLORS.map((item) => (
+                <div className="product-name-with-info" ref={productInfoRef}>
+                  <strong>Classic T-Shirt</strong>
                   <button
-                    aria-label={`Choose ${item.name}`}
-                    aria-pressed={color === item.id}
-                    className={`color-swatch ${color === item.id ? 'is-selected' : ''}`}
-                    key={item.id}
-                    onClick={() => chooseColor(item.id)}
+                    aria-controls="classic-tee-info"
+                    aria-expanded={productInfoOpen}
+                    aria-label="About the Classic T-Shirt"
+                    className="product-info-trigger"
+                    onClick={() => setProductInfoOpen((open) => !open)}
                     type="button"
                   >
-                    <span aria-hidden="true" style={{ background: item.swatch }} />
-                    {color === item.id ? <b aria-hidden="true">✓</b> : null}
+                    !
                   </button>
-                ))}
+                  {productInfoOpen ? (
+                    <section
+                      aria-label="Classic T-Shirt information"
+                      className="product-info-bubble"
+                      id="classic-tee-info"
+                      role="dialog"
+                    >
+                      <strong>Classic T-Shirt</strong>
+                      <p>Soft midweight cotton, a regular unisex fit, and a print-ready surface.</p>
+                      <small>Final availability can vary by color and size.</small>
+                    </section>
+                  ) : null}
+                </div>
+                <span>from $39.99</span>
               </div>
+            </section>
+            <section className="product-selection-cards" aria-label="Product configuration">
               <button
-                aria-expanded={moreColorsOpen}
-                className="more-colors-button"
-                onClick={() => setMoreColorsOpen((open) => !open)}
+                aria-haspopup="dialog"
+                className="selection-card"
+                onClick={() => setSelectionSheet('color')}
                 type="button"
               >
-                More colors <Icon>{moreColorsOpen ? '↑' : '↓'}</Icon>
+                <span className="selection-card-label">Color</span>
+                <span className="selection-card-value">
+                  <i
+                    aria-hidden="true"
+                    className="selection-card-swatch"
+                    style={{ background: selectedColor.swatch }}
+                  />
+                  {selectedColor.name} <Icon>›</Icon>
+                </span>
               </button>
-              {moreColorsOpen ? (
-                <div className="more-color-grid" role="group" aria-label="More colors">
-                  {MORE_COLORS.map((item) => (
-                    <button
-                      aria-label={`Choose ${item.name}`}
-                      aria-pressed={color === item.id}
-                      className={`color-swatch ${color === item.id ? 'is-selected' : ''}`}
-                      key={item.id}
-                      onClick={() => chooseColor(item.id)}
-                      type="button"
-                    >
-                      <span aria-hidden="true" style={{ background: item.swatch }} />
-                      {color === item.id ? <b aria-hidden="true">✓</b> : null}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              <button
+                aria-haspopup="dialog"
+                className="selection-card"
+                onClick={() => setSelectionSheet('size')}
+                type="button"
+              >
+                <span className="selection-card-label">Size</span>
+                <span className={`selection-card-value ${size ? '' : 'is-empty'}`}>
+                  {size ? SIZES.find((item) => item.id === size)?.name : 'Select size'}{' '}
+                  <Icon>›</Icon>
+                </span>
+              </button>
             </section>
-            <section
-              className="product-option-section size-option-section"
-              aria-labelledby="size-heading"
-            >
-              <div className="product-option-heading">
-                <h2 id="size-heading">Size</h2>
-                <button onClick={() => setSizeGuideOpen(true)} type="button">
-                  Size guide
-                </button>
-              </div>
-              <div className="size-grid" role="group" aria-label="Choose a size">
-                {SIZES.map((item) => {
-                  const unavailable = unavailableSize(item.id);
-                  return (
-                    <button
-                      aria-pressed={size === item.id}
-                      className={`size-button ${size === item.id ? 'is-selected' : ''}`}
-                      disabled={unavailable}
-                      key={item.id}
-                      onClick={() => chooseSize(item.id)}
-                      type="button"
-                    >
-                      {item.name}
-                    </button>
-                  );
-                })}
-              </div>
-              {availabilityMessage ? (
-                <p className="availability-message" role="alert">
-                  {availabilityMessage}
-                </p>
-              ) : null}
-              {sizeError ? (
-                <p className="field-error size-error" role="alert">
-                  {sizeError}
-                </p>
-              ) : null}
-            </section>
+            {availabilityMessage ? (
+              <p className="availability-message" role="alert">
+                {availabilityMessage}
+              </p>
+            ) : null}
+            {sizeError ? (
+              <p className="field-error size-error" role="alert">
+                {sizeError}
+              </p>
+            ) : null}
             <div className="step-actions product-actions">
               <button className="step-back" onClick={() => setStep('style')} type="button">
                 ← Back to style
@@ -782,8 +772,173 @@ export function CreateExperience() {
         )}
       </section>
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={closeRef} /> : null}
-      {sizeGuideOpen ? <SizeGuide close={() => setSizeGuideOpen(false)} /> : null}
+      {selectionSheet === 'color' ? (
+        <ColorSelectionSheet
+          color={color}
+          close={() => setSelectionSheet(null)}
+          chooseColor={chooseColor}
+        />
+      ) : null}
+      {selectionSheet === 'size' ? (
+        <SizeSelectionSheet
+          close={() => setSelectionSheet(null)}
+          size={size}
+          unavailableSize={unavailableSize}
+          chooseSize={chooseSize}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function ColorSelectionSheet({
+  color,
+  chooseColor,
+  close,
+}: {
+  color: ColorId;
+  chooseColor: (id: ColorId) => void;
+  close: () => void;
+}) {
+  const colors = [...POPULAR_COLORS, ...MORE_COLORS];
+  const [expanded, setExpanded] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dragStartY = useRef<number | null>(null);
+  const movedDuringDrag = useRef(false);
+
+  const releaseHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (dragStartY.current === null) return;
+    const distance = event.clientY - dragStartY.current;
+    dragStartY.current = null;
+    setDragging(false);
+    setDragOffset(0);
+    if (distance <= -48) {
+      setExpanded(true);
+    } else if (distance >= 132) {
+      close();
+    } else if (distance >= 48 && expanded) {
+      setExpanded(false);
+    }
+  };
+
+  return (
+    <div
+      className="overlay sheet-overlay"
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && close()}
+    >
+      <section
+        aria-labelledby="color-sheet-title"
+        aria-modal="true"
+        className={`bottom-sheet draggable-sheet ${expanded ? 'is-expanded' : ''} ${
+          dragging ? 'is-dragging' : ''
+        }`}
+        role="dialog"
+        style={{ transform: `translateY(${dragOffset}px)` }}
+      >
+        <button
+          aria-label={expanded ? 'Collapse color selection' : 'Expand color selection'}
+          className="sheet-handle"
+          onClick={() => {
+            if (movedDuringDrag.current) {
+              movedDuringDrag.current = false;
+              return;
+            }
+            setExpanded((value) => !value);
+          }}
+          onPointerCancel={releaseHandle}
+          onPointerDown={(event) => {
+            dragStartY.current = event.clientY;
+            movedDuringDrag.current = false;
+            setDragging(true);
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (dragStartY.current === null) return;
+            const distance = event.clientY - dragStartY.current;
+            if (Math.abs(distance) > 6) movedDuringDrag.current = true;
+            setDragOffset(Math.max(0, distance));
+          }}
+          onPointerUp={releaseHandle}
+          type="button"
+        >
+          <span aria-hidden="true" />
+        </button>
+        <div className="sheet-header">
+          <h2 id="color-sheet-title">Choose a color</h2>
+          <button aria-label="Close color selection" onClick={close} type="button">
+            ×
+          </button>
+        </div>
+        <div className="color-list" role="group" aria-label="Choose a color">
+          {colors.map((item) => (
+            <button
+              aria-pressed={color === item.id}
+              key={item.id}
+              onClick={() => chooseColor(item.id)}
+              type="button"
+            >
+              <i aria-hidden="true" className="sheet-swatch" style={{ background: item.swatch }} />
+              <span>{item.name}</span>
+              {color === item.id ? <b>Selected</b> : null}
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SizeSelectionSheet({
+  size,
+  chooseSize,
+  unavailableSize,
+  close,
+}: {
+  size: SizeId | null;
+  chooseSize: (id: SizeId) => void;
+  unavailableSize: (id: SizeId) => boolean;
+  close: () => void;
+}) {
+  return (
+    <div
+      className="overlay sheet-overlay"
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && close()}
+    >
+      <section
+        aria-labelledby="size-sheet-title"
+        aria-modal="true"
+        className="bottom-sheet"
+        role="dialog"
+      >
+        <div className="sheet-handle" />
+        <div className="sheet-header">
+          <h2 id="size-sheet-title">Choose your size</h2>
+          <button aria-label="Close size selection" onClick={close} type="button">
+            ×
+          </button>
+        </div>
+        <div className="size-list" role="group" aria-label="Choose a size">
+          {SIZES.map((item) => {
+            const unavailable = unavailableSize(item.id);
+            return (
+              <button
+                aria-pressed={size === item.id}
+                disabled={unavailable}
+                key={item.id}
+                onClick={() => chooseSize(item.id)}
+                type="button"
+              >
+                {item.name}
+                {unavailable ? <small>Unavailable</small> : null}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -836,76 +991,6 @@ function NavigationDrawer({
           Sign in
         </button>
       </nav>
-    </div>
-  );
-}
-
-function SizeGuide({ close }: { close: () => void }) {
-  return (
-    <div
-      className="size-guide-overlay"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
-      <section
-        aria-labelledby="size-guide-title"
-        aria-modal="true"
-        className="size-guide-sheet"
-        role="dialog"
-      >
-        <div className="sheet-handle" />
-        <div className="size-guide-heading">
-          <div>
-            <p className="eyebrow">Classic T-Shirt</p>
-            <h2 id="size-guide-title">Size guide</h2>
-          </div>
-          <button aria-label="Close size guide" onClick={close} type="button">
-            ×
-          </button>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Size</th>
-              <th>Chest</th>
-              <th>Length</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th>S</th>
-              <td>Fixture</td>
-              <td>Fixture</td>
-            </tr>
-            <tr>
-              <th>M</th>
-              <td>Fixture</td>
-              <td>Fixture</td>
-            </tr>
-            <tr>
-              <th>L</th>
-              <td>Fixture</td>
-              <td>Fixture</td>
-            </tr>
-            <tr>
-              <th>XL</th>
-              <td>Fixture</td>
-              <td>Fixture</td>
-            </tr>
-            <tr>
-              <th>2XL</th>
-              <td>Fixture</td>
-              <td>Fixture</td>
-            </tr>
-          </tbody>
-        </table>
-        <div className="measure-note">
-          <strong>How to measure</strong>
-          <p>Lay a shirt flat. Measure across the chest and from the shoulder to the hem.</p>
-        </div>
-      </section>
     </div>
   );
 }
