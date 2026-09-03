@@ -447,7 +447,6 @@ export function CreateExperience() {
         {step === 'idea' ? (
           <div className="create-flow">
             <section className="intro" aria-labelledby="create-heading">
-              <p className="eyebrow">Make it yours</p>
               <h1 id="create-heading">
                 Turn your idea into
                 <br />a shirt worth wearing.
@@ -531,9 +530,7 @@ export function CreateExperience() {
         ) : step === 'style' ? (
           <div className="style-flow">
             <section className="style-intro" aria-labelledby="style-heading" ref={styleIntroRef}>
-              <p className="eyebrow">Make it yours</p>
               <h1 id="style-heading">Choose the vibe.</h1>
-              <p>Pick a visual style, then set the feeling behind it.</p>
             </section>
             <section aria-labelledby="style-heading-label">
               <h2 className="step-section-heading" id="style-heading-label">
@@ -662,12 +659,8 @@ export function CreateExperience() {
               aria-labelledby="product-heading"
               ref={productIntroRef}
             >
-              <div className="product-eyebrow-row">
-                <p className="eyebrow">Make it yours</p>
-                <span className="product-progress">3 / 4</span>
-              </div>
+              <span className="product-progress">3 / 4</span>
               <h1 id="product-heading">Choose your shirt.</h1>
-              <p>Pick the color and size we’ll use for your design.</p>
             </section>
             <section
               className="product-garment"

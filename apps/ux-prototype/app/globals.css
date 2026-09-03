@@ -1013,13 +1013,6 @@ input:focus-visible {
   line-height: 1.02;
   letter-spacing: -0.05em;
 }
-.style-intro p:last-child {
-  max-width: 30ch;
-  margin: 9px auto 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.45;
-}
 .step-section-heading {
   margin: 0 0 9px;
   font-size: 15px;
@@ -1311,17 +1304,9 @@ input:focus-visible {
 .product-intro {
   text-align: center;
 }
-.product-eyebrow-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-.product-eyebrow-row .eyebrow {
-  margin-bottom: 8px;
-}
 .product-progress {
-  margin-bottom: 8px;
+  display: block;
+  margin-bottom: 7px;
   color: var(--text-secondary);
   font-size: 9px;
   font-weight: 800;
@@ -1335,7 +1320,6 @@ input:focus-visible {
   line-height: 1.02;
   letter-spacing: -0.05em;
 }
-.product-intro > p:last-child,
 .boundary-flow > p:not(.eyebrow) {
   max-width: 31ch;
   margin: 9px auto 0;

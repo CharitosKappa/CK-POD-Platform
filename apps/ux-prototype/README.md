@@ -29,3 +29,7 @@ Step 3 carries the local creative state forward and adds a fixed `Classic T-Shir
 The local availability matrix contains one review case: `Navy + M` is unavailable. Changing from an eligible `M` selection to Navy clears Size, leaves M visible but disabled, and explains why. The Size Guide values are prototype fixtures only. `Create My Shirt ✦` stores no data and opens only the local Step 4 boundary; it makes no generation, payment, provider, or backend request. Color may inform future artwork palette decisions; Size is merchandise/availability context and is not a future creative-prompt input.
 
 The displayed `1 credit` balance is a fixed, prototype-only guest fixture. It has no account lookup, billing effect, or backend connection.
+
+## Steps 1–3 copy and hierarchy
+
+The approved visual direction is preserved. The repeated `Make it yours` eyebrow and non-essential introductory subtitles are removed so each step begins with one consumer-facing title and its primary interaction. The current title wording, low-emphasis progress treatment, and header/back-label treatment are intentionally not design-locked and remain open for later CEO review.
