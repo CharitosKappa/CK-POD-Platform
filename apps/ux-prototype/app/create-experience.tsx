@@ -322,6 +322,7 @@ export function CreateExperience() {
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const toneSectionRef = useRef<HTMLElement | null>(null);
   const styleIntroRef = useRef<HTMLElement | null>(null);
+  const productIntroRef = useRef<HTMLElement | null>(null);
   const recommendation = useMemo(
     () => (style ? recommendedLook(style, tone, prompt) : null),
     [style, tone, prompt],
@@ -350,14 +351,19 @@ export function CreateExperience() {
     };
   }, [drawerOpen]);
   useEffect(() => {
-    if (step !== 'style') return;
-    window.requestAnimationFrame(() => {
-      styleIntroRef.current?.scrollIntoView({ block: 'start' });
-    });
-  }, [step]);
-  useEffect(() => {
-    if (step !== 'product' && step !== 'boundary') return;
-    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+    if (step === 'style') {
+      window.requestAnimationFrame(() => {
+        styleIntroRef.current?.scrollIntoView({ block: 'start' });
+      });
+      return;
+    }
+    if (step === 'product') {
+      window.requestAnimationFrame(() => {
+        productIntroRef.current?.scrollIntoView({ block: 'start' });
+      });
+      return;
+    }
+    if (step === 'boundary') window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   }, [step]);
   const openMenu = (element: HTMLButtonElement) => {
     triggerRef.current = element;
@@ -651,7 +657,11 @@ export function CreateExperience() {
           </div>
         ) : step === 'product' ? (
           <div className="product-flow">
-            <section className="product-intro" aria-labelledby="product-heading">
+            <section
+              className="product-intro"
+              aria-labelledby="product-heading"
+              ref={productIntroRef}
+            >
               <div className="product-eyebrow-row">
                 <p className="eyebrow">Make it yours</p>
                 <span className="product-progress">3 / 4</span>
