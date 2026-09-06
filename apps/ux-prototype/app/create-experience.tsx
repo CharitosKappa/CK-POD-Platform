@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
+  CSSProperties,
   KeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -89,77 +90,158 @@ type ToneId = (typeof TONES)[number]['id'];
 type ExplicitTone = Exclude<ToneId, 'auto'>;
 type Look = { id: string; name: string };
 type ColorId =
-  | 'black'
   | 'white'
-  | 'navy'
-  | 'forest'
-  | 'burgundy'
-  | 'sand'
-  | 'heather'
-  | 'red'
-  | 'sage'
-  | 'sky'
-  | 'rose'
-  | 'lavender'
+  | 'ivory'
+  | 'pepper'
+  | 'black'
   | 'mustard'
-  | 'teal'
-  | 'orange'
-  | 'chocolate';
-type SizeId = 'xs' | 's' | 'm' | 'l' | 'xl' | '2xl' | '3xl';
+  | 'yam'
+  | 'grey'
+  | 'moss'
+  | 'light-green'
+  | 'chambray'
+  | 'flo-blue'
+  | 'graphite'
+  | 'violet'
+  | 'orchid'
+  | 'blossom'
+  | 'crunchberry'
+  | 'berry'
+  | 'watermelon'
+  | 'bay'
+  | 'blue-jean'
+  | 'crimson'
+  | 'butter'
+  | 'chalky-mint'
+  | 'blue-spruce'
+  | 'brick'
+  | 'espresso'
+  | 'island-reef'
+  | 'lagoon-blue'
+  | 'sapphire'
+  | 'navy'
+  | 'neon-pink'
+  | 'chili'
+  | 'red';
+type SizeId = 's' | 'm' | 'l' | 'xl' | '2xl' | '3xl' | '4xl';
 type EditorTransform = {
   x: number;
   y: number;
   scale: number;
   rotation: number;
+  flipped: boolean;
 };
+type ResizeCorner = 'north-west' | 'north-east' | 'south-east' | 'south-west';
+type EditorGestureBase = {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  transform: EditorTransform;
+  lastTransform: EditorTransform;
+  moved: boolean;
+};
+type EditorGesture =
+  | (EditorGestureBase & { kind: 'move' })
+  | (EditorGestureBase & {
+      kind: 'resize';
+      anchorX: number;
+      anchorY: number;
+      areaLeft: number;
+      areaTop: number;
+      areaWidth: number;
+      areaHeight: number;
+      baseVectorX: number;
+      baseVectorY: number;
+    })
+  | (EditorGestureBase & {
+      kind: 'rotate';
+      centerX: number;
+      centerY: number;
+      startPointerAngle: number;
+    });
 type ColorFixture = {
   id: ColorId;
   name: string;
   swatch: string;
   asset?: keyof typeof GARMENT_ASSETS;
+  isLight?: boolean;
 };
 
-const POPULAR_COLORS: ColorFixture[] = [
-  { id: 'black', name: 'Black', swatch: '#191917', asset: 'black' },
-  { id: 'white', name: 'White', swatch: '#f5f4ef', asset: 'white' },
-  { id: 'navy', name: 'Navy', swatch: '#23334d', asset: 'navy' },
-  { id: 'forest', name: 'Forest', swatch: '#294b3c' },
-  { id: 'burgundy', name: 'Burgundy', swatch: '#6d2731' },
-];
-const MORE_COLORS: ColorFixture[] = [
-  { id: 'sand', name: 'Sand', swatch: '#d7c6a7' },
-  { id: 'heather', name: 'Heather', swatch: '#929397' },
-  { id: 'red', name: 'Red', swatch: '#bb3430' },
-  // Additional prototype fixtures for reviewing the expanded color grid.
-  { id: 'sage', name: 'Sage', swatch: '#a3b598' },
-  { id: 'sky', name: 'Sky', swatch: '#a0bdd7' },
-  { id: 'rose', name: 'Rose', swatch: '#dab0b9' },
-  { id: 'lavender', name: 'Lavender', swatch: '#b9acd3' },
-  { id: 'mustard', name: 'Mustard', swatch: '#c99b31' },
-  { id: 'teal', name: 'Teal', swatch: '#287778' },
-  { id: 'orange', name: 'Orange', swatch: '#dc7137' },
-  { id: 'chocolate', name: 'Chocolate', swatch: '#614238' },
+const PRODUCT_PROFILE = {
+  name: 'Comfort Colors 1717',
+} as const;
+
+// Static snapshot of the active Monster Digital catalog for blueprint 706.
+// Black, White, and Navy have dedicated local assets; all other swatches use a
+// replaceable CSS-tinted white fixture while this app remains backend-free.
+const PRODUCT_COLORS: ColorFixture[] = [
+  { id: 'white', name: 'White', swatch: '#ffffff', asset: 'white', isLight: true },
+  { id: 'ivory', name: 'Ivory', swatch: '#fff7e7', isLight: true },
+  { id: 'pepper', name: 'Pepper', swatch: '#5f605b' },
+  { id: 'black', name: 'Black', swatch: '#000000', asset: 'black' },
+  { id: 'mustard', name: 'Mustard', swatch: '#d0ae6e', isLight: true },
+  { id: 'yam', name: 'Yam', swatch: '#c9814f' },
+  { id: 'grey', name: 'Grey', swatch: '#7a7f79' },
+  { id: 'moss', name: 'Moss', swatch: '#747f66' },
+  { id: 'light-green', name: 'Light Green', swatch: '#738874' },
+  { id: 'chambray', name: 'Chambray', swatch: '#d9edf5', isLight: true },
+  { id: 'flo-blue', name: 'Flo Blue', swatch: '#7682c2' },
+  { id: 'graphite', name: 'Graphite', swatch: '#373231' },
+  { id: 'violet', name: 'Violet', swatch: '#a88fd7', isLight: true },
+  { id: 'orchid', name: 'Orchid', swatch: '#cbb3cc', isLight: true },
+  { id: 'blossom', name: 'Blossom', swatch: '#f8d1e2', isLight: true },
+  { id: 'crunchberry', name: 'Crunchberry', swatch: '#eb7ca2', isLight: true },
+  { id: 'berry', name: 'Berry', swatch: '#775568' },
+  { id: 'watermelon', name: 'Watermelon', swatch: '#da807b', isLight: true },
+  { id: 'bay', name: 'Bay', swatch: '#c3cfc1', isLight: true },
+  { id: 'blue-jean', name: 'Blue Jean', swatch: '#788ca1' },
+  { id: 'crimson', name: 'Crimson', swatch: '#b66a74' },
+  { id: 'butter', name: 'Butter', swatch: '#f5e1a4', isLight: true },
+  { id: 'chalky-mint', name: 'Chalky Mint', swatch: '#a7d9d4', isLight: true },
+  { id: 'blue-spruce', name: 'Blue Spruce', swatch: '#536758' },
+  { id: 'brick', name: 'Brick', swatch: '#915c5c' },
+  { id: 'espresso', name: 'Espresso', swatch: '#846b5b' },
+  { id: 'island-reef', name: 'Island Reef', swatch: '#a2d8c2', isLight: true },
+  { id: 'lagoon-blue', name: 'Lagoon Blue', swatch: '#89e4ed', isLight: true },
+  { id: 'sapphire', name: 'Sapphire', swatch: '#03b2d3' },
+  { id: 'navy', name: 'Navy', swatch: '#263040', asset: 'navy' },
+  { id: 'neon-pink', name: 'Neon Pink', swatch: '#f57caf', isLight: true },
+  { id: 'chili', name: 'Chili', swatch: '#853f44' },
+  { id: 'red', name: 'Red', swatch: '#a80d27' },
 ];
 const SIZES: { id: SizeId; name: string; label: string }[] = [
-  { id: 'xs', name: 'XS', label: 'X-Small · XS' },
   { id: 's', name: 'S', label: 'Small · S' },
   { id: 'm', name: 'M', label: 'Medium · M' },
   { id: 'l', name: 'L', label: 'Large · L' },
   { id: 'xl', name: 'XL', label: 'X-Large · XL' },
   { id: '2xl', name: '2XL', label: '2X-Large · 2XL' },
   { id: '3xl', name: '3XL', label: '3X-Large · 3XL' },
+  { id: '4xl', name: '4XL', label: '4X-Large · 4XL' },
 ];
 const BASE_PRICE_CENTS = 3999;
 // Replace these prototype-only fixtures when the final large-size pricing is approved.
 const SIZE_SURCHARGE_CENTS: Record<SizeId, number> = {
-  xs: 0,
   s: 0,
   m: 0,
   l: 0,
   xl: 0,
   '2xl': 300,
   '3xl': 500,
+  '4xl': 700,
 };
+type PrintAreaProfile = {
+  scale: number;
+};
+const PRINT_AREAS_BY_SIZE: Record<SizeId, PrintAreaProfile> = {
+  s: { scale: 293 / 355.6 },
+  m: { scale: 325 / 355.6 },
+  l: { scale: 1 },
+  xl: { scale: 1 },
+  '2xl': { scale: 1 },
+  '3xl': { scale: 1 },
+  '4xl': { scale: 1 },
+};
+const UNAVAILABLE_VARIANTS = new Set<string>(['blue-spruce:4xl', 'grey:4xl']);
 const RETRY_CREDIT_COST = 1;
 const PROTOTYPE_CREDIT_PACK_SIZE = 3;
 const DEFAULT_EDITOR_TRANSFORM: EditorTransform = {
@@ -167,6 +249,7 @@ const DEFAULT_EDITOR_TRANSFORM: EditorTransform = {
   y: 50,
   scale: 1,
   rotation: 0,
+  flipped: false,
 };
 const USD_FORMATTER = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -373,8 +456,92 @@ function shirtPrice(size: SizeId | null) {
   const surcharge = size ? SIZE_SURCHARGE_CENTS[size] : 0;
   return USD_FORMATTER.format((BASE_PRICE_CENTS + surcharge) / 100);
 }
+function unavailableVariant(color: ColorId, size: SizeId) {
+  return UNAVAILABLE_VARIANTS.has(`${color}:${size}`);
+}
+function garmentPreviewClass(color: ColorFixture) {
+  return [color.asset ? '' : 'garment-color-fixture', color.isLight ? 'garment-tone-light' : '']
+    .filter(Boolean)
+    .join(' ');
+}
+function garmentPreviewStyle(color: ColorFixture) {
+  return { '--garment-fixture-color': color.swatch } as CSSProperties;
+}
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+const EDITOR_BOUNDARY_INSET_PX = 3;
+
+function constrainEditorTransform(
+  candidate: EditorTransform,
+  printArea: HTMLDivElement | null,
+  artwork: HTMLElement | null,
+) {
+  if (!printArea || !artwork || !printArea.clientWidth || !printArea.clientHeight) {
+    return {
+      ...candidate,
+      x: clamp(candidate.x, 12, 88),
+      y: clamp(candidate.y, 12, 88),
+      scale: clamp(candidate.scale, 0.7, 1.4),
+    };
+  }
+
+  const radians = (candidate.rotation * Math.PI) / 180;
+  const cosine = Math.abs(Math.cos(radians));
+  const sine = Math.abs(Math.sin(radians));
+  const rotatedWidth = artwork.offsetWidth * cosine + artwork.offsetHeight * sine;
+  const rotatedHeight = artwork.offsetWidth * sine + artwork.offsetHeight * cosine;
+  const availableWidth = printArea.clientWidth - EDITOR_BOUNDARY_INSET_PX * 2;
+  const availableHeight = printArea.clientHeight - EDITOR_BOUNDARY_INSET_PX * 2;
+  const geometryMaximumScale = Math.min(
+    1.4,
+    availableWidth / rotatedWidth,
+    availableHeight / rotatedHeight,
+  );
+  const safeMaximumScale = Math.max(0.1, Math.floor(geometryMaximumScale * 1000) / 1000);
+  const safeMinimumScale = Math.min(0.7, safeMaximumScale);
+  const scale = clamp(candidate.scale, safeMinimumScale, safeMaximumScale);
+  const horizontalExtent =
+    (((rotatedWidth * scale) / 2 + EDITOR_BOUNDARY_INSET_PX) / printArea.clientWidth) * 100;
+  const verticalExtent =
+    (((rotatedHeight * scale) / 2 + EDITOR_BOUNDARY_INSET_PX) / printArea.clientHeight) * 100;
+
+  return {
+    ...candidate,
+    x: clamp(candidate.x, horizontalExtent, 100 - horizontalExtent),
+    y: clamp(candidate.y, verticalExtent, 100 - verticalExtent),
+    scale,
+  };
+}
+
+function editorTransformsMatch(first: EditorTransform, second: EditorTransform) {
+  return (
+    Math.abs(first.x - second.x) < 0.001 &&
+    Math.abs(first.y - second.y) < 0.001 &&
+    Math.abs(first.scale - second.scale) < 0.001 &&
+    first.rotation === second.rotation &&
+    first.flipped === second.flipped
+  );
+}
+
+function snapEditorTransform(candidate: EditorTransform, threshold = 3) {
+  return {
+    ...candidate,
+    x: Math.abs(candidate.x - 50) <= threshold ? 50 : candidate.x,
+    y: Math.abs(candidate.y - 50) <= threshold ? 50 : candidate.y,
+  };
+}
+
+function normalizeEditorRotation(rotation: number) {
+  return ((((rotation + 180) % 360) + 360) % 360) - 180;
+}
+
+function snapEditorRotation(rotation: number, threshold = 4) {
+  const normalized = normalizeEditorRotation(rotation);
+  const targets = [-180, -90, 0, 90, 180];
+  const target = targets.find((candidate) => Math.abs(normalized - candidate) <= threshold);
+  return target === undefined ? normalized : normalizeEditorRotation(target);
 }
 
 export function CreateExperience() {
@@ -402,6 +569,7 @@ export function CreateExperience() {
   const [previewUpdating, setPreviewUpdating] = useState(false);
   const [credits, setCredits] = useState(1);
   const [editorTransform, setEditorTransform] = useState<EditorTransform>(DEFAULT_EDITOR_TRANSFORM);
+  const [reviewNotice, setReviewNotice] = useState('');
   const [sizeError, setSizeError] = useState('');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -434,11 +602,11 @@ export function CreateExperience() {
       : productConfigurationChanged
         ? 'Apply changes'
         : 'Back to preview';
-  const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
+  const selectedColor = PRODUCT_COLORS.find((item) => item.id === color)!;
   const garmentAsset = selectedColor.asset
     ? GARMENT_ASSETS[selectedColor.asset]
     : GARMENT_ASSETS.white;
-  const unavailableSize = (candidate: SizeId) => color === 'navy' && candidate === 'm';
+  const unavailableSize = (candidate: SizeId) => unavailableVariant(color, candidate);
 
   useEffect(
     () => () => {
@@ -542,9 +710,13 @@ export function CreateExperience() {
     setColor(id);
     setSelectionSheet(null);
     setAvailabilityMessage('');
-    if (id === 'navy' && size === 'm') {
+    if (size && unavailableVariant(id, size)) {
+      const nextColor = PRODUCT_COLORS.find((item) => item.id === id)!;
+      const unavailableSelection = SIZES.find((item) => item.id === size)!;
       setSize(null);
-      setAvailabilityMessage('M isn’t available in Navy. Choose another size.');
+      setAvailabilityMessage(
+        `${unavailableSelection.name} isn’t currently available in ${nextColor.name}. Choose another size.`,
+      );
     }
   };
   const chooseSize = (id: SizeId) => {
@@ -560,6 +732,7 @@ export function CreateExperience() {
       return;
     }
     setSizeError('');
+    setReviewNotice('');
     const nextProduct = { color, size };
     const requiresGeneration =
       generatedCreativeSignature === null || generatedCreativeSignature !== creativeSignature;
@@ -587,6 +760,7 @@ export function CreateExperience() {
       return;
     }
     setCredits((balance) => balance - RETRY_CREDIT_COST);
+    setReviewNotice('');
     setPreviewUpdating(false);
     setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
     setGeneratedCreativeSignature(creativeSignature);
@@ -830,18 +1004,21 @@ export function CreateExperience() {
             </section>
             <section
               className="product-garment"
-              aria-label={`${selectedColor.name} Classic T-Shirt preview`}
+              aria-label={`${selectedColor.name} ${PRODUCT_PROFILE.name} preview`}
             >
-              <div className={`product-garment-stage garment-color-${color}`}>
-                <img alt={`${selectedColor.name} Classic T-Shirt`} src={garmentAsset} />
+              <div
+                className={`product-garment-stage ${garmentPreviewClass(selectedColor)}`}
+                style={garmentPreviewStyle(selectedColor)}
+              >
+                <img alt={`${selectedColor.name} ${PRODUCT_PROFILE.name}`} src={garmentAsset} />
               </div>
               <div className="product-meta-row">
                 <div className="product-name-with-info" ref={productInfoRef}>
-                  <strong>Classic T-Shirt</strong>
+                  <strong>{PRODUCT_PROFILE.name}</strong>
                   <button
-                    aria-controls="classic-tee-info"
+                    aria-controls="product-profile-info"
                     aria-expanded={productInfoOpen}
-                    aria-label="About the Classic T-Shirt"
+                    aria-label={`About the ${PRODUCT_PROFILE.name}`}
                     className="product-info-trigger"
                     onClick={() => setProductInfoOpen((open) => !open)}
                     type="button"
@@ -850,14 +1027,16 @@ export function CreateExperience() {
                   </button>
                   {productInfoOpen ? (
                     <section
-                      aria-label="Classic T-Shirt information"
+                      aria-label={`${PRODUCT_PROFILE.name} information`}
                       className="product-info-bubble"
-                      id="classic-tee-info"
+                      id="product-profile-info"
                       role="dialog"
                     >
-                      <strong>Classic T-Shirt</strong>
-                      <p>Soft midweight cotton, a regular unisex fit, and a print-ready surface.</p>
-                      <small>Final availability can vary by color and size.</small>
+                      <strong>{PRODUCT_PROFILE.name}</strong>
+                      <p>
+                        Heavyweight 6.1 oz garment-dyed, ring-spun cotton with a relaxed unisex fit.
+                      </p>
+                      <small>Color and size availability may vary.</small>
                     </section>
                   ) : null}
                 </div>
@@ -936,12 +1115,18 @@ export function CreateExperience() {
             tone={tone}
             back={() => {
               setPreviewUpdating(false);
+              setReviewNotice('');
               setStep('product');
             }}
+            continueToCheckout={() =>
+              setReviewNotice('Checkout is next. No order has been placed in this prototype.')
+            }
             openEditor={() => {
               setPreviewUpdating(false);
+              setReviewNotice('');
               setStep('editor');
             }}
+            reviewNotice={reviewNotice}
             regenerate={regenerate}
           />
         ) : (
@@ -954,8 +1139,15 @@ export function CreateExperience() {
             style={style}
             tone={tone}
             transform={editorTransform}
-            onBack={() => setStep('generate')}
+            onBack={() => {
+              setReviewNotice('');
+              setStep('generate');
+            }}
             onReset={() => setEditorTransform(DEFAULT_EDITOR_TRANSFORM)}
+            onSave={() => {
+              setReviewNotice('Design placement saved. Continue to checkout when you’re ready.');
+              setStep('generate');
+            }}
             onTransformChange={setEditorTransform}
           />
         )}
@@ -1001,7 +1193,9 @@ function GenerateStep({
   style,
   tone,
   back,
+  continueToCheckout,
   openEditor,
+  reviewNotice,
   regenerate,
 }: {
   color: ColorId;
@@ -1015,17 +1209,23 @@ function GenerateStep({
   style: StyleId | null;
   tone: ToneId;
   back: () => void;
+  continueToCheckout: () => void;
   openEditor: () => void;
+  reviewNotice: string;
   regenerate: () => void;
 }) {
-  const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
+  const selectedColor = PRODUCT_COLORS.find((item) => item.id === color)!;
   const selectedSize = SIZES.find((item) => item.id === size);
   const isCreating = generationStatus !== 'ready';
 
   if (isCreating) {
     return (
       <div className="generation-flow generation-loading" aria-live="polite">
-        <div className={`generation-garment-stage garment-color-${color}`} aria-hidden="true">
+        <div
+          className={`generation-garment-stage ${garmentPreviewClass(selectedColor)}`}
+          style={garmentPreviewStyle(selectedColor)}
+          aria-hidden="true"
+        >
           <img alt="" src={garmentAsset} />
           <span className="generation-scan" />
         </div>
@@ -1057,11 +1257,12 @@ function GenerateStep({
         <p>A first version made from your idea.</p>
       </section>
       <section
-        aria-label={`${selectedColor.name} Classic T-Shirt with generated artwork`}
-        className={`generation-garment-stage result-garment-stage garment-color-${color}`}
+        aria-label={`${selectedColor.name} ${PRODUCT_PROFILE.name} with generated artwork`}
+        className={`generation-garment-stage result-garment-stage ${garmentPreviewClass(selectedColor)}`}
+        style={garmentPreviewStyle(selectedColor)}
       >
         <div className="result-garment-zoom">
-          <img alt={`${selectedColor.name} Classic T-Shirt preview`} src={garmentAsset} />
+          <img alt={`${selectedColor.name} ${PRODUCT_PROFILE.name} preview`} src={garmentAsset} />
           <GeneratedArtwork prompt={prompt} style={style} tone={tone} version={generationVersion} />
         </div>
         {previewUpdating ? (
@@ -1072,7 +1273,7 @@ function GenerateStep({
       </section>
       <section className="generation-summary" aria-label="Generated shirt choices">
         <div>
-          <strong>Classic T-Shirt</strong>
+          <strong>{PRODUCT_PROFILE.name}</strong>
           <span>{shirtPrice(size)}</span>
         </div>
         <p>
@@ -1080,8 +1281,13 @@ function GenerateStep({
         </p>
       </section>
       <div className="generation-actions">
-        <button className="create-button" onClick={openEditor} type="button">
-          Continue to editor <Icon>→</Icon>
+        <button className="create-button" onClick={continueToCheckout} type="button">
+          Continue to checkout <Icon>→</Icon>
+        </button>
+        <button className="generation-edit" onClick={openEditor} type="button">
+          <EditorGlyph name="edit" />
+          <span>Edit design</span>
+          <small>Optional</small>
         </button>
         <div className="generation-secondary-actions">
           <button className="regenerate-button" onClick={regenerate} type="button">
@@ -1099,6 +1305,11 @@ function GenerateStep({
             ← Back to color &amp; size
           </button>
         </div>
+        {reviewNotice ? (
+          <p className="review-notice" role="status">
+            {reviewNotice}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -1115,6 +1326,7 @@ function EditorStep({
   transform,
   onBack,
   onReset,
+  onSave,
   onTransformChange,
 }: {
   color: ColorId;
@@ -1127,61 +1339,259 @@ function EditorStep({
   transform: EditorTransform;
   onBack: () => void;
   onReset: () => void;
+  onSave: () => void;
   onTransformChange: (transform: EditorTransform) => void;
 }) {
   const printAreaRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    clientX: number;
-    clientY: number;
-    pointerId: number;
-    transform: EditorTransform;
-  } | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [saveNotice, setSaveNotice] = useState(false);
+  const artworkRef = useRef<HTMLDivElement>(null);
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+  const gestureRef = useRef<EditorGesture | null>(null);
+  const [activeGesture, setActiveGesture] = useState<EditorGesture['kind'] | null>(null);
+  const [artworkSelected, setArtworkSelected] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [snapGuides, setSnapGuides] = useState({ horizontal: false, vertical: false });
+  const [undoStack, setUndoStack] = useState<EditorTransform[]>([]);
+  const [redoStack, setRedoStack] = useState<EditorTransform[]>([]);
   const [editorStatus, setEditorStatus] = useState('');
-  const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
+  const selectedColor = PRODUCT_COLORS.find((item) => item.id === color)!;
   const selectedSize = SIZES.find((item) => item.id === size);
+  const printArea = PRINT_AREAS_BY_SIZE[size ?? 'l'];
+
+  const keepInsideDesignArea = (candidate: EditorTransform) =>
+    constrainEditorTransform(candidate, printAreaRef.current, artworkRef.current);
+
+  const commitTransform = (candidate: EditorTransform, status: string) => {
+    const constrained = keepInsideDesignArea(candidate);
+    if (editorTransformsMatch(transform, constrained)) {
+      setEditorStatus(status);
+      return constrained;
+    }
+    setUndoStack((stack) => [...stack.slice(-49), transform]);
+    setRedoStack([]);
+    onTransformChange(constrained);
+    setEditorStatus(status);
+    return constrained;
+  };
+
+  const undo = () => {
+    const previous = undoStack.at(-1);
+    if (!previous) return;
+    setUndoStack((stack) => stack.slice(0, -1));
+    setRedoStack((stack) => [...stack.slice(-49), transform]);
+    onTransformChange(keepInsideDesignArea(previous));
+    setEditorStatus('Last change undone.');
+  };
+
+  const redo = () => {
+    const next = redoStack.at(-1);
+    if (!next) return;
+    setRedoStack((stack) => stack.slice(0, -1));
+    setUndoStack((stack) => [...stack.slice(-49), transform]);
+    onTransformChange(keepInsideDesignArea(next));
+    setEditorStatus('Change restored.');
+  };
+
+  useLayoutEffect(() => {
+    const area = printAreaRef.current;
+    const artwork = artworkRef.current;
+    if (!area || !artwork) return;
+
+    const enforceBoundary = () => {
+      const current = transformRef.current;
+      const constrained = constrainEditorTransform(current, area, artwork);
+      if (!editorTransformsMatch(current, constrained)) onTransformChange(constrained);
+    };
+
+    enforceBoundary();
+    const observer = new ResizeObserver(enforceBoundary);
+    observer.observe(area);
+    observer.observe(artwork);
+    return () => observer.disconnect();
+  }, [onTransformChange, size]);
 
   const changeScale = (amount: number) => {
-    const scale = clamp(Number((transform.scale + amount).toFixed(2)), 0.7, 1.4);
-    onTransformChange({ ...transform, scale });
-    setEditorStatus(`Design size ${Math.round(scale * 100)} percent.`);
+    const requestedScale = clamp(Number((transform.scale + amount).toFixed(2)), 0.7, 1.4);
+    const nextTransform = keepInsideDesignArea({ ...transform, scale: requestedScale });
+    commitTransform(
+      nextTransform,
+      nextTransform.scale < requestedScale
+        ? 'Maximum size reached. The design must stay inside the outlined area.'
+        : `Design size ${Math.round(nextTransform.scale * 100)} percent.`,
+    );
   };
   const changeRotation = (amount: number) => {
-    const rotation = clamp(transform.rotation + amount, -30, 30);
-    onTransformChange({ ...transform, rotation });
-    setEditorStatus(`Design rotation ${rotation} degrees.`);
+    const rotation = normalizeEditorRotation(transform.rotation + amount);
+    const nextTransform = keepInsideDesignArea({ ...transform, rotation });
+    commitTransform(nextTransform, `Design rotation ${Math.round(rotation)} degrees.`);
   };
   const resetPlacement = () => {
-    onReset();
-    setSaveNotice(false);
+    if (!editorTransformsMatch(transform, DEFAULT_EDITOR_TRANSFORM)) {
+      setUndoStack((stack) => [...stack.slice(-49), transform]);
+      setRedoStack([]);
+      onReset();
+    }
     setEditorStatus('Design placement reset.');
   };
-  const finishDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    setIsDragging(false);
+  const applyGestureTransform = (gesture: EditorGesture, candidate: EditorTransform) => {
+    const constrained = keepInsideDesignArea(candidate);
+    gesture.lastTransform = constrained;
+    transformRef.current = constrained;
+    onTransformChange(constrained);
+    return constrained;
+  };
+  const finishGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gestureRef.current = null;
+    setActiveGesture(null);
+    setSnapGuides({ horizontal: false, vertical: false });
+    if (gesture.moved && !editorTransformsMatch(gesture.transform, gesture.lastTransform)) {
+      setUndoStack((stack) => [...stack.slice(-49), gesture.transform]);
+      setRedoStack([]);
+    }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    setEditorStatus('Design placement updated.');
+    if (!gesture.moved) {
+      setEditorStatus('Design selected. Drag it or use the visible handles.');
+    } else if (gesture.kind === 'resize') {
+      setEditorStatus(`Design size ${Math.round(gesture.lastTransform.scale * 100)} percent.`);
+    } else if (gesture.kind === 'rotate') {
+      setEditorStatus(`Design rotation ${Math.round(gesture.lastTransform.rotation)} degrees.`);
+    } else {
+      setEditorStatus('Design placement updated.');
+    }
+  };
+  const beginResize = (event: ReactPointerEvent<HTMLButtonElement>, corner: ResizeCorner) => {
+    const area = printAreaRef.current;
+    const artwork = artworkRef.current;
+    if (!event.isPrimary || event.button !== 0 || !area || !artwork) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = area.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || !artwork.offsetWidth || !artwork.offsetHeight) return;
+    const constrainedTransform = keepInsideDesignArea(transform);
+    const signX = corner.includes('east') ? 1 : -1;
+    const signY = corner.includes('south') ? 1 : -1;
+    const radians = (constrainedTransform.rotation * Math.PI) / 180;
+    const localX = signX * artwork.offsetWidth;
+    const localY = signY * artwork.offsetHeight;
+    const baseVectorX = localX * Math.cos(radians) - localY * Math.sin(radians);
+    const baseVectorY = localX * Math.sin(radians) + localY * Math.cos(radians);
+    const centerX = bounds.left + (constrainedTransform.x / 100) * bounds.width;
+    const centerY = bounds.top + (constrainedTransform.y / 100) * bounds.height;
+    gestureRef.current = {
+      kind: 'resize',
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      transform: constrainedTransform,
+      lastTransform: constrainedTransform,
+      moved: false,
+      anchorX: centerX - (baseVectorX * constrainedTransform.scale) / 2,
+      anchorY: centerY - (baseVectorY * constrainedTransform.scale) / 2,
+      areaLeft: bounds.left,
+      areaTop: bounds.top,
+      areaWidth: bounds.width,
+      areaHeight: bounds.height,
+      baseVectorX,
+      baseVectorY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setArtworkSelected(true);
+    setActiveGesture('resize');
+  };
+  const resizeArtwork = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.kind !== 'resize' || gesture.pointerId !== event.pointerId) return;
+    const pointerFromAnchorX = event.clientX - gesture.anchorX;
+    const pointerFromAnchorY = event.clientY - gesture.anchorY;
+    const baseLengthSquared =
+      gesture.baseVectorX * gesture.baseVectorX + gesture.baseVectorY * gesture.baseVectorY;
+    if (!baseLengthSquared) return;
+    const requestedScale = clamp(
+      (pointerFromAnchorX * gesture.baseVectorX + pointerFromAnchorY * gesture.baseVectorY) /
+        baseLengthSquared,
+      0.7,
+      1.4,
+    );
+    const centerX = gesture.anchorX + (gesture.baseVectorX * requestedScale) / 2;
+    const centerY = gesture.anchorY + (gesture.baseVectorY * requestedScale) / 2;
+    const nextTransform = applyGestureTransform(gesture, {
+      ...gesture.transform,
+      x: ((centerX - gesture.areaLeft) / gesture.areaWidth) * 100,
+      y: ((centerY - gesture.areaTop) / gesture.areaHeight) * 100,
+      scale: requestedScale,
+    });
+    gesture.moved =
+      gesture.moved ||
+      Math.abs(event.clientX - gesture.startClientX) +
+        Math.abs(event.clientY - gesture.startClientY) >
+        4;
+    gesture.lastTransform = nextTransform;
+  };
+  const beginRotation = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const area = printAreaRef.current;
+    if (!event.isPrimary || event.button !== 0 || !area) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = area.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    const constrainedTransform = keepInsideDesignArea(transform);
+    const centerX = bounds.left + (constrainedTransform.x / 100) * bounds.width;
+    const centerY = bounds.top + (constrainedTransform.y / 100) * bounds.height;
+    gestureRef.current = {
+      kind: 'rotate',
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      transform: constrainedTransform,
+      lastTransform: constrainedTransform,
+      moved: false,
+      centerX,
+      centerY,
+      startPointerAngle: Math.atan2(event.clientY - centerY, event.clientX - centerX),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setArtworkSelected(true);
+    setActiveGesture('rotate');
+  };
+  const rotateArtwork = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.kind !== 'rotate' || gesture.pointerId !== event.pointerId) return;
+    const pointerAngle = Math.atan2(
+      event.clientY - gesture.centerY,
+      event.clientX - gesture.centerX,
+    );
+    const delta = ((pointerAngle - gesture.startPointerAngle) * 180) / Math.PI;
+    const rotation = Number(snapEditorRotation(gesture.transform.rotation + delta).toFixed(1));
+    const nextTransform = applyGestureTransform(gesture, {
+      ...gesture.transform,
+      rotation,
+    });
+    gesture.moved =
+      gesture.moved ||
+      Math.abs(event.clientX - gesture.startClientX) +
+        Math.abs(event.clientY - gesture.startClientY) >
+        4;
+    gesture.lastTransform = nextTransform;
   };
   const nudgeDesign = (event: KeyboardEvent<HTMLButtonElement>) => {
     const distance = event.shiftKey ? 8 : 4;
     let nextTransform: EditorTransform | null = null;
     switch (event.key) {
       case 'ArrowLeft':
-        nextTransform = { ...transform, x: clamp(transform.x - distance, 12, 88) };
+        nextTransform = { ...transform, x: transform.x - distance };
         break;
       case 'ArrowRight':
-        nextTransform = { ...transform, x: clamp(transform.x + distance, 12, 88) };
+        nextTransform = { ...transform, x: transform.x + distance };
         break;
       case 'ArrowUp':
-        nextTransform = { ...transform, y: clamp(transform.y - distance, 12, 88) };
+        nextTransform = { ...transform, y: transform.y - distance };
         break;
       case 'ArrowDown':
-        nextTransform = { ...transform, y: clamp(transform.y + distance, 12, 88) };
+        nextTransform = { ...transform, y: transform.y + distance };
         break;
       case '+':
       case '=':
@@ -1205,88 +1615,220 @@ function EditorStep({
         return;
     }
     event.preventDefault();
-    onTransformChange(nextTransform);
-    setEditorStatus('Design placement updated.');
+    const snappedTransform = snapEditorTransform(nextTransform);
+    setSnapGuides({
+      horizontal: snappedTransform.y === 50 && nextTransform.y !== transform.y,
+      vertical: snappedTransform.x === 50 && nextTransform.x !== transform.x,
+    });
+    window.setTimeout(() => setSnapGuides({ horizontal: false, vertical: false }), 260);
+    commitTransform(snappedTransform, 'Design placement updated.');
   };
 
   return (
-    <div className="editor-flow">
+    <div
+      className={`editor-flow ${previewMode ? 'is-preview-mode' : ''}`}
+      onPointerDown={(event) => {
+        if (
+          artworkSelected &&
+          event.target instanceof Node &&
+          !artworkRef.current?.contains(event.target)
+        ) {
+          setArtworkSelected(false);
+          setEditorStatus('Design controls hidden.');
+        }
+      }}
+    >
       <section className="editor-intro" aria-labelledby="editor-heading">
         <p className="eyebrow">Make it yours</p>
         <h1 id="editor-heading">Adjust your design.</h1>
         <p>Place it exactly where you want it printed.</p>
       </section>
       <section
-        aria-label={`${selectedColor.name} Classic T-Shirt design editor`}
-        className={`editor-canvas garment-color-${color}`}
+        aria-label={`${selectedColor.name} ${PRODUCT_PROFILE.name} design editor`}
+        className={`editor-canvas ${garmentPreviewClass(selectedColor)}`}
+        style={garmentPreviewStyle(selectedColor)}
       >
         <img
-          alt={`${selectedColor.name} Classic T-Shirt with editable design`}
+          alt={`${selectedColor.name} ${PRODUCT_PROFILE.name} with editable design`}
           src={garmentAsset}
         />
-        <div className="editor-print-area" ref={printAreaRef}>
-          <button
-            aria-describedby="editor-placement-hint"
-            aria-label="Generated design. Drag to move it. Use arrow keys to nudge it, plus and minus to resize, or R to reset."
-            className={`editor-artwork-control ${isDragging ? 'is-dragging' : ''}`}
-            onClick={() =>
-              setEditorStatus('Design selected. Drag it or use the placement controls below.')
+        <div
+          className="editor-print-area"
+          ref={printAreaRef}
+          style={{ '--print-area-scale': printArea.scale } as CSSProperties}
+        >
+          {snapGuides.vertical ? (
+            <span aria-hidden="true" className="editor-snap-line is-vertical" />
+          ) : null}
+          {snapGuides.horizontal ? (
+            <span aria-hidden="true" className="editor-snap-line is-horizontal" />
+          ) : null}
+          <div
+            ref={artworkRef}
+            className={`editor-artwork-control ${artworkSelected ? 'is-selected' : ''} ${transform.flipped ? 'is-flipped' : ''} ${activeGesture ? `is-${activeGesture}` : ''}`}
+            style={
+              {
+                left: `${transform.x}%`,
+                top: `${transform.y}%`,
+                transform: `translate(-50%, -50%) rotate(${transform.rotation}deg) scale(${transform.scale})`,
+                '--handle-inverse-scale': 1 / transform.scale,
+              } as CSSProperties
             }
-            onKeyDown={nudgeDesign}
-            onPointerCancel={(event) => finishDrag(event)}
-            onPointerDown={(event) => {
-              if (!event.isPrimary || event.button !== 0) return;
-              event.preventDefault();
-              dragRef.current = {
-                clientX: event.clientX,
-                clientY: event.clientY,
-                pointerId: event.pointerId,
-                transform,
-              };
-              event.currentTarget.setPointerCapture(event.pointerId);
-              setIsDragging(true);
-              setSaveNotice(false);
-            }}
-            onPointerMove={(event) => {
-              const drag = dragRef.current;
-              const printArea = printAreaRef.current;
-              if (!drag || drag.pointerId !== event.pointerId || !printArea) return;
-              const bounds = printArea.getBoundingClientRect();
-              if (!bounds.width || !bounds.height) return;
-              onTransformChange({
-                ...drag.transform,
-                x: clamp(
-                  drag.transform.x + ((event.clientX - drag.clientX) / bounds.width) * 100,
-                  12,
-                  88,
-                ),
-                y: clamp(
-                  drag.transform.y + ((event.clientY - drag.clientY) / bounds.height) * 100,
-                  12,
-                  88,
-                ),
-              });
-            }}
-            onPointerUp={finishDrag}
-            style={{
-              left: `${transform.x}%`,
-              top: `${transform.y}%`,
-              transform: `translate(-50%, -50%) rotate(${transform.rotation}deg) scale(${transform.scale})`,
-            }}
-            type="button"
           >
-            <GeneratedArtwork
-              prompt={prompt}
-              style={style}
-              tone={tone}
-              version={generationVersion}
-            />
-          </button>
+            <button
+              aria-describedby="editor-placement-hint"
+              aria-label="Generated design. Tap to show resize and rotation handles. Drag to move it. Use arrow keys to nudge it, plus and minus to resize, or R to reset."
+              className="editor-artwork-move"
+              onKeyDown={nudgeDesign}
+              onPointerCancel={finishGesture}
+              onPointerDown={(event) => {
+                if (!event.isPrimary || event.button !== 0) return;
+                event.preventDefault();
+                const constrainedTransform = keepInsideDesignArea(transform);
+                gestureRef.current = {
+                  kind: 'move',
+                  startClientX: event.clientX,
+                  startClientY: event.clientY,
+                  pointerId: event.pointerId,
+                  transform: constrainedTransform,
+                  lastTransform: constrainedTransform,
+                  moved: false,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setArtworkSelected(true);
+                setActiveGesture('move');
+              }}
+              onPointerMove={(event) => {
+                const gesture = gestureRef.current;
+                const printArea = printAreaRef.current;
+                if (
+                  !gesture ||
+                  gesture.kind !== 'move' ||
+                  gesture.pointerId !== event.pointerId ||
+                  !printArea
+                )
+                  return;
+                const bounds = printArea.getBoundingClientRect();
+                if (!bounds.width || !bounds.height) return;
+                const rawTransform = {
+                  ...gesture.transform,
+                  x:
+                    gesture.transform.x +
+                    ((event.clientX - gesture.startClientX) / bounds.width) * 100,
+                  y:
+                    gesture.transform.y +
+                    ((event.clientY - gesture.startClientY) / bounds.height) * 100,
+                };
+                const snappedTransform = snapEditorTransform(rawTransform);
+                gesture.moved =
+                  gesture.moved ||
+                  Math.abs(event.clientX - gesture.startClientX) +
+                    Math.abs(event.clientY - gesture.startClientY) >
+                    4;
+                setSnapGuides({
+                  horizontal: snappedTransform.y === 50 && rawTransform.y !== 50,
+                  vertical: snappedTransform.x === 50 && rawTransform.x !== 50,
+                });
+                applyGestureTransform(gesture, snappedTransform);
+              }}
+              onPointerUp={finishGesture}
+              type="button"
+            >
+              <GeneratedArtwork
+                prompt={prompt}
+                style={style}
+                tone={tone}
+                version={generationVersion}
+              />
+            </button>
+            {artworkSelected && !previewMode ? (
+              <>
+                {(['north-west', 'north-east', 'south-east', 'south-west'] as ResizeCorner[]).map(
+                  (corner) => (
+                    <button
+                      aria-label={`Resize design from ${corner.replace('-', ' ')} corner`}
+                      className={`editor-transform-handle editor-resize-handle is-${corner}`}
+                      key={corner}
+                      onPointerCancel={finishGesture}
+                      onPointerDown={(event) => beginResize(event, corner)}
+                      onPointerMove={resizeArtwork}
+                      onPointerUp={finishGesture}
+                      type="button"
+                    />
+                  ),
+                )}
+                <button
+                  aria-label="Rotate design freely"
+                  className="editor-transform-handle editor-rotation-handle"
+                  onPointerCancel={finishGesture}
+                  onPointerDown={beginRotation}
+                  onPointerMove={rotateArtwork}
+                  onPointerUp={finishGesture}
+                  type="button"
+                >
+                  <EditorGlyph name="rotate-right" />
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
       </section>
       <p className="editor-placement-hint" id="editor-placement-hint">
-        Drag the design within the dotted print area.
+        Keep your design inside the outlined area.
       </p>
+      {previewMode ? (
+        <button
+          className="editor-preview-exit"
+          onClick={() => {
+            setPreviewMode(false);
+            setEditorStatus('Editing controls restored.');
+          }}
+          type="button"
+        >
+          <EditorGlyph name="edit" /> Back to editing
+        </button>
+      ) : null}
+      <section className="editor-quick-tools" aria-label="Quick design tools">
+        <button disabled={undoStack.length === 0} onClick={undo} type="button">
+          <EditorGlyph name="undo" />
+          <span>Undo</span>
+        </button>
+        <button disabled={redoStack.length === 0} onClick={redo} type="button">
+          <EditorGlyph name="redo" />
+          <span>Redo</span>
+        </button>
+        <button
+          onClick={() => commitTransform({ ...transform, x: 50, y: 50 }, 'Design centered.')}
+          type="button"
+        >
+          <EditorGlyph name="center" />
+          <span>Center</span>
+        </button>
+        <button
+          aria-pressed={transform.flipped}
+          onClick={() =>
+            commitTransform(
+              { ...transform, flipped: !transform.flipped },
+              transform.flipped ? 'Design restored.' : 'Design flipped horizontally.',
+            )
+          }
+          type="button"
+        >
+          <EditorGlyph name="flip" />
+          <span>Flip</span>
+        </button>
+        <button
+          onClick={() => {
+            setArtworkSelected(false);
+            setPreviewMode(true);
+            setEditorStatus('Preview mode. Editing controls are hidden.');
+          }}
+          type="button"
+        >
+          <EditorGlyph name="preview" />
+          <span>Preview</span>
+        </button>
+      </section>
       <section className="editor-tools" aria-label="Design placement controls">
         <div className="editor-control-card">
           <span>Scale</span>
@@ -1338,22 +1880,10 @@ function EditorStep({
         <button className="step-back" onClick={onBack} type="button">
           ← Back to preview
         </button>
-        <button
-          className="create-button"
-          onClick={() => {
-            setSaveNotice(true);
-            setEditorStatus('Placement saved locally.');
-          }}
-          type="button"
-        >
+        <button className="create-button" onClick={onSave} type="button">
           Save &amp; continue <Icon>→</Icon>
         </button>
       </div>
-      {saveNotice ? (
-        <p className="editor-save-notice" role="status">
-          Placement saved locally. Cart is the next prototype step.
-        </p>
-      ) : null}
       <p aria-live="polite" className="sr-only">
         {editorStatus}
       </p>
@@ -1364,7 +1894,18 @@ function EditorStep({
 function EditorGlyph({
   name,
 }: {
-  name: 'minus' | 'plus' | 'rotate-left' | 'rotate-right' | 'reset';
+  name:
+    | 'minus'
+    | 'plus'
+    | 'rotate-left'
+    | 'rotate-right'
+    | 'reset'
+    | 'undo'
+    | 'redo'
+    | 'center'
+    | 'flip'
+    | 'preview'
+    | 'edit';
 }) {
   const pathProps = {
     fill: 'none',
@@ -1399,6 +1940,49 @@ function EditorGlyph({
     return (
       <svg viewBox="0 0 24 24">
         <path d="M16.8 9.1h3.4V5.7m-.3 3.3A8 8 0 1 0 18.2 17" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'undo') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M9 7 5 11l4 4m-4-4h8a6 6 0 0 1 6 6" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'redo') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="m15 7 4 4-4 4m4-4h-8a6 6 0 0 0-6 6" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'center') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5m8-7v8m-4-4h8" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'flip') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3v18M9 6l-5 6 5 6V6Zm6 0 5 6-5 6V6Z" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'preview') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M3.5 12S6.5 7 12 7s8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z" {...pathProps} />
+        <circle cx="12" cy="12" r="2.4" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'edit') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="m4 20 4.2-1L18.9 8.3l-3.2-3.2L5 15.8 4 20Zm10.5-13.7 3.2 3.2" {...pathProps} />
       </svg>
     );
   }
@@ -1563,7 +2147,7 @@ function ColorSelectionSheet({
   chooseColor: (id: ColorId) => void;
   close: () => void;
 }) {
-  const colors = [...POPULAR_COLORS, ...MORE_COLORS];
+  const colors = PRODUCT_COLORS;
   const [showAllColors, setShowAllColors] = useState(false);
   const visibleColors = showAllColors ? colors : colors.slice(0, 8);
   return (
@@ -1594,6 +2178,7 @@ function ColorSelectionSheet({
           {showAllColors ? '− fewer colors' : '+ more colors'}
         </button>
       ) : null}
+      <p className="sheet-description catalog-snapshot-note">{colors.length} colors available</p>
     </SelectionSheet>
   );
 }
@@ -1633,6 +2218,9 @@ function SizeSelectionSheet({
           );
         })}
       </div>
+      <p className="sheet-description catalog-snapshot-note">
+        Some color and size combinations may be unavailable.
+      </p>
     </SelectionSheet>
   );
 }

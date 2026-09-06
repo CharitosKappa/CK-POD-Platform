@@ -1,6 +1,6 @@
 # Let It Be UX prototype v0.1
 
-Disposable CEO/product-review prototype for the local mobile flow: **Step 1: Idea**, **Step 2: Style + Tone**, **Step 3: Color + Size**, **Step 4: Generated preview**, and **Step 5: Placement editor**. The order is Idea → Style + Tone → Color/Size → Generate → Editor. Generation and editor changes are local simulations only. The standalone Next.js application has no API routes, production-service imports, backend, persistence, provider connectivity, or production data writes.
+Disposable CEO/product-review prototype for the local mobile flow: **Step 1: Idea**, **Step 2: Style + Tone**, **Step 3: Color + Size**, and **Step 4: Generated preview**. From the generated preview, the customer can continue directly toward checkout or optionally open the placement editor. Generation and editor changes are local simulations only. The standalone Next.js application has no API routes, production-service imports, backend, persistence, provider connectivity, or production data writes.
 
 ## Run
 
@@ -12,7 +12,7 @@ The command binds to `0.0.0.0:3001`. Use `http://localhost:3001` locally, or rep
 
 ## Prototype fixtures
 
-`public/garments/classic-tee-{black,navy,white}.png` are generated, replaceable, local-only static fixtures used exclusively by this prototype. Step 1 uses White only as a neutral garment presentation—not a selected product color. They are not production garment rendering and may be removed with the application.
+`public/garments/classic-tee-{black,navy,white}.png` are generated, replaceable, local-only static fixtures used exclusively by this prototype. Step 1 uses White only as a neutral garment presentation—not a selected product color. Black, Navy, and White use dedicated images in the configurator. The remaining provider colors use the White fixture with an alpha-masked local tint treatment, so they are catalog-faithful selectors rather than production garment renders.
 
 The optional reference image preview remains in browser memory through an object URL and is never uploaded or persisted.
 
@@ -22,17 +22,25 @@ Step 2 is one mobile-first page. Consumers choose exactly one Style Family and m
 
 Theme A, Creative canvas, and Fade composer are fixed for review; consumer previews do not show variant or debug controls.
 
-## Step 3: Color + Size
+## Step 3: Comfort Colors 1717 configuration
 
-Step 3 carries the local creative state forward and adds a fixed `Classic T-Shirt` prototype fixture at `$39.99`. Black is selected by default; Size requires a deliberate selection. Popular color swatches are Black, White, Navy, Forest, and Burgundy, with a collapsed local-only More colors group. Black, White, and Navy use dedicated garment fixtures; the additional colors are explicitly replaceable visual treatments.
+Step 3 carries the local creative state forward and uses the locked Printify profile: Comfort Colors 1717 (blueprint `706`), Monster Digital (provider `29`), DTG, Front. Black is selected by default; Size requires a deliberate selection. The first eight colors are visible immediately and `+ more colors` expands the complete 33-color provider snapshot from 2026-09-06. Sizes are S–4XL. This is a static review fixture with no live Printify/API request.
 
-The local availability matrix contains one review case: `Navy + M` is unavailable. Changing from an eligible `M` selection to Navy clears Size, leaves M visible but disabled, and explains why. `Create My Shirt` starts a simulated local generation state, then presents a local artwork preview. Color may inform future artwork palette decisions; Size is merchandise/availability context and is not a future creative-prompt input.
+The local availability snapshot marks `Blue Spruce + 4XL` and `Grey + 4XL` unavailable. Changing Color while one of those combinations is selected clears Size and explains why. `Create My Shirt` starts a simulated local generation state, then presents a local artwork preview. Color may inform future artwork palette decisions; Size is merchandise/availability context and is not a creative-prompt input.
+
+The prototype base price remains `$39.99`. The review-only large-size surcharge fixtures remain `+$3` for 2XL, `+$5` for 3XL, and now `+$7` for 4XL; replace them when final commercial pricing is approved.
 
 The displayed `1 credit` balance is a fixed, prototype-only guest fixture. It has no account lookup, billing effect, or backend connection.
 
-## Step 5: Placement editor
+## Optional placement editor
 
-`Continue to editor` preserves the selected garment, generated artwork, color, size, and price. The design can be moved inside a visible print area with a finger or mouse drag; keyboard users can nudge it with arrow keys, resize it with plus/minus, and reset it with `R`. Dedicated Scale, Rotate, and Reset controls provide a non-gesture alternative. Placement is browser-local only; `Save & continue` acknowledges the local save and keeps cart as the next prototype boundary.
+The generated-design review uses `Continue to checkout` as its primary CTA and exposes `Edit design` as an optional secondary action. Checkout remains outside this isolated prototype, so the primary CTA only displays a local acknowledgement and never creates a cart, order, or payment. Opening the editor preserves the selected garment, generated artwork, color, size, and price. The consumer sees only a simple `DESIGN AREA` outline. Provider, method, pixel dimensions, DPI, safe-area policy, and other production requirements remain internal and are never rendered in the customer UI. Behind that neutral presentation, the boundary preserves the provider-derived `7:8` proportions and scales down for M and S.
+
+The design can be moved inside the outlined design area with a finger or mouse drag; keyboard users can nudge it with arrow keys, resize it with plus/minus, and reset it with `R`. Tapping the artwork reveals four proportional diagonal-resize handles and a rotation handle. The rotation handle supports arbitrary angles across the full 360-degree range, with light magnetic snapping at the principal angles. Tapping outside the artwork hides the handles. Every drag, nudge, resize, rotation, viewport resize, and garment-size change constrains the complete rotated design bounds to the internal safe area. Center-axis magnetic snapping provides visible alignment guides while moving the artwork.
+
+The compact tool set provides Undo, Redo, Center, horizontal Flip, Preview, Scale, Rotate, and Reset. Undo/Redo record discrete control changes and completed drag gestures rather than every pointer frame. Preview temporarily removes the editor outline and controls, with a persistent `Back to editing` action. Placement and history remain browser-local only; `Save & continue` returns to the generated-design review with checkout as the primary next action. Reopening the optional editor preserves the current local placement.
+
+The full provider research, exact dimensions, preflight rules, availability snapshot, sources, and reusable SVG master are in [`docs/printing/comfort-colors-1717-monster-digital-front-dtg.md`](../../docs/printing/comfort-colors-1717-monster-digital-front-dtg.md).
 
 ## Steps 1–3 copy and hierarchy
 
