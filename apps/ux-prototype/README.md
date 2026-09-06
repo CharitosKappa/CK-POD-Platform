@@ -1,6 +1,6 @@
 # Let It Be UX prototype v0.1
 
-Disposable CEO/product-review prototype for the three pre-generation steps: **Step 1: Idea**, **Step 2: Style + Tone**, and **Step 3: Color + Size**. The approved order is Idea → Style + Tone → Color/Size → Generate. Step 4 is a local boundary only; generation is not implemented. It is a standalone Next.js application with no API routes, production-service imports, backend, persistence, provider connectivity, or production data writes.
+Disposable CEO/product-review prototype for the local mobile flow: **Step 1: Idea**, **Step 2: Style + Tone**, **Step 3: Color + Size**, **Step 4: Generated preview**, and **Step 5: Placement editor**. The order is Idea → Style + Tone → Color/Size → Generate → Editor. Generation and editor changes are local simulations only. The standalone Next.js application has no API routes, production-service imports, backend, persistence, provider connectivity, or production data writes.
 
 ## Run
 
@@ -26,9 +26,13 @@ Theme A, Creative canvas, and Fade composer are fixed for review; consumer previ
 
 Step 3 carries the local creative state forward and adds a fixed `Classic T-Shirt` prototype fixture at `$39.99`. Black is selected by default; Size requires a deliberate selection. Popular color swatches are Black, White, Navy, Forest, and Burgundy, with a collapsed local-only More colors group. Black, White, and Navy use dedicated garment fixtures; the additional colors are explicitly replaceable visual treatments.
 
-The local availability matrix contains one review case: `Navy + M` is unavailable. Changing from an eligible `M` selection to Navy clears Size, leaves M visible but disabled, and explains why. The Size Guide values are prototype fixtures only. `Create My Shirt ✦` stores no data and opens only the local Step 4 boundary; it makes no generation, payment, provider, or backend request. Color may inform future artwork palette decisions; Size is merchandise/availability context and is not a future creative-prompt input.
+The local availability matrix contains one review case: `Navy + M` is unavailable. Changing from an eligible `M` selection to Navy clears Size, leaves M visible but disabled, and explains why. `Create My Shirt` starts a simulated local generation state, then presents a local artwork preview. Color may inform future artwork palette decisions; Size is merchandise/availability context and is not a future creative-prompt input.
 
 The displayed `1 credit` balance is a fixed, prototype-only guest fixture. It has no account lookup, billing effect, or backend connection.
+
+## Step 5: Placement editor
+
+`Continue to editor` preserves the selected garment, generated artwork, color, size, and price. The design can be moved inside a visible print area with a finger or mouse drag; keyboard users can nudge it with arrow keys, resize it with plus/minus, and reset it with `R`. Dedicated Scale, Rotate, and Reset controls provide a non-gesture alternative. Placement is browser-local only; `Save & continue` acknowledges the local save and keeps cart as the next prototype boundary.
 
 ## Steps 1–3 copy and hierarchy
 

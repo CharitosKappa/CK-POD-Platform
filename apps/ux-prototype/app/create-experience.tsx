@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  ChangeEvent,
+  KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from 'react';
 
 const NEUTRAL_GARMENT_ASSET = '/garments/classic-tee-white.png';
 const GARMENT_ASSETS = {
@@ -83,8 +88,30 @@ type StyleId = (typeof STYLES)[number]['id'];
 type ToneId = (typeof TONES)[number]['id'];
 type ExplicitTone = Exclude<ToneId, 'auto'>;
 type Look = { id: string; name: string };
-type ColorId = 'black' | 'white' | 'navy' | 'forest' | 'burgundy' | 'sand' | 'heather' | 'red';
-type SizeId = 's' | 'm' | 'l' | 'xl' | '2xl';
+type ColorId =
+  | 'black'
+  | 'white'
+  | 'navy'
+  | 'forest'
+  | 'burgundy'
+  | 'sand'
+  | 'heather'
+  | 'red'
+  | 'sage'
+  | 'sky'
+  | 'rose'
+  | 'lavender'
+  | 'mustard'
+  | 'teal'
+  | 'orange'
+  | 'chocolate';
+type SizeId = 'xs' | 's' | 'm' | 'l' | 'xl' | '2xl' | '3xl';
+type EditorTransform = {
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+};
 type ColorFixture = {
   id: ColorId;
   name: string;
@@ -103,14 +130,48 @@ const MORE_COLORS: ColorFixture[] = [
   { id: 'sand', name: 'Sand', swatch: '#d7c6a7' },
   { id: 'heather', name: 'Heather', swatch: '#929397' },
   { id: 'red', name: 'Red', swatch: '#bb3430' },
+  // Additional prototype fixtures for reviewing the expanded color grid.
+  { id: 'sage', name: 'Sage', swatch: '#a3b598' },
+  { id: 'sky', name: 'Sky', swatch: '#a0bdd7' },
+  { id: 'rose', name: 'Rose', swatch: '#dab0b9' },
+  { id: 'lavender', name: 'Lavender', swatch: '#b9acd3' },
+  { id: 'mustard', name: 'Mustard', swatch: '#c99b31' },
+  { id: 'teal', name: 'Teal', swatch: '#287778' },
+  { id: 'orange', name: 'Orange', swatch: '#dc7137' },
+  { id: 'chocolate', name: 'Chocolate', swatch: '#614238' },
 ];
-const SIZES: { id: SizeId; name: string }[] = [
-  { id: 's', name: 'S' },
-  { id: 'm', name: 'M' },
-  { id: 'l', name: 'L' },
-  { id: 'xl', name: 'XL' },
-  { id: '2xl', name: '2XL' },
+const SIZES: { id: SizeId; name: string; label: string }[] = [
+  { id: 'xs', name: 'XS', label: 'X-Small · XS' },
+  { id: 's', name: 'S', label: 'Small · S' },
+  { id: 'm', name: 'M', label: 'Medium · M' },
+  { id: 'l', name: 'L', label: 'Large · L' },
+  { id: 'xl', name: 'XL', label: 'X-Large · XL' },
+  { id: '2xl', name: '2XL', label: '2X-Large · 2XL' },
+  { id: '3xl', name: '3XL', label: '3X-Large · 3XL' },
 ];
+const BASE_PRICE_CENTS = 3999;
+// Replace these prototype-only fixtures when the final large-size pricing is approved.
+const SIZE_SURCHARGE_CENTS: Record<SizeId, number> = {
+  xs: 0,
+  s: 0,
+  m: 0,
+  l: 0,
+  xl: 0,
+  '2xl': 300,
+  '3xl': 500,
+};
+const RETRY_CREDIT_COST = 1;
+const PROTOTYPE_CREDIT_PACK_SIZE = 3;
+const DEFAULT_EDITOR_TRANSFORM: EditorTransform = {
+  x: 50,
+  y: 50,
+  scale: 1,
+  rotation: 0,
+};
+const USD_FORMATTER = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+});
 
 const LOOKS: Record<StyleId, Look[]> = {
   'vintage-retro': [
@@ -300,9 +361,24 @@ function recommendedLook(style: StyleId, tone: ToneId, prompt: string) {
 function findLook(style: StyleId, id: string): Look {
   return LOOKS[style].find((look) => look.id === id) ?? LOOKS[style][0]!;
 }
+function artworkCopy(prompt: string) {
+  return prompt
+    .replace(/[^a-zA-Z0-9À-ž\s]/g, '')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 5)
+    .join(' ');
+}
+function shirtPrice(size: SizeId | null) {
+  const surcharge = size ? SIZE_SURCHARGE_CENTS[size] : 0;
+  return USD_FORMATTER.format((BASE_PRICE_CENTS + surcharge) / 100);
+}
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
 
 export function CreateExperience() {
-  const [step, setStep] = useState<'idea' | 'style' | 'product' | 'boundary'>('idea');
+  const [step, setStep] = useState<'idea' | 'style' | 'product' | 'generate' | 'editor'>('idea');
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -314,8 +390,18 @@ export function CreateExperience() {
   const [lookPickerOpen, setLookPickerOpen] = useState(false);
   const [color, setColor] = useState<ColorId>('black');
   const [size, setSize] = useState<SizeId | null>(null);
-  const [selectionSheet, setSelectionSheet] = useState<'color' | 'size' | null>(null);
+  const [selectionSheet, setSelectionSheet] = useState<'color' | 'size' | 'credits' | null>(null);
   const [productInfoOpen, setProductInfoOpen] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<'idle' | 'creating' | 'ready'>('idle');
+  const [generationVersion, setGenerationVersion] = useState(0);
+  const [generatedCreativeSignature, setGeneratedCreativeSignature] = useState<string | null>(null);
+  const [appliedProduct, setAppliedProduct] = useState<{
+    color: ColorId;
+    size: SizeId;
+  } | null>(null);
+  const [previewUpdating, setPreviewUpdating] = useState(false);
+  const [credits, setCredits] = useState(1);
+  const [editorTransform, setEditorTransform] = useState<EditorTransform>(DEFAULT_EDITOR_TRANSFORM);
   const [sizeError, setSizeError] = useState('');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -328,6 +414,26 @@ export function CreateExperience() {
   );
   const effectiveLook =
     style && recommendation ? findLook(style, manualLook ?? recommendation) : null;
+  const creativeSignature = [
+    prompt.trim(),
+    reference?.url ?? '',
+    style ?? '',
+    tone,
+    effectiveLook?.id ?? '',
+  ].join('|');
+  const hasGeneratedDesign = generatedCreativeSignature !== null;
+  const creativeInputsChanged =
+    hasGeneratedDesign && generatedCreativeSignature !== creativeSignature;
+  const productConfigurationChanged = Boolean(
+    appliedProduct && (appliedProduct.color !== color || appliedProduct.size !== size),
+  );
+  const productActionLabel = !hasGeneratedDesign
+    ? 'Create My Shirt'
+    : creativeInputsChanged
+      ? 'Regenerate design'
+      : productConfigurationChanged
+        ? 'Apply changes'
+        : 'Back to preview';
   const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
   const garmentAsset = selectedColor.asset
     ? GARMENT_ASSETS[selectedColor.asset]
@@ -351,16 +457,34 @@ export function CreateExperience() {
   }, [drawerOpen]);
   useEffect(() => {
     if (!selectionSheet) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const scrollY = window.scrollY;
+    const previousStyle = document.body.getAttribute('style');
+    Object.assign(document.body.style, {
+      position: 'fixed',
+      top: `-${scrollY}px`,
+      width: '100%',
+      overflow: 'hidden',
+    });
     return () => {
-      document.body.style.overflow = previousOverflow;
+      if (previousStyle === null) document.body.removeAttribute('style');
+      else document.body.setAttribute('style', previousStyle);
+      window.scrollTo({ top: scrollY, behavior: 'instant' });
     };
   }, [selectionSheet]);
   useEffect(() => {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
     setProductInfoOpen(false);
   }, [step]);
+  useEffect(() => {
+    if (step !== 'generate' || generationStatus !== 'creating') return;
+    const timer = window.setTimeout(() => setGenerationStatus('ready'), 1900);
+    return () => window.clearTimeout(timer);
+  }, [generationStatus, generationVersion, step]);
+  useEffect(() => {
+    if (!previewUpdating) return;
+    const timer = window.setTimeout(() => setPreviewUpdating(false), 650);
+    return () => window.clearTimeout(timer);
+  }, [previewUpdating]);
   useEffect(() => {
     if (!productInfoOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
@@ -436,7 +560,39 @@ export function CreateExperience() {
       return;
     }
     setSizeError('');
-    setStep('boundary');
+    const nextProduct = { color, size };
+    const requiresGeneration =
+      generatedCreativeSignature === null || generatedCreativeSignature !== creativeSignature;
+
+    setAppliedProduct(nextProduct);
+    if (!requiresGeneration) {
+      setGenerationStatus('ready');
+      setPreviewUpdating(productConfigurationChanged);
+      setStep('generate');
+      return;
+    }
+
+    if (generatedCreativeSignature !== null) {
+      setGenerationVersion((version) => version + 1);
+    }
+    setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
+    setGeneratedCreativeSignature(creativeSignature);
+    setPreviewUpdating(false);
+    setGenerationStatus('creating');
+    setStep('generate');
+  };
+  const regenerate = () => {
+    if (credits < RETRY_CREDIT_COST) {
+      setSelectionSheet('credits');
+      return;
+    }
+    setCredits((balance) => balance - RETRY_CREDIT_COST);
+    setPreviewUpdating(false);
+    setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
+    setGeneratedCreativeSignature(creativeSignature);
+    if (size) setAppliedProduct({ color, size });
+    setGenerationVersion((version) => version + 1);
+    setGenerationStatus('creating');
   };
   const changeReference = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -705,11 +861,14 @@ export function CreateExperience() {
                     </section>
                   ) : null}
                 </div>
-                <span>from $39.99</span>
+                <span aria-live="polite">
+                  {size ? shirtPrice(size) : `from ${shirtPrice(null)}`}
+                </span>
               </div>
             </section>
             <section className="product-selection-cards" aria-label="Product configuration">
               <button
+                aria-expanded={selectionSheet === 'color'}
                 aria-haspopup="dialog"
                 className="selection-card"
                 onClick={() => setSelectionSheet('color')}
@@ -722,19 +881,21 @@ export function CreateExperience() {
                     className="selection-card-swatch"
                     style={{ background: selectedColor.swatch }}
                   />
-                  {selectedColor.name} <Icon>›</Icon>
+                  {selectedColor.name} <i aria-hidden="true" className="selection-card-chevron" />
                 </span>
               </button>
               <button
+                aria-expanded={selectionSheet === 'size'}
                 aria-haspopup="dialog"
+                aria-invalid={Boolean(sizeError || availabilityMessage)}
                 className="selection-card"
                 onClick={() => setSelectionSheet('size')}
                 type="button"
               >
                 <span className="selection-card-label">Size</span>
                 <span className={`selection-card-value ${size ? '' : 'is-empty'}`}>
-                  {size ? SIZES.find((item) => item.id === size)?.name : 'Select size'}{' '}
-                  <Icon>›</Icon>
+                  {size ? SIZES.find((item) => item.id === size)?.name : 'Select size'}
+                  <i aria-hidden="true" className="selection-card-chevron" />
                 </span>
               </button>
             </section>
@@ -753,22 +914,50 @@ export function CreateExperience() {
                 ← Back to style
               </button>
               <button className="create-button" onClick={submitProduct} type="button">
-                Create My Shirt <Icon>✦</Icon>
+                {productActionLabel}{' '}
+                <Icon>{!hasGeneratedDesign || creativeInputsChanged ? '✦' : '→'}</Icon>
               </button>
             </div>
             <p className="reassurance product-reassurance">
               Free to create <span>·</span> Pay when you order
             </p>
           </div>
+        ) : step === 'generate' ? (
+          <GenerateStep
+            color={color}
+            garmentAsset={garmentAsset}
+            generationStatus={generationStatus}
+            generationVersion={generationVersion}
+            previewUpdating={previewUpdating}
+            prompt={prompt}
+            credits={credits}
+            size={size}
+            style={style}
+            tone={tone}
+            back={() => {
+              setPreviewUpdating(false);
+              setStep('product');
+            }}
+            openEditor={() => {
+              setPreviewUpdating(false);
+              setStep('editor');
+            }}
+            regenerate={regenerate}
+          />
         ) : (
-          <div className="boundary-flow">
-            <p className="eyebrow">Your choices are ready</p>
-            <h1>Generation is coming next.</h1>
-            <p>This is a local prototype boundary. Nothing has been generated yet.</p>
-            <button className="create-button" onClick={() => setStep('product')} type="button">
-              Back to color &amp; size <Icon>←</Icon>
-            </button>
-          </div>
+          <EditorStep
+            color={color}
+            garmentAsset={garmentAsset}
+            generationVersion={generationVersion}
+            prompt={prompt}
+            size={size}
+            style={style}
+            tone={tone}
+            transform={editorTransform}
+            onBack={() => setStep('generate')}
+            onReset={() => setEditorTransform(DEFAULT_EDITOR_TRANSFORM)}
+            onTransformChange={setEditorTransform}
+          />
         )}
       </section>
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={closeRef} /> : null}
@@ -787,20 +976,480 @@ export function CreateExperience() {
           chooseSize={chooseSize}
         />
       ) : null}
+      {selectionSheet === 'credits' ? (
+        <CreditPurchaseSheet
+          close={() => setSelectionSheet(null)}
+          purchase={() => {
+            setCredits((balance) => balance + PROTOTYPE_CREDIT_PACK_SIZE);
+            setSelectionSheet(null);
+          }}
+        />
+      ) : null}
     </main>
   );
 }
 
-function ColorSelectionSheet({
+function GenerateStep({
   color,
-  chooseColor,
-  close,
+  credits,
+  garmentAsset,
+  generationStatus,
+  generationVersion,
+  previewUpdating,
+  prompt,
+  size,
+  style,
+  tone,
+  back,
+  openEditor,
+  regenerate,
 }: {
   color: ColorId;
-  chooseColor: (id: ColorId) => void;
+  credits: number;
+  garmentAsset: string;
+  generationStatus: 'idle' | 'creating' | 'ready';
+  generationVersion: number;
+  previewUpdating: boolean;
+  prompt: string;
+  size: SizeId | null;
+  style: StyleId | null;
+  tone: ToneId;
+  back: () => void;
+  openEditor: () => void;
+  regenerate: () => void;
+}) {
+  const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
+  const selectedSize = SIZES.find((item) => item.id === size);
+  const isCreating = generationStatus !== 'ready';
+
+  if (isCreating) {
+    return (
+      <div className="generation-flow generation-loading" aria-live="polite">
+        <div className={`generation-garment-stage garment-color-${color}`} aria-hidden="true">
+          <img alt="" src={garmentAsset} />
+          <span className="generation-scan" />
+        </div>
+        <section className="generation-copy">
+          <p className="eyebrow">Creating your design</p>
+          <h1>Making it yours…</h1>
+          <p>Combining your idea, style, and shirt color.</p>
+          <div
+            aria-label="Generating shirt preview"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            className="generation-progress"
+            role="progressbar"
+          >
+            <span />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`generation-flow generation-result ${previewUpdating ? 'is-preview-updating' : ''}`}
+    >
+      <section className="result-intro">
+        <p className="eyebrow">Ready to review</p>
+        <h1>Your shirt is ready.</h1>
+        <p>A first version made from your idea.</p>
+      </section>
+      <section
+        aria-label={`${selectedColor.name} Classic T-Shirt with generated artwork`}
+        className={`generation-garment-stage result-garment-stage garment-color-${color}`}
+      >
+        <div className="result-garment-zoom">
+          <img alt={`${selectedColor.name} Classic T-Shirt preview`} src={garmentAsset} />
+          <GeneratedArtwork prompt={prompt} style={style} tone={tone} version={generationVersion} />
+        </div>
+        {previewUpdating ? (
+          <span className="preview-update-indicator" role="status">
+            Updating preview…
+          </span>
+        ) : null}
+      </section>
+      <section className="generation-summary" aria-label="Generated shirt choices">
+        <div>
+          <strong>Classic T-Shirt</strong>
+          <span>{shirtPrice(size)}</span>
+        </div>
+        <p>
+          {selectedColor.name} <span>·</span> {selectedSize?.name ?? 'Size'}
+        </p>
+      </section>
+      <div className="generation-actions">
+        <button className="create-button" onClick={openEditor} type="button">
+          Continue to editor <Icon>→</Icon>
+        </button>
+        <div className="generation-secondary-actions">
+          <button className="regenerate-button" onClick={regenerate} type="button">
+            {credits >= RETRY_CREDIT_COST ? (
+              <>
+                <span className="regenerate-label">↻ Try another version</span>
+                <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
+              </>
+            ) : (
+              'Buy credits to try again'
+            )}
+          </button>
+          <span aria-hidden="true">|</span>
+          <button className="generation-back" onClick={back} type="button">
+            ← Back to color &amp; size
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditorStep({
+  color,
+  garmentAsset,
+  generationVersion,
+  prompt,
+  size,
+  style,
+  tone,
+  transform,
+  onBack,
+  onReset,
+  onTransformChange,
+}: {
+  color: ColorId;
+  garmentAsset: string;
+  generationVersion: number;
+  prompt: string;
+  size: SizeId | null;
+  style: StyleId | null;
+  tone: ToneId;
+  transform: EditorTransform;
+  onBack: () => void;
+  onReset: () => void;
+  onTransformChange: (transform: EditorTransform) => void;
+}) {
+  const printAreaRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    clientX: number;
+    clientY: number;
+    pointerId: number;
+    transform: EditorTransform;
+  } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [saveNotice, setSaveNotice] = useState(false);
+  const [editorStatus, setEditorStatus] = useState('');
+  const selectedColor = [...POPULAR_COLORS, ...MORE_COLORS].find((item) => item.id === color)!;
+  const selectedSize = SIZES.find((item) => item.id === size);
+
+  const changeScale = (amount: number) => {
+    const scale = clamp(Number((transform.scale + amount).toFixed(2)), 0.7, 1.4);
+    onTransformChange({ ...transform, scale });
+    setEditorStatus(`Design size ${Math.round(scale * 100)} percent.`);
+  };
+  const changeRotation = (amount: number) => {
+    const rotation = clamp(transform.rotation + amount, -30, 30);
+    onTransformChange({ ...transform, rotation });
+    setEditorStatus(`Design rotation ${rotation} degrees.`);
+  };
+  const resetPlacement = () => {
+    onReset();
+    setSaveNotice(false);
+    setEditorStatus('Design placement reset.');
+  };
+  const finishDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setIsDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setEditorStatus('Design placement updated.');
+  };
+  const nudgeDesign = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const distance = event.shiftKey ? 8 : 4;
+    let nextTransform: EditorTransform | null = null;
+    switch (event.key) {
+      case 'ArrowLeft':
+        nextTransform = { ...transform, x: clamp(transform.x - distance, 12, 88) };
+        break;
+      case 'ArrowRight':
+        nextTransform = { ...transform, x: clamp(transform.x + distance, 12, 88) };
+        break;
+      case 'ArrowUp':
+        nextTransform = { ...transform, y: clamp(transform.y - distance, 12, 88) };
+        break;
+      case 'ArrowDown':
+        nextTransform = { ...transform, y: clamp(transform.y + distance, 12, 88) };
+        break;
+      case '+':
+      case '=':
+        nextTransform = {
+          ...transform,
+          scale: clamp(Number((transform.scale + 0.1).toFixed(2)), 0.7, 1.4),
+        };
+        break;
+      case '-':
+        nextTransform = {
+          ...transform,
+          scale: clamp(Number((transform.scale - 0.1).toFixed(2)), 0.7, 1.4),
+        };
+        break;
+      case 'r':
+      case 'R':
+        event.preventDefault();
+        resetPlacement();
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+    onTransformChange(nextTransform);
+    setEditorStatus('Design placement updated.');
+  };
+
+  return (
+    <div className="editor-flow">
+      <section className="editor-intro" aria-labelledby="editor-heading">
+        <p className="eyebrow">Make it yours</p>
+        <h1 id="editor-heading">Adjust your design.</h1>
+        <p>Place it exactly where you want it printed.</p>
+      </section>
+      <section
+        aria-label={`${selectedColor.name} Classic T-Shirt design editor`}
+        className={`editor-canvas garment-color-${color}`}
+      >
+        <img
+          alt={`${selectedColor.name} Classic T-Shirt with editable design`}
+          src={garmentAsset}
+        />
+        <div className="editor-print-area" ref={printAreaRef}>
+          <button
+            aria-describedby="editor-placement-hint"
+            aria-label="Generated design. Drag to move it. Use arrow keys to nudge it, plus and minus to resize, or R to reset."
+            className={`editor-artwork-control ${isDragging ? 'is-dragging' : ''}`}
+            onClick={() =>
+              setEditorStatus('Design selected. Drag it or use the placement controls below.')
+            }
+            onKeyDown={nudgeDesign}
+            onPointerCancel={(event) => finishDrag(event)}
+            onPointerDown={(event) => {
+              if (!event.isPrimary || event.button !== 0) return;
+              event.preventDefault();
+              dragRef.current = {
+                clientX: event.clientX,
+                clientY: event.clientY,
+                pointerId: event.pointerId,
+                transform,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setIsDragging(true);
+              setSaveNotice(false);
+            }}
+            onPointerMove={(event) => {
+              const drag = dragRef.current;
+              const printArea = printAreaRef.current;
+              if (!drag || drag.pointerId !== event.pointerId || !printArea) return;
+              const bounds = printArea.getBoundingClientRect();
+              if (!bounds.width || !bounds.height) return;
+              onTransformChange({
+                ...drag.transform,
+                x: clamp(
+                  drag.transform.x + ((event.clientX - drag.clientX) / bounds.width) * 100,
+                  12,
+                  88,
+                ),
+                y: clamp(
+                  drag.transform.y + ((event.clientY - drag.clientY) / bounds.height) * 100,
+                  12,
+                  88,
+                ),
+              });
+            }}
+            onPointerUp={finishDrag}
+            style={{
+              left: `${transform.x}%`,
+              top: `${transform.y}%`,
+              transform: `translate(-50%, -50%) rotate(${transform.rotation}deg) scale(${transform.scale})`,
+            }}
+            type="button"
+          >
+            <GeneratedArtwork
+              prompt={prompt}
+              style={style}
+              tone={tone}
+              version={generationVersion}
+            />
+          </button>
+        </div>
+      </section>
+      <p className="editor-placement-hint" id="editor-placement-hint">
+        Drag the design within the dotted print area.
+      </p>
+      <section className="editor-tools" aria-label="Design placement controls">
+        <div className="editor-control-card">
+          <span>Scale</span>
+          <div className="editor-stepper">
+            <button
+              aria-label="Make design smaller"
+              onClick={() => changeScale(-0.1)}
+              type="button"
+            >
+              <EditorGlyph name="minus" />
+            </button>
+            <output aria-live="polite">{Math.round(transform.scale * 100)}%</output>
+            <button aria-label="Make design larger" onClick={() => changeScale(0.1)} type="button">
+              <EditorGlyph name="plus" />
+            </button>
+          </div>
+        </div>
+        <div className="editor-control-card">
+          <span>Rotate</span>
+          <div className="editor-stepper">
+            <button
+              aria-label="Rotate design left"
+              onClick={() => changeRotation(-5)}
+              type="button"
+            >
+              <EditorGlyph name="rotate-left" />
+            </button>
+            <output aria-live="polite">{transform.rotation}°</output>
+            <button
+              aria-label="Rotate design right"
+              onClick={() => changeRotation(5)}
+              type="button"
+            >
+              <EditorGlyph name="rotate-right" />
+            </button>
+          </div>
+        </div>
+        <button className="editor-reset" onClick={resetPlacement} type="button">
+          <EditorGlyph name="reset" /> Reset placement
+        </button>
+      </section>
+      <section className="editor-product-summary" aria-label="Selected product">
+        <span>
+          {selectedColor.name} <b>·</b> {selectedSize?.name ?? 'Size'}
+        </span>
+        <strong>{shirtPrice(size)}</strong>
+      </section>
+      <div className="step-actions editor-actions">
+        <button className="step-back" onClick={onBack} type="button">
+          ← Back to preview
+        </button>
+        <button
+          className="create-button"
+          onClick={() => {
+            setSaveNotice(true);
+            setEditorStatus('Placement saved locally.');
+          }}
+          type="button"
+        >
+          Save &amp; continue <Icon>→</Icon>
+        </button>
+      </div>
+      {saveNotice ? (
+        <p className="editor-save-notice" role="status">
+          Placement saved locally. Cart is the next prototype step.
+        </p>
+      ) : null}
+      <p aria-live="polite" className="sr-only">
+        {editorStatus}
+      </p>
+    </div>
+  );
+}
+
+function EditorGlyph({
+  name,
+}: {
+  name: 'minus' | 'plus' | 'rotate-left' | 'rotate-right' | 'reset';
+}) {
+  const pathProps = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    strokeWidth: 1.8,
+  };
+
+  if (name === 'minus') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M6 12h12" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'plus') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M12 6v12M6 12h12" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'rotate-left') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M7.2 9.1H3.8V5.7M4.1 9A8 8 0 1 1 5.8 17" {...pathProps} />
+      </svg>
+    );
+  }
+  if (name === 'rotate-right') {
+    return (
+      <svg viewBox="0 0 24 24">
+        <path d="M16.8 9.1h3.4V5.7m-.3 3.3A8 8 0 1 0 18.2 17" {...pathProps} />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24">
+      <path d="M19 8.5V5h-3.5M19 5a8 8 0 1 0 1.8 8.5" {...pathProps} />
+    </svg>
+  );
+}
+
+function GeneratedArtwork({
+  prompt,
+  style,
+  tone,
+  version,
+}: {
+  prompt: string;
+  style: StyleId | null;
+  tone: ToneId;
+  version: number;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`generated-artwork artwork-${style ?? 'auto'} artwork-version-${version % 2}`}
+    >
+      <span>✦</span>
+      <strong>{artworkCopy(prompt) || 'YOUR IDEA'}</strong>
+      <small>{tone === 'auto' ? 'ONE OF ONE' : tone.toUpperCase()}</small>
+    </div>
+  );
+}
+
+function SelectionSheet({
+  title,
+  name,
+  children,
+  close,
+}: {
+  title: string;
+  name: string;
+  children: ReactNode;
   close: () => void;
 }) {
-  const colors = [...POPULAR_COLORS, ...MORE_COLORS];
+  const sheetRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    sheetRef.current?.focus();
+    return () => trigger?.focus({ preventScroll: true });
+  }, []);
   const [expanded, setExpanded] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -814,8 +1463,9 @@ function ColorSelectionSheet({
     setDragging(false);
     setDragOffset(0);
     if (distance <= -48) {
-      setExpanded(true);
-    } else if (distance >= 132) {
+      const content = contentRef.current;
+      if (content && content.scrollHeight > content.clientHeight) setExpanded(true);
+    } else if (distance >= 80) {
       close();
     } else if (distance >= 48 && expanded) {
       setExpanded(false);
@@ -826,29 +1476,54 @@ function ColorSelectionSheet({
     <div
       className="overlay sheet-overlay"
       role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && close()}
+      onClick={(event) => event.target === event.currentTarget && close()}
     >
       <section
-        aria-labelledby="color-sheet-title"
+        aria-labelledby={`${name}-sheet-title`}
         aria-modal="true"
         className={`bottom-sheet draggable-sheet ${expanded ? 'is-expanded' : ''} ${
           dragging ? 'is-dragging' : ''
         }`}
         role="dialog"
+        ref={sheetRef}
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') close();
+          if (event.key !== 'Tab') return;
+          const buttons =
+            event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+          const first = buttons[0];
+          const last = buttons[buttons.length - 1];
+          if (
+            event.shiftKey &&
+            (document.activeElement === first || document.activeElement === sheetRef.current)
+          ) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
+        }}
         style={{ transform: `translateY(${dragOffset}px)` }}
       >
         <button
-          aria-label={expanded ? 'Collapse color selection' : 'Expand color selection'}
+          aria-label={`Close ${name} selection or drag down to dismiss`}
           className="sheet-handle"
           onClick={() => {
             if (movedDuringDrag.current) {
               movedDuringDrag.current = false;
               return;
             }
-            setExpanded((value) => !value);
+            close();
           }}
-          onPointerCancel={releaseHandle}
+          onPointerCancel={() => {
+            dragStartY.current = null;
+            setDragging(false);
+            setDragOffset(0);
+          }}
           onPointerDown={(event) => {
+            if (!event.isPrimary || event.button !== 0) return;
             dragStartY.current = event.clientY;
             movedDuringDrag.current = false;
             setDragging(true);
@@ -866,27 +1541,60 @@ function ColorSelectionSheet({
           <span aria-hidden="true" />
         </button>
         <div className="sheet-header">
-          <h2 id="color-sheet-title">Choose a color</h2>
-          <button aria-label="Close color selection" onClick={close} type="button">
+          <h2 id={`${name}-sheet-title`}>{title}</h2>
+          <button aria-label={`Close ${name} selection`} onClick={close} type="button">
             ×
           </button>
         </div>
-        <div className="color-list" role="group" aria-label="Choose a color">
-          {colors.map((item) => (
-            <button
-              aria-pressed={color === item.id}
-              key={item.id}
-              onClick={() => chooseColor(item.id)}
-              type="button"
-            >
-              <i aria-hidden="true" className="sheet-swatch" style={{ background: item.swatch }} />
-              <span>{item.name}</span>
-              {color === item.id ? <b>Selected</b> : null}
-            </button>
-          ))}
+        <div className="sheet-content" ref={contentRef}>
+          {children}
         </div>
       </section>
     </div>
+  );
+}
+
+function ColorSelectionSheet({
+  color,
+  chooseColor,
+  close,
+}: {
+  color: ColorId;
+  chooseColor: (id: ColorId) => void;
+  close: () => void;
+}) {
+  const colors = [...POPULAR_COLORS, ...MORE_COLORS];
+  const [showAllColors, setShowAllColors] = useState(false);
+  const visibleColors = showAllColors ? colors : colors.slice(0, 8);
+  return (
+    <SelectionSheet title="Choose a color" name="color" close={close}>
+      <div className="color-list" id="color-options" role="group" aria-label="Choose a color">
+        {visibleColors.map((item) => (
+          <button
+            aria-pressed={color === item.id}
+            key={item.id}
+            onClick={() => chooseColor(item.id)}
+            type="button"
+          >
+            <i aria-hidden="true" className="sheet-swatch" style={{ background: item.swatch }}>
+              {color === item.id ? <b>✓</b> : null}
+            </i>
+            <span>{item.name}</span>
+          </button>
+        ))}
+      </div>
+      {colors.length > 8 ? (
+        <button
+          className="sheet-more-colors"
+          aria-controls="color-options"
+          aria-expanded={showAllColors}
+          onClick={() => setShowAllColors((value) => !value)}
+          type="button"
+        >
+          {showAllColors ? '− fewer colors' : '+ more colors'}
+        </button>
+      ) : null}
+    </SelectionSheet>
   );
 }
 
@@ -902,43 +1610,51 @@ function SizeSelectionSheet({
   close: () => void;
 }) {
   return (
-    <div
-      className="overlay sheet-overlay"
-      role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && close()}
-    >
-      <section
-        aria-labelledby="size-sheet-title"
-        aria-modal="true"
-        className="bottom-sheet"
-        role="dialog"
-      >
-        <div className="sheet-handle" />
-        <div className="sheet-header">
-          <h2 id="size-sheet-title">Choose your size</h2>
-          <button aria-label="Close size selection" onClick={close} type="button">
-            ×
-          </button>
+    <SelectionSheet title="Choose your size" name="size" close={close}>
+      <div className="size-list" role="group" aria-label="Choose a size">
+        {SIZES.map((item) => {
+          const unavailable = unavailableSize(item.id);
+          const surcharge = SIZE_SURCHARGE_CENTS[item.id];
+          return (
+            <button
+              aria-pressed={size === item.id}
+              disabled={unavailable}
+              key={item.id}
+              onClick={() => chooseSize(item.id)}
+              type="button"
+            >
+              <span>{item.name}</span>
+              {unavailable ? (
+                <small>Unavailable</small>
+              ) : surcharge > 0 ? (
+                <small className="size-surcharge">+ {USD_FORMATTER.format(surcharge / 100)}</small>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </SelectionSheet>
+  );
+}
+
+function CreditPurchaseSheet({ close, purchase }: { close: () => void; purchase: () => void }) {
+  return (
+    <SelectionSheet title="You’re out of credits" name="credits" close={close}>
+      <div className="credit-purchase-content">
+        <p>Another version costs 1 credit. Add credits to keep creating.</p>
+        <div className="credit-pack-preview">
+          <div>
+            <strong>{PROTOTYPE_CREDIT_PACK_SIZE} credits</strong>
+            <span>Prototype credit pack</span>
+          </div>
+          <b>Price TBD</b>
         </div>
-        <div className="size-list" role="group" aria-label="Choose a size">
-          {SIZES.map((item) => {
-            const unavailable = unavailableSize(item.id);
-            return (
-              <button
-                aria-pressed={size === item.id}
-                disabled={unavailable}
-                key={item.id}
-                onClick={() => chooseSize(item.id)}
-                type="button"
-              >
-                {item.name}
-                {unavailable ? <small>Unavailable</small> : null}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-    </div>
+        <button className="create-button" onClick={purchase} type="button">
+          Buy credits <Icon>→</Icon>
+        </button>
+        <small>Prototype only — no payment will be taken.</small>
+      </div>
+    </SelectionSheet>
   );
 }
 
