@@ -1686,6 +1686,7 @@ function CheckoutStep({
   );
   const [complete, setComplete] = useState(false);
   const [orderedCart, setOrderedCart] = useState<CartItem[] | null>(null);
+  const [orderSummaryOpen, setOrderSummaryOpen] = useState(false);
   const [referralOpen, setReferralOpen] = useState(false);
   const [referralMessage, setReferralMessage] = useState<{
     copy: string;
@@ -1721,6 +1722,7 @@ function CheckoutStep({
     (total, item) => total + item.unitPriceCents * item.quantity,
     0,
   );
+  const itemCount = cartItems.reduce((total, item) => total + item.quantity, 0);
   // Kept at zero until discounts are connected to a future checkout source.
   const discountCents = 0;
   const estimatedTotal =
@@ -1844,10 +1846,45 @@ function CheckoutStep({
             : 'Your designs are ready to make.'}
         </p>
       </section>
-      <section className="checkout-cart-summary" aria-label="Order summary">
-        {cartItems.map((item) => (
-          <CartSummaryLine item={item} key={item.id} />
-        ))}
+      <section
+        className={`checkout-order-disclosure ${orderSummaryOpen ? 'is-open' : ''}`}
+        aria-label="Order summary"
+      >
+        <button
+          aria-controls="checkout-order-items"
+          aria-expanded={orderSummaryOpen}
+          className="checkout-order-disclosure-trigger"
+          onClick={() => setOrderSummaryOpen((current) => !current)}
+          type="button"
+        >
+          <span className="checkout-order-disclosure-copy">
+            <strong>Order summary</strong>
+            <small>
+              {itemCount} {itemCount === 1 ? 'item' : 'items'}
+            </small>
+          </span>
+          <span className="checkout-order-disclosure-value">
+            <strong>
+              {estimatedTotal === null
+                ? `${USD_FORMATTER.format(subtotalCents / 100)} + shipping`
+                : USD_FORMATTER.format(estimatedTotal / 100)}
+            </strong>
+            <i aria-hidden="true" />
+          </span>
+        </button>
+        <div
+          aria-hidden={!orderSummaryOpen}
+          className="checkout-order-disclosure-panel"
+          id="checkout-order-items"
+        >
+          <div>
+            <div className="checkout-cart-summary">
+              {cartItems.map((item) => (
+                <CartSummaryLine item={item} key={item.id} />
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
       <form
         className="checkout-form"
@@ -1859,7 +1896,10 @@ function CheckoutStep({
           setComplete(true);
         }}
       >
-        <section className="checkout-section-divider" aria-labelledby="checkout-contact-heading">
+        <section
+          className="checkout-section-divider checkout-section-tone is-light"
+          aria-labelledby="checkout-contact-heading"
+        >
           <h2 id="checkout-contact-heading">Contact</h2>
           <label className="checkout-label" htmlFor="checkout-email">
             Email
@@ -1884,7 +1924,10 @@ function CheckoutStep({
             <span>Send me new drops, offers, and occasional design inspiration.</span>
           </label>
         </section>
-        <section className="checkout-section-divider" aria-labelledby="checkout-delivery-heading">
+        <section
+          className="checkout-section-divider checkout-section-tone is-dark"
+          aria-labelledby="checkout-delivery-heading"
+        >
           <h2 id="checkout-delivery-heading">Delivery</h2>
           <div className="checkout-grid-two">
             <div>
@@ -2067,7 +2110,10 @@ function CheckoutStep({
             </label>
           </div>
         </section>
-        <section className="checkout-section-divider" aria-labelledby="checkout-shipping-heading">
+        <section
+          className="checkout-section-divider checkout-section-tone is-light"
+          aria-labelledby="checkout-shipping-heading"
+        >
           <h2 id="checkout-shipping-heading">Shipping method</h2>
           <div className="checkout-shipping-options" role="group" aria-label="Shipping method">
             {(Object.keys(shipping) as Array<keyof typeof shipping>).map((method) => {
@@ -2101,7 +2147,10 @@ function CheckoutStep({
             Carrier is selected after fulfillment based on destination and availability.
           </p>
         </section>
-        <section className="checkout-section-divider" aria-labelledby="checkout-payment-heading">
+        <section
+          className="checkout-section-divider checkout-section-tone is-dark"
+          aria-labelledby="checkout-payment-heading"
+        >
           <h2 id="checkout-payment-heading">Payment</h2>
           <div className="checkout-payment-method">
             <span aria-hidden="true">▰</span>
