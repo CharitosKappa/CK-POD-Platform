@@ -9,6 +9,8 @@ import type {
   ReactNode,
 } from 'react';
 
+import { FeedbackIcon, InlineFeedback, type FeedbackTone } from './feedback-system';
+
 const NEUTRAL_GARMENT_ASSET = '/garments/classic-tee-white.png';
 const GARMENT_ASSETS = {
   black: '/garments/classic-tee-black.png',
@@ -131,6 +133,17 @@ type EditorTransform = {
   rotation: number;
   flipped: boolean;
 };
+type CartItem = {
+  id: string;
+  prompt: string;
+  style: StyleId | null;
+  tone: ToneId;
+  color: ColorId;
+  size: SizeId;
+  generationVersion: number;
+  transform: EditorTransform;
+  unitPriceCents: number;
+};
 type ResizeCorner = 'north-west' | 'north-east' | 'south-east' | 'south-west';
 type EditorGestureBase = {
   pointerId: number;
@@ -168,8 +181,61 @@ type ColorFixture = {
 };
 
 const PRODUCT_PROFILE = {
-  name: 'Comfort Colors 1717',
+  name: 'Classic T-Shirt',
 } as const;
+
+const US_STATES = [
+  ['AL', 'Alabama'],
+  ['AK', 'Alaska'],
+  ['AZ', 'Arizona'],
+  ['AR', 'Arkansas'],
+  ['CA', 'California'],
+  ['CO', 'Colorado'],
+  ['CT', 'Connecticut'],
+  ['DE', 'Delaware'],
+  ['FL', 'Florida'],
+  ['GA', 'Georgia'],
+  ['HI', 'Hawaii'],
+  ['ID', 'Idaho'],
+  ['IL', 'Illinois'],
+  ['IN', 'Indiana'],
+  ['IA', 'Iowa'],
+  ['KS', 'Kansas'],
+  ['KY', 'Kentucky'],
+  ['LA', 'Louisiana'],
+  ['ME', 'Maine'],
+  ['MD', 'Maryland'],
+  ['MA', 'Massachusetts'],
+  ['MI', 'Michigan'],
+  ['MN', 'Minnesota'],
+  ['MS', 'Mississippi'],
+  ['MO', 'Missouri'],
+  ['MT', 'Montana'],
+  ['NE', 'Nebraska'],
+  ['NV', 'Nevada'],
+  ['NH', 'New Hampshire'],
+  ['NJ', 'New Jersey'],
+  ['NM', 'New Mexico'],
+  ['NY', 'New York'],
+  ['NC', 'North Carolina'],
+  ['ND', 'North Dakota'],
+  ['OH', 'Ohio'],
+  ['OK', 'Oklahoma'],
+  ['OR', 'Oregon'],
+  ['PA', 'Pennsylvania'],
+  ['RI', 'Rhode Island'],
+  ['SC', 'South Carolina'],
+  ['SD', 'South Dakota'],
+  ['TN', 'Tennessee'],
+  ['TX', 'Texas'],
+  ['UT', 'Utah'],
+  ['VT', 'Vermont'],
+  ['VA', 'Virginia'],
+  ['WA', 'Washington'],
+  ['WV', 'West Virginia'],
+  ['WI', 'Wisconsin'],
+  ['WY', 'Wyoming'],
+] as const;
 
 // Static snapshot of the active Monster Digital catalog for blueprint 706.
 // Black, White, and Navy have dedicated local assets; all other swatches use a
@@ -243,7 +309,7 @@ const PRINT_AREAS_BY_SIZE: Record<SizeId, PrintAreaProfile> = {
 };
 const UNAVAILABLE_VARIANTS = new Set<string>(['blue-spruce:4xl', 'grey:4xl']);
 const RETRY_CREDIT_COST = 1;
-const PROTOTYPE_CREDIT_PACK_SIZE = 3;
+const CREDIT_PACK_SIZE = 3;
 const DEFAULT_EDITOR_TRANSFORM: EditorTransform = {
   x: 50,
   y: 50,
@@ -364,6 +430,21 @@ const AUTO_RULES: { tone: ExplicitTone; words: string[] }[] = [
 function Icon({ children }: { children: string }) {
   return <span aria-hidden="true">{children}</span>;
 }
+
+function CartGlyph() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path
+        d="M5.5 8.5h13l-1 11h-11zM9 9V6.8a3 3 0 0 1 6 0V9"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.7"
+      />
+    </svg>
+  );
+}
+
 function ToneIcon({ tone }: { tone: ToneId }) {
   const lineProps = {
     fill: 'none',
@@ -453,8 +534,10 @@ function artworkCopy(prompt: string) {
     .join(' ');
 }
 function shirtPrice(size: SizeId | null) {
-  const surcharge = size ? SIZE_SURCHARGE_CENTS[size] : 0;
-  return USD_FORMATTER.format((BASE_PRICE_CENTS + surcharge) / 100);
+  return USD_FORMATTER.format(shirtPriceCents(size) / 100);
+}
+function shirtPriceCents(size: SizeId | null) {
+  return BASE_PRICE_CENTS + (size ? SIZE_SURCHARGE_CENTS[size] : 0);
 }
 function unavailableVariant(color: ColorId, size: SizeId) {
   return UNAVAILABLE_VARIANTS.has(`${color}:${size}`);
@@ -545,10 +628,15 @@ function snapEditorRotation(rotation: number, threshold = 4) {
 }
 
 export function CreateExperience() {
-  const [step, setStep] = useState<'idea' | 'style' | 'product' | 'generate' | 'editor'>('idea');
+  const [step, setStep] = useState<
+    'idea' | 'style' | 'product' | 'generate' | 'checkout' | 'editor'
+  >('idea');
   const [prompt, setPrompt] = useState('');
   const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cartAdded, setCartAdded] = useState(false);
   const [promptError, setPromptError] = useState('');
   const [styleError, setStyleError] = useState('');
   const [style, setStyle] = useState<StyleId | null>(null);
@@ -574,6 +662,7 @@ export function CreateExperience() {
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const triggerRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const cartCloseRef = useRef<HTMLButtonElement | null>(null);
   const toneSectionRef = useRef<HTMLElement | null>(null);
   const productInfoRef = useRef<HTMLDivElement | null>(null);
   const recommendation = useMemo(
@@ -615,14 +704,15 @@ export function CreateExperience() {
     [reference],
   );
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!drawerOpen && !cartOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    closeRef.current?.focus();
+    if (drawerOpen) closeRef.current?.focus();
+    if (cartOpen) cartCloseRef.current?.focus();
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [drawerOpen]);
+  }, [cartOpen, drawerOpen]);
   useEffect(() => {
     if (!selectionSheet) return;
     const scrollY = window.scrollY;
@@ -677,6 +767,62 @@ export function CreateExperience() {
   const closeDrawer = () => {
     setDrawerOpen(false);
     window.setTimeout(() => triggerRef.current?.focus(), 0);
+  };
+  const closeCart = () => {
+    setCartOpen(false);
+    window.setTimeout(() => triggerRef.current?.focus(), 0);
+  };
+  const resetDesign = () => {
+    if (reference) URL.revokeObjectURL(reference.url);
+    setPrompt('');
+    setReference(null);
+    setPromptError('');
+    setStyleError('');
+    setStyle(null);
+    setTone('auto');
+    setManualLook(null);
+    setLookPickerOpen(false);
+    setColor('black');
+    setSize(null);
+    setSelectionSheet(null);
+    setGenerationStatus('idle');
+    setGeneratedCreativeSignature(null);
+    setAppliedProduct(null);
+    setPreviewUpdating(false);
+    setGenerationVersion(0);
+    setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
+    setReviewNotice('');
+    setSizeError('');
+    setAvailabilityMessage('');
+    setCartAdded(false);
+    setStep('idea');
+  };
+  const addCurrentDesignToCart = () => {
+    if (!style || !size) return;
+    setCart((items) => [
+      ...items,
+      {
+        id: `cart-${Date.now()}-${generationVersion}`,
+        prompt,
+        style,
+        tone,
+        color,
+        size,
+        generationVersion,
+        transform: editorTransform,
+        unitPriceCents: shirtPriceCents(size),
+      },
+    ]);
+    setReviewNotice('');
+    setCartAdded(true);
+  };
+  const removeCartItem = (id: string) => {
+    setCart((items) => items.filter((item) => item.id !== id));
+    setCartAdded(false);
+  };
+  const startCheckout = () => {
+    setCartOpen(false);
+    setStep('checkout');
   };
   const chooseStyle = (id: StyleId) => {
     setStyle(id);
@@ -779,16 +925,32 @@ export function CreateExperience() {
   return (
     <main className="prototype theme-a composer-fade">
       <section className="phone-stage composition-canvas">
-        <header className="menu-header menu-header-brand">
-          <span className="menu-wordmark">LET IT BE</span>
-          <button
-            aria-label="Open menu"
-            onClick={(event) => openMenu(event.currentTarget)}
-            type="button"
-          >
-            <Icon>☰</Icon>
-          </button>
-        </header>
+        {step !== 'checkout' ? (
+          <header className="menu-header menu-header-brand">
+            <span className="menu-wordmark">LET IT BE</span>
+            <div className="menu-header-actions">
+              <button
+                aria-label={`Open cart${cart.length ? `, ${cart.length} item${cart.length === 1 ? '' : 's'}` : ''}`}
+                className="menu-cart-button"
+                onClick={(event) => {
+                  triggerRef.current = event.currentTarget;
+                  setCartOpen(true);
+                }}
+                type="button"
+              >
+                <CartGlyph />
+                {cart.length ? <span className="menu-cart-badge">{cart.length}</span> : null}
+              </button>
+              <button
+                aria-label="Open menu"
+                onClick={(event) => openMenu(event.currentTarget)}
+                type="button"
+              >
+                <Icon>☰</Icon>
+              </button>
+            </div>
+          </header>
+        ) : null}
         {step === 'idea' ? (
           <div className="create-flow">
             <section className="intro" aria-labelledby="create-heading">
@@ -827,12 +989,14 @@ export function CreateExperience() {
                 <span>{prompt.length}/280</span>
               </div>
               {promptError ? (
-                <p className="field-error prompt-error" id="shirt-prompt-error" role="alert">
-                  <span aria-hidden="true" className="error-icon">
-                    !
-                  </span>
-                  <span>{promptError}</span>
-                </p>
+                <InlineFeedback
+                  className="prompt-error"
+                  id="shirt-prompt-error"
+                  role="alert"
+                  tone="error"
+                >
+                  {promptError}
+                </InlineFeedback>
               ) : null}
             </section>
             <section className="reference-section" aria-label="Optional reference image">
@@ -897,9 +1061,9 @@ export function CreateExperience() {
                 ))}
               </div>
               {styleError ? (
-                <p className="field-error style-error" role="alert">
+                <InlineFeedback className="style-error" role="alert" tone="reminder">
                   {styleError}
-                </p>
+                </InlineFeedback>
               ) : null}
             </section>
             <section aria-labelledby="tone-heading" className="tone-section" ref={toneSectionRef}>
@@ -1074,19 +1238,24 @@ export function CreateExperience() {
                 <span className="selection-card-label">Size</span>
                 <span className={`selection-card-value ${size ? '' : 'is-empty'}`}>
                   {size ? SIZES.find((item) => item.id === size)?.name : 'Select size'}
+                  {size && SIZE_SURCHARGE_CENTS[size] > 0 ? (
+                    <small className="selection-card-surcharge">
+                      + {USD_FORMATTER.format(SIZE_SURCHARGE_CENTS[size] / 100)}
+                    </small>
+                  ) : null}
                   <i aria-hidden="true" className="selection-card-chevron" />
                 </span>
               </button>
             </section>
             {availabilityMessage ? (
-              <p className="availability-message" role="alert">
+              <InlineFeedback className="availability-message" role="alert" tone="warning">
                 {availabilityMessage}
-              </p>
+              </InlineFeedback>
             ) : null}
             {sizeError ? (
-              <p className="field-error size-error" role="alert">
+              <InlineFeedback className="size-error" role="alert" tone="reminder">
                 {sizeError}
-              </p>
+              </InlineFeedback>
             ) : null}
             <div className="step-actions product-actions">
               <button className="step-back" onClick={() => setStep('style')} type="button">
@@ -1103,6 +1272,7 @@ export function CreateExperience() {
           </div>
         ) : step === 'generate' ? (
           <GenerateStep
+            cartAdded={cartAdded}
             color={color}
             garmentAsset={garmentAsset}
             generationStatus={generationStatus}
@@ -1118,9 +1288,9 @@ export function CreateExperience() {
               setReviewNotice('');
               setStep('product');
             }}
-            continueToCheckout={() =>
-              setReviewNotice('Checkout is next. No order has been placed in this prototype.')
-            }
+            addToCart={addCurrentDesignToCart}
+            checkout={startCheckout}
+            createAnother={resetDesign}
             openEditor={() => {
               setPreviewUpdating(false);
               setReviewNotice('');
@@ -1128,6 +1298,19 @@ export function CreateExperience() {
             }}
             reviewNotice={reviewNotice}
             regenerate={regenerate}
+          />
+        ) : step === 'checkout' ? (
+          <CheckoutStep
+            cart={cart}
+            backToCart={() => {
+              setStep('idea');
+              setCartOpen(true);
+            }}
+            createAnother={resetDesign}
+            onComplete={() => {
+              setCart([]);
+              setCartAdded(false);
+            }}
           />
         ) : (
           <EditorStep
@@ -1153,6 +1336,15 @@ export function CreateExperience() {
         )}
       </section>
       {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={closeRef} /> : null}
+      {cartOpen ? (
+        <CartDrawer
+          cart={cart}
+          checkout={startCheckout}
+          close={closeCart}
+          closeRef={cartCloseRef}
+          removeItem={removeCartItem}
+        />
+      ) : null}
       {selectionSheet === 'color' ? (
         <ColorSelectionSheet
           color={color}
@@ -1172,7 +1364,7 @@ export function CreateExperience() {
         <CreditPurchaseSheet
           close={() => setSelectionSheet(null)}
           purchase={() => {
-            setCredits((balance) => balance + PROTOTYPE_CREDIT_PACK_SIZE);
+            setCredits((balance) => balance + CREDIT_PACK_SIZE);
             setSelectionSheet(null);
           }}
         />
@@ -1182,6 +1374,7 @@ export function CreateExperience() {
 }
 
 function GenerateStep({
+  cartAdded,
   color,
   credits,
   garmentAsset,
@@ -1192,12 +1385,15 @@ function GenerateStep({
   size,
   style,
   tone,
+  addToCart,
   back,
-  continueToCheckout,
+  checkout,
+  createAnother,
   openEditor,
   reviewNotice,
   regenerate,
 }: {
+  cartAdded: boolean;
   color: ColorId;
   credits: number;
   garmentAsset: string;
@@ -1208,8 +1404,10 @@ function GenerateStep({
   size: SizeId | null;
   style: StyleId | null;
   tone: ToneId;
+  addToCart: () => void;
   back: () => void;
-  continueToCheckout: () => void;
+  checkout: () => void;
+  createAnother: () => void;
   openEditor: () => void;
   reviewNotice: string;
   regenerate: () => void;
@@ -1281,36 +1479,693 @@ function GenerateStep({
         </p>
       </section>
       <div className="generation-actions">
-        <button className="create-button" onClick={continueToCheckout} type="button">
-          Continue to checkout <Icon>→</Icon>
-        </button>
-        <button className="generation-edit" onClick={openEditor} type="button">
-          <EditorGlyph name="edit" />
-          <span>Edit design</span>
-          <small>Optional</small>
-        </button>
-        <div className="generation-secondary-actions">
-          <button className="regenerate-button" onClick={regenerate} type="button">
-            {credits >= RETRY_CREDIT_COST ? (
-              <>
-                <span className="regenerate-label">↻ Try another version</span>
-                <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
-              </>
-            ) : (
-              'Buy credits to try again'
-            )}
-          </button>
-          <span aria-hidden="true">|</span>
-          <button className="generation-back" onClick={back} type="button">
-            ← Back to color &amp; size
-          </button>
-        </div>
+        {cartAdded ? (
+          <section className="cart-added-panel" aria-live="polite">
+            <div>
+              <span aria-hidden="true">✓</span>
+              <p>
+                <strong>Added to your cart</strong>
+                <small>Your design is saved and ready whenever you are.</small>
+              </p>
+            </div>
+            <button className="create-button" onClick={checkout} type="button">
+              Checkout <Icon>→</Icon>
+            </button>
+            <button className="cart-added-secondary" onClick={createAnother} type="button">
+              Create another design <Icon>→</Icon>
+            </button>
+          </section>
+        ) : (
+          <>
+            <button className="create-button" onClick={addToCart} type="button">
+              Add to cart · {shirtPrice(size)} <Icon>→</Icon>
+            </button>
+            <button className="generation-edit" onClick={openEditor} type="button">
+              <EditorGlyph name="edit" />
+              <span>Edit design</span>
+              <small>Optional</small>
+            </button>
+            <div className="generation-secondary-actions">
+              <button className="regenerate-button" onClick={regenerate} type="button">
+                {credits >= RETRY_CREDIT_COST ? (
+                  <>
+                    <span className="regenerate-label">↻ Try another version</span>
+                    <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
+                  </>
+                ) : (
+                  'Buy credits to try again'
+                )}
+              </button>
+              <span aria-hidden="true">|</span>
+              <button className="generation-back" onClick={back} type="button">
+                ← Back to color &amp; size
+              </button>
+            </div>
+          </>
+        )}
         {reviewNotice ? (
-          <p className="review-notice" role="status">
+          <InlineFeedback className="review-notice" tone="info">
             {reviewNotice}
-          </p>
+          </InlineFeedback>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function CartSummaryLine({ item }: { item: CartItem }) {
+  const itemColor = PRODUCT_COLORS.find((color) => color.id === item.color)!;
+  const itemSize = SIZES.find((size) => size.id === item.size)!;
+  return (
+    <div className="checkout-order-summary">
+      <div className="checkout-product-art" aria-label="Your generated artwork">
+        <GeneratedArtwork
+          prompt={item.prompt}
+          style={item.style}
+          tone={item.tone}
+          version={item.generationVersion}
+        />
+      </div>
+      <div>
+        <div className="checkout-item-title">
+          <strong>{PRODUCT_PROFILE.name}</strong>
+          <span className="checkout-quantity">×1</span>
+        </div>
+        <span>
+          {itemColor.name} · {itemSize.name}
+        </span>
+      </div>
+      <b>{USD_FORMATTER.format(item.unitPriceCents / 100)}</b>
+    </div>
+  );
+}
+
+function CheckoutStep({
+  cart,
+  backToCart,
+  createAnother,
+  onComplete,
+}: {
+  cart: CartItem[];
+  backToCart: () => void;
+  createAnother: () => void;
+  onComplete: () => void;
+}) {
+  const [shippingMethod, setShippingMethod] = useState<'economy' | 'standard' | 'priority'>(
+    'standard',
+  );
+  const [complete, setComplete] = useState(false);
+  const [orderedCart, setOrderedCart] = useState<CartItem[] | null>(null);
+  const [referralOpen, setReferralOpen] = useState(false);
+  const [referralMessage, setReferralMessage] = useState<{
+    copy: string;
+    tone: FeedbackTone;
+  } | null>(null);
+  const [newsletterSubscribed, setNewsletterSubscribed] = useState(false);
+  const [smsSubscribed, setSmsSubscribed] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [termsError, setTermsError] = useState('');
+  const [details, setDetails] = useState({
+    email: 'alex.morgan@example.com',
+    firstName: 'Alex',
+    lastName: 'Morgan',
+    address: '123 Palm Avenue',
+    apartment: 'Apt 4B',
+    city: 'Miami',
+    state: 'FL',
+    zip: '33130',
+    mobile: '',
+    card: '4242 4242 4242 4242',
+    expiry: '12 / 30',
+    securityCode: '123',
+  });
+  const cartItems = orderedCart ?? cart;
+  const shipping = {
+    economy: { name: 'Economy', time: '4–8 business days', cents: 399 },
+    standard: { name: 'Standard', time: '2–5 business days', cents: 475 },
+    priority: { name: 'Priority', time: '2–3 business days', cents: null },
+  } as const;
+  const selectedShipping = shipping[shippingMethod];
+  const hasMobileNumber = details.mobile.replace(/\D/g, '').length === 10;
+  const subtotalCents = cartItems.reduce((total, item) => total + item.unitPriceCents, 0);
+  // Kept at zero until discounts are connected to a future checkout source.
+  const discountCents = 0;
+  const estimatedTotal =
+    selectedShipping.cents === null ? null : subtotalCents + selectedShipping.cents - discountCents;
+  const referralLink = 'https://letitbe.co/r/ALEXMORGAN';
+  const updateDetail = (field: keyof typeof details, value: string) => {
+    setDetails((current) => ({ ...current, [field]: value }));
+  };
+  const moveToNextField = (
+    event: KeyboardEvent<HTMLInputElement | HTMLSelectElement>,
+    nextFieldId: string,
+  ) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    document.getElementById(nextFieldId)?.focus();
+  };
+  const copyReferralLink = async () => {
+    if (!navigator.clipboard) {
+      setReferralMessage({ copy: 'Select the link above to copy it.', tone: 'info' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      setReferralMessage({ copy: 'Link copied.', tone: 'success' });
+    } catch {
+      setReferralMessage({ copy: 'Select the link above to copy it.', tone: 'info' });
+    }
+  };
+  const shareReferralLink = async () => {
+    if (!navigator.share) {
+      await copyReferralLink();
+      return;
+    }
+    try {
+      await navigator.share({
+        title: 'Make your own shirt with LET IT BE',
+        text: 'Get 15% off your first custom shirt.',
+        url: referralLink,
+      });
+      setReferralMessage({ copy: 'Thanks for sharing.', tone: 'success' });
+    } catch {
+      // Closing the native share sheet is an expected user action.
+    }
+  };
+
+  if (complete) {
+    return (
+      <div className="checkout-flow checkout-confirmation" aria-live="polite">
+        <div aria-label="Let It Be" className="checkout-brand">
+          LET IT BE
+        </div>
+        <div className="checkout-success-mark" aria-hidden="true">
+          <FeedbackIcon tone="success" />
+        </div>
+        <p className="eyebrow">Thank you</p>
+        <h1>We’ve got it, {details.firstName}.</h1>
+        <p className="checkout-thank-you-copy">
+          We’ll send your confirmation and delivery updates to <strong>{details.email}</strong>.
+        </p>
+        <section className="checkout-confirmation-reference" aria-label="Order reference">
+          <span>Order reference</span>
+          <strong>#LIB-1042</strong>
+        </section>
+        <section
+          className="checkout-cart-summary checkout-thank-you-summary"
+          aria-label="Order summary"
+        >
+          {cartItems.map((item) => (
+            <CartSummaryLine item={item} key={item.id} />
+          ))}
+          <div className="checkout-cart-summary-total">
+            <span>Total</span>
+            <strong>
+              {estimatedTotal === null
+                ? `${USD_FORMATTER.format(subtotalCents / 100)} + shipping`
+                : USD_FORMATTER.format(estimatedTotal / 100)}
+            </strong>
+          </div>
+        </section>
+        <section className="referral-card" aria-labelledby="referral-heading">
+          <p className="referral-kicker">Pass it on</p>
+          <h2 id="referral-heading">Give 15% off. Get $10 credit.</h2>
+          <p>
+            Share your link with a friend. When they order their first shirt, your credit is on us.
+          </p>
+          {referralOpen ? (
+            <div className="referral-actions">
+              <label htmlFor="referral-link">Your personal link</label>
+              <input id="referral-link" readOnly value={referralLink} />
+              <div>
+                <button onClick={() => void copyReferralLink()} type="button">
+                  Copy link
+                </button>
+                <button onClick={() => void shareReferralLink()} type="button">
+                  Share
+                </button>
+              </div>
+              {referralMessage ? (
+                <InlineFeedback className="referral-message" tone={referralMessage.tone}>
+                  {referralMessage.copy}
+                </InlineFeedback>
+              ) : null}
+            </div>
+          ) : (
+            <button className="referral-reveal" onClick={() => setReferralOpen(true)} type="button">
+              Get your link <Icon>→</Icon>
+            </button>
+          )}
+        </section>
+        <button className="create-button" onClick={createAnother} type="button">
+          Create another design <Icon>→</Icon>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="checkout-flow">
+      <div className="checkout-topbar">
+        <button
+          aria-label="Back to cart"
+          className="checkout-back"
+          onClick={backToCart}
+          type="button"
+        >
+          <Icon>←</Icon>
+        </button>
+        <div aria-label="Let It Be" className="checkout-brand">
+          LET IT BE
+        </div>
+      </div>
+      <section className="checkout-intro" aria-labelledby="checkout-heading">
+        <h1 id="checkout-heading">Checkout</h1>
+        <p>
+          {cartItems.length === 1
+            ? 'Your design is ready to make.'
+            : 'Your designs are ready to make.'}
+        </p>
+      </section>
+      <section className="checkout-cart-summary" aria-label="Order summary">
+        {cartItems.map((item) => (
+          <CartSummaryLine item={item} key={item.id} />
+        ))}
+      </section>
+      <form
+        className="checkout-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          window.scrollTo({ top: 0 });
+          setOrderedCart(cart);
+          onComplete();
+          setComplete(true);
+        }}
+      >
+        <section aria-labelledby="checkout-contact-heading">
+          <h2 id="checkout-contact-heading">Contact</h2>
+          <label className="checkout-label" htmlFor="checkout-email">
+            Email
+          </label>
+          <input
+            autoComplete="email"
+            enterKeyHint="next"
+            id="checkout-email"
+            onChange={(event) => updateDetail('email', event.target.value)}
+            onKeyDown={(event) => moveToNextField(event, 'checkout-first-name')}
+            placeholder="you@example.com"
+            required
+            type="email"
+            value={details.email}
+          />
+          <label className="checkout-consent checkout-newsletter">
+            <input
+              checked={newsletterSubscribed}
+              onChange={(event) => setNewsletterSubscribed(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Send me new drops, offers, and occasional design inspiration.</span>
+          </label>
+        </section>
+        <section aria-labelledby="checkout-delivery-heading">
+          <h2 id="checkout-delivery-heading">Delivery</h2>
+          <div className="checkout-grid-two">
+            <div>
+              <label className="checkout-label" htmlFor="checkout-first-name">
+                First name
+              </label>
+              <input
+                autoCapitalize="words"
+                autoComplete="given-name"
+                enterKeyHint="next"
+                id="checkout-first-name"
+                onChange={(event) => updateDetail('firstName', event.target.value)}
+                onKeyDown={(event) => moveToNextField(event, 'checkout-last-name')}
+                placeholder="Jane"
+                required
+                value={details.firstName}
+              />
+            </div>
+            <div>
+              <label className="checkout-label" htmlFor="checkout-last-name">
+                Last name
+              </label>
+              <input
+                autoCapitalize="words"
+                autoComplete="family-name"
+                enterKeyHint="next"
+                id="checkout-last-name"
+                onChange={(event) => updateDetail('lastName', event.target.value)}
+                onKeyDown={(event) => moveToNextField(event, 'checkout-address')}
+                placeholder="Doe"
+                required
+                value={details.lastName}
+              />
+            </div>
+          </div>
+          <label className="checkout-label" htmlFor="checkout-address">
+            Address
+          </label>
+          <input
+            autoCapitalize="words"
+            autoComplete="street-address"
+            enterKeyHint="next"
+            id="checkout-address"
+            onChange={(event) => updateDetail('address', event.target.value)}
+            onKeyDown={(event) => moveToNextField(event, 'checkout-apartment')}
+            placeholder="123 Main Street"
+            required
+            value={details.address}
+          />
+          <label className="checkout-label" htmlFor="checkout-apartment">
+            Apartment, suite, etc. <span>Optional</span>
+          </label>
+          <input
+            autoCapitalize="characters"
+            autoComplete="address-line2"
+            enterKeyHint="next"
+            id="checkout-apartment"
+            onChange={(event) => updateDetail('apartment', event.target.value)}
+            onKeyDown={(event) => moveToNextField(event, 'checkout-city')}
+            placeholder="Apt 4B"
+            value={details.apartment}
+          />
+          <div className="checkout-grid-two checkout-city-row">
+            <div>
+              <label className="checkout-label" htmlFor="checkout-city">
+                City
+              </label>
+              <input
+                autoCapitalize="words"
+                autoComplete="address-level2"
+                enterKeyHint="next"
+                id="checkout-city"
+                onChange={(event) => updateDetail('city', event.target.value)}
+                onKeyDown={(event) => moveToNextField(event, 'checkout-state')}
+                placeholder="Austin"
+                required
+                value={details.city}
+              />
+            </div>
+            <div>
+              <label className="checkout-label" htmlFor="checkout-state">
+                State
+              </label>
+              <select
+                autoComplete="address-level1"
+                id="checkout-state"
+                onChange={(event) => updateDetail('state', event.target.value)}
+                onKeyDown={(event) => moveToNextField(event, 'checkout-zip')}
+                required
+                value={details.state}
+              >
+                <option value="">Select</option>
+                {US_STATES.map(([code, label]) => (
+                  <option key={code} value={code}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <label className="checkout-label" htmlFor="checkout-zip">
+            ZIP code
+          </label>
+          <input
+            autoComplete="postal-code"
+            enterKeyHint="next"
+            id="checkout-zip"
+            inputMode="numeric"
+            maxLength={10}
+            onChange={(event) =>
+              updateDetail('zip', event.target.value.replace(/[^0-9-]/g, '').slice(0, 10))
+            }
+            onKeyDown={(event) => moveToNextField(event, 'checkout-card-number')}
+            pattern="[0-9]{5}(-[0-9]{4})?"
+            placeholder="12345"
+            required
+            value={details.zip}
+          />
+          <label className="checkout-label" htmlFor="checkout-mobile">
+            Mobile number <span>Optional</span>
+          </label>
+          <input
+            autoComplete="tel-national"
+            enterKeyHint="next"
+            id="checkout-mobile"
+            inputMode="tel"
+            maxLength={14}
+            onChange={(event) => {
+              const digits = event.target.value.replace(/\D/g, '').slice(0, 10);
+              const formatted =
+                digits.length > 6
+                  ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+                  : digits.length > 3
+                    ? `(${digits.slice(0, 3)}) ${digits.slice(3)}`
+                    : digits;
+              updateDetail('mobile', formatted);
+              if (digits.length < 10) setSmsSubscribed(false);
+            }}
+            onKeyDown={(event) => moveToNextField(event, 'checkout-card-number')}
+            placeholder="(305) 555-0123"
+            type="tel"
+            value={details.mobile}
+          />
+          <div
+            className={`checkout-consent checkout-sms-consent ${hasMobileNumber ? '' : 'is-disabled'}`}
+          >
+            <input
+              checked={smsSubscribed}
+              disabled={!hasMobileNumber}
+              id="checkout-sms-opt-in"
+              onChange={(event) => setSmsSubscribed(event.target.checked)}
+              type="checkbox"
+            />
+            <label htmlFor="checkout-sms-opt-in">
+              <span className="checkout-sms-consent-title">
+                Send me promotional SMS &amp; WhatsApp messages from LET IT BE.
+              </span>
+              <small>
+                {hasMobileNumber
+                  ? 'Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. '
+                  : 'Add a valid mobile number to opt in. '}
+                <a
+                  href="/terms"
+                  onClick={(event) => event.stopPropagation()}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Terms &amp; Conditions
+                </a>{' '}
+                &amp;{' '}
+                <a
+                  href="/privacy"
+                  onClick={(event) => event.stopPropagation()}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Privacy Policy
+                </a>
+              </small>
+            </label>
+          </div>
+        </section>
+        <section aria-labelledby="checkout-shipping-heading">
+          <h2 id="checkout-shipping-heading">Shipping method</h2>
+          <div className="checkout-shipping-options" role="group" aria-label="Shipping method">
+            {(Object.keys(shipping) as Array<keyof typeof shipping>).map((method) => {
+              const option = shipping[method];
+              const selected = shippingMethod === method;
+              return (
+                <button
+                  aria-pressed={selected}
+                  className={`checkout-shipping-option ${selected ? 'is-selected' : ''}`}
+                  key={method}
+                  onClick={() => setShippingMethod(method)}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="checkout-radio">
+                    {selected ? '•' : ''}
+                  </span>
+                  <span>
+                    <strong>{option.name}</strong>
+                    <small>{option.time}</small>
+                  </span>
+                  <b>
+                    {option.cents === null
+                      ? 'Calculated'
+                      : USD_FORMATTER.format(option.cents / 100)}
+                  </b>
+                </button>
+              );
+            })}
+          </div>
+          <p className="checkout-helper">
+            Carrier is selected after fulfillment based on destination and availability.
+          </p>
+        </section>
+        <section aria-labelledby="checkout-payment-heading">
+          <h2 id="checkout-payment-heading">Payment</h2>
+          <div className="checkout-payment-method">
+            <span aria-hidden="true">▰</span>
+            <div>
+              <strong>Credit or debit card</strong>
+            </div>
+          </div>
+          <label className="checkout-label" htmlFor="checkout-card-number">
+            Card number
+          </label>
+          <input
+            autoComplete="cc-number"
+            enterKeyHint="next"
+            id="checkout-card-number"
+            inputMode="numeric"
+            maxLength={19}
+            onChange={(event) =>
+              updateDetail(
+                'card',
+                event.target.value
+                  .replace(/\D/g, '')
+                  .slice(0, 16)
+                  .replace(/(.{4})/g, '$1 ')
+                  .trim(),
+              )
+            }
+            onKeyDown={(event) => moveToNextField(event, 'checkout-expiry')}
+            placeholder="0000 0000 0000 0000"
+            required
+            value={details.card}
+          />
+          <div className="checkout-grid-two checkout-card-row">
+            <div>
+              <label className="checkout-label" htmlFor="checkout-expiry">
+                Expiration date
+              </label>
+              <input
+                autoComplete="cc-exp"
+                enterKeyHint="next"
+                id="checkout-expiry"
+                inputMode="numeric"
+                maxLength={7}
+                onChange={(event) => {
+                  const digits = event.target.value.replace(/\D/g, '').slice(0, 4);
+                  updateDetail(
+                    'expiry',
+                    digits.length > 2 ? `${digits.slice(0, 2)} / ${digits.slice(2)}` : digits,
+                  );
+                }}
+                onKeyDown={(event) => moveToNextField(event, 'checkout-security-code')}
+                placeholder="MM / YY"
+                required
+                value={details.expiry}
+              />
+            </div>
+            <div>
+              <label className="checkout-label" htmlFor="checkout-security-code">
+                Security code
+              </label>
+              <input
+                autoComplete="cc-csc"
+                enterKeyHint="done"
+                id="checkout-security-code"
+                inputMode="numeric"
+                maxLength={4}
+                onChange={(event) =>
+                  updateDetail('securityCode', event.target.value.replace(/\D/g, '').slice(0, 4))
+                }
+                onKeyDown={(event) => moveToNextField(event, 'checkout-terms')}
+                placeholder="123"
+                required
+                value={details.securityCode}
+              />
+            </div>
+          </div>
+        </section>
+        <section className="checkout-total" aria-label="Order total">
+          <div>
+            <span>Subtotal</span>
+            <strong>{USD_FORMATTER.format(subtotalCents / 100)}</strong>
+          </div>
+          <div>
+            <span>Shipping</span>
+            <strong>
+              {selectedShipping.cents === null
+                ? 'Calculated'
+                : USD_FORMATTER.format(selectedShipping.cents / 100)}
+            </strong>
+          </div>
+          {discountCents > 0 ? (
+            <div className="checkout-discount">
+              <span>Discount</span>
+              <strong>{USD_FORMATTER.format(-discountCents / 100)}</strong>
+            </div>
+          ) : null}
+          <div className="checkout-total-final">
+            <span>Estimated total</span>
+            <strong>
+              {estimatedTotal === null
+                ? `${USD_FORMATTER.format(subtotalCents / 100)} + shipping`
+                : USD_FORMATTER.format(estimatedTotal / 100)}
+            </strong>
+          </div>
+          <p>Taxes will be calculated after delivery address verification.</p>
+        </section>
+        <div className="checkout-submit-area">
+          <div className={`checkout-terms-group ${termsError ? 'has-reminder' : ''}`}>
+            <div className="checkout-consent checkout-terms-consent">
+              <input
+                aria-describedby={termsError ? 'checkout-terms-reminder' : undefined}
+                aria-invalid={termsError ? true : undefined}
+                checked={termsAccepted}
+                id="checkout-terms"
+                onChange={(event) => {
+                  setTermsAccepted(event.target.checked);
+                  setTermsError('');
+                }}
+                onInvalid={(event) => {
+                  event.preventDefault();
+                  setTermsError('Accept the terms to continue.');
+                }}
+                required
+                type="checkbox"
+              />
+              <label htmlFor="checkout-terms">
+                I agree to the{' '}
+                <a
+                  href="/terms"
+                  onClick={(event) => event.stopPropagation()}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Terms &amp; Conditions
+                </a>{' '}
+                and{' '}
+                <a
+                  href="/privacy"
+                  onClick={(event) => event.stopPropagation()}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Privacy Policy
+                </a>
+                .
+              </label>
+            </div>
+            {termsError ? (
+              <InlineFeedback
+                className="checkout-terms-reminder"
+                id="checkout-terms-reminder"
+                tone="reminder"
+              >
+                {termsError}
+              </InlineFeedback>
+            ) : null}
+          </div>
+          <button className="create-button checkout-submit" type="submit">
+            Place order <Icon>→</Icon>
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -2232,17 +3087,106 @@ function CreditPurchaseSheet({ close, purchase }: { close: () => void; purchase:
         <p>Another version costs 1 credit. Add credits to keep creating.</p>
         <div className="credit-pack-preview">
           <div>
-            <strong>{PROTOTYPE_CREDIT_PACK_SIZE} credits</strong>
-            <span>Prototype credit pack</span>
+            <strong>{CREDIT_PACK_SIZE} credits</strong>
+            <span>Credit pack</span>
           </div>
           <b>Price TBD</b>
         </div>
         <button className="create-button" onClick={purchase} type="button">
           Buy credits <Icon>→</Icon>
         </button>
-        <small>Prototype only — no payment will be taken.</small>
       </div>
     </SelectionSheet>
+  );
+}
+
+function CartDrawer({
+  cart,
+  checkout,
+  close,
+  closeRef,
+  removeItem,
+}: {
+  cart: CartItem[];
+  checkout: () => void;
+  close: () => void;
+  closeRef: React.RefObject<HTMLButtonElement | null>;
+  removeItem: (id: string) => void;
+}) {
+  const subtotalCents = cart.reduce((total, item) => total + item.unitPriceCents, 0);
+  return (
+    <div
+      className="overlay cart-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+    >
+      <aside
+        aria-labelledby="cart-title"
+        aria-modal="true"
+        className="drawer cart-drawer"
+        role="dialog"
+      >
+        <div className="drawer-header">
+          <strong id="cart-title">Your cart{cart.length ? ` · ${cart.length}` : ''}</strong>
+          <button aria-label="Close cart" onClick={close} ref={closeRef} type="button">
+            ×
+          </button>
+        </div>
+        {cart.length ? (
+          <>
+            <div className="cart-item-list">
+              {cart.map((item) => {
+                const itemColor = PRODUCT_COLORS.find((color) => color.id === item.color)!;
+                const itemSize = SIZES.find((size) => size.id === item.size)!;
+                return (
+                  <article className="cart-item" key={item.id}>
+                    <div className="cart-item-art" aria-label="Saved design preview">
+                      <GeneratedArtwork
+                        prompt={item.prompt}
+                        style={item.style}
+                        tone={item.tone}
+                        version={item.generationVersion}
+                      />
+                    </div>
+                    <div className="cart-item-copy">
+                      <strong>{PRODUCT_PROFILE.name}</strong>
+                      <span>
+                        {itemColor.name} · {itemSize.name}
+                      </span>
+                      <b>{USD_FORMATTER.format(item.unitPriceCents / 100)}</b>
+                      <button onClick={() => removeItem(item.id)} type="button">
+                        Remove
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <div className="cart-subtotal">
+              <span>Subtotal</span>
+              <strong>{USD_FORMATTER.format(subtotalCents / 100)}</strong>
+            </div>
+            <p className="cart-shipping-note">Shipping and taxes are calculated at checkout.</p>
+            <button className="create-button" onClick={checkout} type="button">
+              Checkout <Icon>→</Icon>
+            </button>
+          </>
+        ) : (
+          <div className="cart-empty">
+            <CartGlyph />
+            <h2>Your cart is empty.</h2>
+            <p>
+              Save a design when it’s ready, then come back here whenever you want to check out.
+            </p>
+            <button onClick={close} type="button">
+              Continue creating
+            </button>
+          </div>
+        )}
+      </aside>
+    </div>
   );
 }
 
@@ -2274,7 +3218,7 @@ function NavigationDrawer({
         if (event.target === event.currentTarget) close();
       }}
     >
-      <nav aria-label="Prototype navigation" aria-modal="true" className="drawer" role="dialog">
+      <nav aria-label="Main navigation" aria-modal="true" className="drawer" role="dialog">
         <div className="drawer-header">
           <strong>LET IT BE</strong>
           <button aria-label="Close menu" onClick={close} ref={closeRef} type="button">

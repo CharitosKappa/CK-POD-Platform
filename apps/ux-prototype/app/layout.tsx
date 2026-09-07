@@ -4,8 +4,8 @@ import type { ReactNode } from 'react';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Let It Be — UX prototype',
-  description: 'Step 1 Create UX review prototype',
+  title: 'Let It Be',
+  description: 'Create a custom shirt with Let It Be.',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

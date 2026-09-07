@@ -1,6 +1,6 @@
 # Let It Be UX prototype v0.1
 
-Disposable CEO/product-review prototype for the local mobile flow: **Step 1: Idea**, **Step 2: Style + Tone**, **Step 3: Color + Size**, and **Step 4: Generated preview**. From the generated preview, the customer can continue directly toward checkout or optionally open the placement editor. Generation and editor changes are local simulations only. The standalone Next.js application has no API routes, production-service imports, backend, persistence, provider connectivity, or production data writes.
+Disposable CEO/product-review prototype for the local mobile flow: **Step 1: Idea**, **Step 2: Style + Tone**, **Step 3: Color + Size**, **Step 4: Generated preview**, and **Step 5: Checkout**. Generation, checkout, and editor changes are local simulations only. The standalone Next.js application has no API routes, production-service imports, backend, persistence, provider connectivity, payment processing, order creation, or production data writes.
 
 ## Run
 
@@ -34,13 +34,21 @@ The displayed `1 credit` balance is a fixed, prototype-only guest fixture. It ha
 
 ## Optional placement editor
 
-The generated-design review uses `Continue to checkout` as its primary CTA and exposes `Edit design` as an optional secondary action. Checkout remains outside this isolated prototype, so the primary CTA only displays a local acknowledgement and never creates a cart, order, or payment. Opening the editor preserves the selected garment, generated artwork, color, size, and price. The consumer sees only a simple `DESIGN AREA` outline. Provider, method, pixel dimensions, DPI, safe-area policy, and other production requirements remain internal and are never rendered in the customer UI. Behind that neutral presentation, the boundary preserves the provider-derived `7:8` proportions and scales down for M and S.
+The generated-design review uses `Continue to checkout` as its primary CTA and exposes `Edit design` as an optional secondary action. Opening the editor preserves the selected garment, generated artwork, color, size, and price. The consumer sees only a simple `DESIGN AREA` outline. Provider, method, pixel dimensions, DPI, safe-area policy, and other production requirements remain internal and are never rendered in the customer UI. Behind that neutral presentation, the boundary preserves the provider-derived `7:8` proportions and scales down for M and S.
 
 The design can be moved inside the outlined design area with a finger or mouse drag; keyboard users can nudge it with arrow keys, resize it with plus/minus, and reset it with `R`. Tapping the artwork reveals four proportional diagonal-resize handles and a rotation handle. The rotation handle supports arbitrary angles across the full 360-degree range, with light magnetic snapping at the principal angles. Tapping outside the artwork hides the handles. Every drag, nudge, resize, rotation, viewport resize, and garment-size change constrains the complete rotated design bounds to the internal safe area. Center-axis magnetic snapping provides visible alignment guides while moving the artwork.
 
 The compact tool set provides Undo, Redo, Center, horizontal Flip, Preview, Scale, Rotate, and Reset. Undo/Redo record discrete control changes and completed drag gestures rather than every pointer frame. Preview temporarily removes the editor outline and controls, with a persistent `Back to editing` action. Placement and history remain browser-local only; `Save & continue` returns to the generated-design review with checkout as the primary next action. Reopening the optional editor preserves the current local placement.
 
 The full provider research, exact dimensions, preflight rules, availability snapshot, sources, and reusable SVG master are in [`docs/printing/comfort-colors-1717-monster-digital-front-dtg.md`](../../docs/printing/comfort-colors-1717-monster-digital-front-dtg.md).
+
+## Step 5: local checkout
+
+Checkout is a one-page, mobile-first review flow with the product summary, contact and US delivery address fields, shipping choices, payment-form placeholders, and an estimated total. Its information hierarchy follows the familiar ecommerce checkout pattern, but the interface uses Let It Be copy, styling, and components; no Shopify branding, assets, or checkout code is used.
+
+The static shipping fixtures are Economy (`$3.99`, 4–8 business days), Standard (`$4.75`, 2–5 business days, selected by default), and Priority (2–3 business days, calculated later). They are grounded in the current Printify/Monster Digital shipping rules but intentionally do not expose a provider or carrier to the shopper; fulfillment selects the carrier after ordering based on destination and availability.
+
+`Review demo order` only shows an in-prototype confirmation. It does not submit contact details, process a card, calculate tax, create an order, reserve inventory, or call an external service. The payment section explicitly asks testers not to enter a real card number.
 
 ## Steps 1–3 copy and hierarchy
 
