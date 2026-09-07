@@ -142,9 +142,11 @@ type CartItem = {
   size: SizeId;
   generationVersion: number;
   transform: EditorTransform;
+  quantity: number;
   unitPriceCents: number;
 };
 type ResizeCorner = 'north-west' | 'north-east' | 'south-east' | 'south-west';
+type CartIconVariant = 'bag' | 'basket' | 'cart';
 type EditorGestureBase = {
   pointerId: number;
   startClientX: number;
@@ -431,16 +433,37 @@ function Icon({ children }: { children: string }) {
   return <span aria-hidden="true">{children}</span>;
 }
 
-function CartGlyph() {
+function CartGlyph({ variant = 'bag' }: { variant?: CartIconVariant }) {
+  const pathProps = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    strokeWidth: 1.7,
+  };
+
+  if (variant === 'basket') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path
+          d="M5 10h14l-1.2 9H6.2zM8.5 10 12 5.5l3.5 4.5M9 13v3.2M12 13v3.2M15 13v3.2"
+          {...pathProps}
+        />
+      </svg>
+    );
+  }
+
+  if (variant === 'cart') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M3.5 5h2.2l1.7 9.2h9.8l1.5-6.4H6.2M9 18.5h.01M16 18.5h.01" {...pathProps} />
+      </svg>
+    );
+  }
+
   return (
-    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
-      <path
-        d="M5.5 8.5h13l-1 11h-11zM9 9V6.8a3 3 0 0 1 6 0V9"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.7"
-      />
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M5.5 8.5h13l-1 11h-11zM9 9V6.8a3 3 0 0 1 6 0V9" {...pathProps} />
     </svg>
   );
 }
@@ -637,6 +660,7 @@ export function CreateExperience() {
   const [cartOpen, setCartOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartAdded, setCartAdded] = useState(false);
+  const [cartIcon, setCartIcon] = useState<CartIconVariant>('bag');
   const [promptError, setPromptError] = useState('');
   const [styleError, setStyleError] = useState('');
   const [style, setStyle] = useState<StyleId | null>(null);
@@ -660,11 +684,13 @@ export function CreateExperience() {
   const [reviewNotice, setReviewNotice] = useState('');
   const [sizeError, setSizeError] = useState('');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
+  const [checkoutHelpOpen, setCheckoutHelpOpen] = useState(false);
   const triggerRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const cartCloseRef = useRef<HTMLButtonElement | null>(null);
   const toneSectionRef = useRef<HTMLElement | null>(null);
   const productInfoRef = useRef<HTMLDivElement | null>(null);
+  const checkoutHelpRef = useRef<HTMLDivElement | null>(null);
   const recommendation = useMemo(
     () => (style ? recommendedLook(style, tone, prompt) : null),
     [style, tone, prompt],
@@ -732,6 +758,7 @@ export function CreateExperience() {
   useEffect(() => {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
     setProductInfoOpen(false);
+    setCheckoutHelpOpen(false);
   }, [step]);
   useEffect(() => {
     if (step !== 'generate' || generationStatus !== 'creating') return;
@@ -760,6 +787,23 @@ export function CreateExperience() {
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
     };
   }, [productInfoOpen]);
+  useEffect(() => {
+    if (!checkoutHelpOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setCheckoutHelpOpen(false);
+    };
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !checkoutHelpRef.current?.contains(event.target)) {
+        setCheckoutHelpOpen(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+    };
+  }, [checkoutHelpOpen]);
   const openMenu = (element: HTMLButtonElement) => {
     triggerRef.current = element;
     setDrawerOpen(true);
@@ -810,6 +854,7 @@ export function CreateExperience() {
         size,
         generationVersion,
         transform: editorTransform,
+        quantity: 1,
         unitPriceCents: shirtPriceCents(size),
       },
     ]);
@@ -819,6 +864,13 @@ export function CreateExperience() {
   const removeCartItem = (id: string) => {
     setCart((items) => items.filter((item) => item.id !== id));
     setCartAdded(false);
+  };
+  const changeCartItemQuantity = (id: string, delta: number) => {
+    setCart((items) =>
+      items.map((item) =>
+        item.id === id ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item,
+      ),
+    );
   };
   const startCheckout = () => {
     setCartOpen(false);
@@ -905,6 +957,7 @@ export function CreateExperience() {
       setSelectionSheet('credits');
       return;
     }
+    setCartAdded(false);
     setCredits((balance) => balance - RETRY_CREDIT_COST);
     setReviewNotice('');
     setPreviewUpdating(false);
@@ -921,36 +974,81 @@ export function CreateExperience() {
     setReference({ name: file.name, url: URL.createObjectURL(file) });
     event.target.value = '';
   };
+  const cartQuantity = cart.reduce((total, item) => total + item.quantity, 0);
 
   return (
     <main className="prototype theme-a composer-fade">
       <section className="phone-stage composition-canvas">
-        {step !== 'checkout' ? (
-          <header className="menu-header menu-header-brand">
+        {step === 'checkout' ? (
+          <header className="menu-header menu-header-brand checkout-context-header">
+            <button
+              aria-label="Back to cart"
+              className="checkout-context-back"
+              onClick={() => {
+                setStep('idea');
+                setCartOpen(true);
+              }}
+              type="button"
+            >
+              <Icon>←</Icon>
+            </button>
             <span className="menu-wordmark">LET IT BE</span>
-            <div className="menu-header-actions">
+            <div className="checkout-help-control" ref={checkoutHelpRef}>
               <button
-                aria-label={`Open cart${cart.length ? `, ${cart.length} item${cart.length === 1 ? '' : 's'}` : ''}`}
-                className="menu-cart-button"
-                onClick={(event) => {
-                  triggerRef.current = event.currentTarget;
-                  setCartOpen(true);
-                }}
+                aria-controls="checkout-help-popover"
+                aria-expanded={checkoutHelpOpen}
+                aria-label="Checkout help"
+                className="checkout-help-trigger"
+                onClick={() => setCheckoutHelpOpen((open) => !open)}
                 type="button"
               >
-                <CartGlyph />
-                {cart.length ? <span className="menu-cart-badge">{cart.length}</span> : null}
+                ?
               </button>
-              <button
-                aria-label="Open menu"
-                onClick={(event) => openMenu(event.currentTarget)}
-                type="button"
-              >
-                <Icon>☰</Icon>
-              </button>
+              {checkoutHelpOpen ? (
+                <section
+                  aria-label="Checkout help"
+                  className="checkout-help-popover"
+                  id="checkout-help-popover"
+                  role="dialog"
+                >
+                  <strong>Need help?</strong>
+                  <p>Review your order or contact us before placing it.</p>
+                  <button onClick={() => setCheckoutHelpOpen(false)} type="button">
+                    Got it
+                  </button>
+                </section>
+              ) : null}
             </div>
           </header>
-        ) : null}
+        ) : (
+          <header className="menu-header menu-header-brand">
+            <button
+              aria-label="Open menu"
+              className="menu-trigger"
+              onClick={(event) => openMenu(event.currentTarget)}
+              type="button"
+            >
+              <Icon>☰</Icon>
+            </button>
+            <span className="menu-wordmark">LET IT BE</span>
+            <button
+              aria-label={`Open cart${cartQuantity ? `, ${cartQuantity} item${cartQuantity === 1 ? '' : 's'}` : ''}`}
+              className="menu-cart-button"
+              onClick={(event) => {
+                triggerRef.current = event.currentTarget;
+                setCartOpen(true);
+              }}
+              type="button"
+            >
+              <CartGlyph variant={cartIcon} />
+              {cartQuantity ? (
+                <span className="menu-cart-badge" key={cartQuantity}>
+                  {cartQuantity}
+                </span>
+              ) : null}
+            </button>
+          </header>
+        )}
         {step === 'idea' ? (
           <div className="create-flow">
             <section className="intro" aria-labelledby="create-heading">
@@ -1153,12 +1251,14 @@ export function CreateExperience() {
               )
             ) : null}
             <div className="step-actions">
-              <button className="step-back" onClick={() => setStep('idea')} type="button">
-                ← Back to idea
-              </button>
               <button className="create-button" onClick={submitStyle} type="button">
                 Continue to color &amp; size <Icon>→</Icon>
               </button>
+              <div className="secondary-action-row is-single">
+                <button className="step-back" onClick={() => setStep('idea')} type="button">
+                  ← Back to idea
+                </button>
+              </div>
             </div>
           </div>
         ) : step === 'product' ? (
@@ -1258,17 +1358,20 @@ export function CreateExperience() {
               </InlineFeedback>
             ) : null}
             <div className="step-actions product-actions">
-              <button className="step-back" onClick={() => setStep('style')} type="button">
-                ← Back to style
-              </button>
-              <button className="create-button" onClick={submitProduct} type="button">
+              <button
+                className={`create-button ${productActionLabel === 'Back to preview' ? 'is-back-action' : ''}`}
+                onClick={submitProduct}
+                type="button"
+              >
                 {productActionLabel}{' '}
                 <Icon>{!hasGeneratedDesign || creativeInputsChanged ? '✦' : '→'}</Icon>
               </button>
+              <div className="secondary-action-row is-single">
+                <button className="step-back" onClick={() => setStep('style')} type="button">
+                  ← Back to style
+                </button>
+              </div>
             </div>
-            <p className="reassurance product-reassurance">
-              Free to create <span>·</span> Pay when you order
-            </p>
           </div>
         ) : step === 'generate' ? (
           <GenerateStep
@@ -1286,6 +1389,7 @@ export function CreateExperience() {
             back={() => {
               setPreviewUpdating(false);
               setReviewNotice('');
+              setCartAdded(false);
               setStep('product');
             }}
             addToCart={addCurrentDesignToCart}
@@ -1302,10 +1406,6 @@ export function CreateExperience() {
         ) : step === 'checkout' ? (
           <CheckoutStep
             cart={cart}
-            backToCart={() => {
-              setStep('idea');
-              setCartOpen(true);
-            }}
             createAnother={resetDesign}
             onComplete={() => {
               setCart([]);
@@ -1335,13 +1435,22 @@ export function CreateExperience() {
           />
         )}
       </section>
-      {drawerOpen ? <NavigationDrawer close={closeDrawer} closeRef={closeRef} /> : null}
+      {drawerOpen ? (
+        <NavigationDrawer
+          cartIcon={cartIcon}
+          chooseCartIcon={setCartIcon}
+          close={closeDrawer}
+          closeRef={closeRef}
+        />
+      ) : null}
       {cartOpen ? (
         <CartDrawer
           cart={cart}
           checkout={startCheckout}
           close={closeCart}
           closeRef={cartCloseRef}
+          changeQuantity={changeCartItemQuantity}
+          cartIcon={cartIcon}
           removeItem={removeCartItem}
         />
       ) : null}
@@ -1481,52 +1590,55 @@ function GenerateStep({
       <div className="generation-actions">
         {cartAdded ? (
           <section className="cart-added-panel" aria-live="polite">
-            <div>
+            <div className="cart-added-message">
               <span aria-hidden="true">✓</span>
               <p>
                 <strong>Added to your cart</strong>
                 <small>Your design is saved and ready whenever you are.</small>
               </p>
             </div>
-            <button className="create-button" onClick={checkout} type="button">
-              Checkout <Icon>→</Icon>
-            </button>
-            <button className="cart-added-secondary" onClick={createAnother} type="button">
-              Create another design <Icon>→</Icon>
-            </button>
-          </section>
-        ) : (
-          <>
-            <button className="create-button" onClick={addToCart} type="button">
-              Add to cart · {shirtPrice(size)} <Icon>→</Icon>
-            </button>
-            <button className="generation-edit" onClick={openEditor} type="button">
-              <EditorGlyph name="edit" />
-              <span>Edit design</span>
-              <small>Optional</small>
-            </button>
-            <div className="generation-secondary-actions">
-              <button className="regenerate-button" onClick={regenerate} type="button">
-                {credits >= RETRY_CREDIT_COST ? (
-                  <>
-                    <span className="regenerate-label">↻ Try another version</span>
-                    <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
-                  </>
-                ) : (
-                  'Buy credits to try again'
-                )}
+            <div className="cart-added-action-row">
+              <button className="cart-added-secondary" onClick={createAnother} type="button">
+                Create another design
               </button>
-              <span aria-hidden="true">|</span>
-              <button className="generation-back" onClick={back} type="button">
-                ← Back to color &amp; size
+              <button className="create-button checkout-button" onClick={checkout} type="button">
+                Checkout <Icon>→</Icon>
               </button>
             </div>
-          </>
+          </section>
+        ) : (
+          <button className="create-button" onClick={addToCart} type="button">
+            Add to cart · {shirtPrice(size)} <Icon>→</Icon>
+          </button>
         )}
         {reviewNotice ? (
           <InlineFeedback className="review-notice" tone="info">
             {reviewNotice}
           </InlineFeedback>
+        ) : null}
+        {!cartAdded ? (
+          <div className="generation-secondary-actions is-three" aria-label="Other design actions">
+            <button className="generation-back" onClick={back} type="button">
+              <span>← Back to</span>
+              <span>color &amp; size</span>
+            </button>
+            <span aria-hidden="true">|</span>
+            <button className="generation-edit" onClick={openEditor} type="button">
+              <EditorGlyph name="edit" />
+              <span>Edit design</span>
+            </button>
+            <span aria-hidden="true">|</span>
+            <button className="regenerate-button" onClick={regenerate} type="button">
+              {credits >= RETRY_CREDIT_COST ? (
+                <>
+                  <span className="regenerate-label">↻ Try another version</span>
+                  <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
+                </>
+              ) : (
+                'Buy credits to try again'
+              )}
+            </button>
+          </div>
         ) : null}
       </div>
     </div>
@@ -1549,25 +1661,23 @@ function CartSummaryLine({ item }: { item: CartItem }) {
       <div>
         <div className="checkout-item-title">
           <strong>{PRODUCT_PROFILE.name}</strong>
-          <span className="checkout-quantity">×1</span>
+          <span className="checkout-quantity">×{item.quantity}</span>
         </div>
         <span>
           {itemColor.name} · {itemSize.name}
         </span>
       </div>
-      <b>{USD_FORMATTER.format(item.unitPriceCents / 100)}</b>
+      <b>{USD_FORMATTER.format((item.unitPriceCents * item.quantity) / 100)}</b>
     </div>
   );
 }
 
 function CheckoutStep({
   cart,
-  backToCart,
   createAnother,
   onComplete,
 }: {
   cart: CartItem[];
-  backToCart: () => void;
   createAnother: () => void;
   onComplete: () => void;
 }) {
@@ -1607,7 +1717,10 @@ function CheckoutStep({
   } as const;
   const selectedShipping = shipping[shippingMethod];
   const hasMobileNumber = details.mobile.replace(/\D/g, '').length === 10;
-  const subtotalCents = cartItems.reduce((total, item) => total + item.unitPriceCents, 0);
+  const subtotalCents = cartItems.reduce(
+    (total, item) => total + item.unitPriceCents * item.quantity,
+    0,
+  );
   // Kept at zero until discounts are connected to a future checkout source.
   const discountCents = 0;
   const estimatedTotal =
@@ -1656,9 +1769,6 @@ function CheckoutStep({
   if (complete) {
     return (
       <div className="checkout-flow checkout-confirmation" aria-live="polite">
-        <div aria-label="Let It Be" className="checkout-brand">
-          LET IT BE
-        </div>
         <div className="checkout-success-mark" aria-hidden="true">
           <FeedbackIcon tone="success" />
         </div>
@@ -1726,19 +1836,6 @@ function CheckoutStep({
 
   return (
     <div className="checkout-flow">
-      <div className="checkout-topbar">
-        <button
-          aria-label="Back to cart"
-          className="checkout-back"
-          onClick={backToCart}
-          type="button"
-        >
-          <Icon>←</Icon>
-        </button>
-        <div aria-label="Let It Be" className="checkout-brand">
-          LET IT BE
-        </div>
-      </div>
       <section className="checkout-intro" aria-labelledby="checkout-heading">
         <h1 id="checkout-heading">Checkout</h1>
         <p>
@@ -1762,7 +1859,7 @@ function CheckoutStep({
           setComplete(true);
         }}
       >
-        <section aria-labelledby="checkout-contact-heading">
+        <section className="checkout-section-divider" aria-labelledby="checkout-contact-heading">
           <h2 id="checkout-contact-heading">Contact</h2>
           <label className="checkout-label" htmlFor="checkout-email">
             Email
@@ -1787,7 +1884,7 @@ function CheckoutStep({
             <span>Send me new drops, offers, and occasional design inspiration.</span>
           </label>
         </section>
-        <section aria-labelledby="checkout-delivery-heading">
+        <section className="checkout-section-divider" aria-labelledby="checkout-delivery-heading">
           <h2 id="checkout-delivery-heading">Delivery</h2>
           <div className="checkout-grid-two">
             <div>
@@ -1970,7 +2067,7 @@ function CheckoutStep({
             </label>
           </div>
         </section>
-        <section aria-labelledby="checkout-shipping-heading">
+        <section className="checkout-section-divider" aria-labelledby="checkout-shipping-heading">
           <h2 id="checkout-shipping-heading">Shipping method</h2>
           <div className="checkout-shipping-options" role="group" aria-label="Shipping method">
             {(Object.keys(shipping) as Array<keyof typeof shipping>).map((method) => {
@@ -2004,7 +2101,7 @@ function CheckoutStep({
             Carrier is selected after fulfillment based on destination and availability.
           </p>
         </section>
-        <section aria-labelledby="checkout-payment-heading">
+        <section className="checkout-section-divider" aria-labelledby="checkout-payment-heading">
           <h2 id="checkout-payment-heading">Payment</h2>
           <div className="checkout-payment-method">
             <span aria-hidden="true">▰</span>
@@ -2732,12 +2829,14 @@ function EditorStep({
         <strong>{shirtPrice(size)}</strong>
       </section>
       <div className="step-actions editor-actions">
-        <button className="step-back" onClick={onBack} type="button">
-          ← Back to preview
-        </button>
         <button className="create-button" onClick={onSave} type="button">
           Save &amp; continue <Icon>→</Icon>
         </button>
+        <div className="secondary-action-row is-single">
+          <button className="step-back" onClick={onBack} type="button">
+            ← Back to preview
+          </button>
+        </div>
       </div>
       <p aria-live="polite" className="sr-only">
         {editorStatus}
@@ -3102,18 +3201,26 @@ function CreditPurchaseSheet({ close, purchase }: { close: () => void; purchase:
 
 function CartDrawer({
   cart,
+  cartIcon,
   checkout,
   close,
   closeRef,
+  changeQuantity,
   removeItem,
 }: {
   cart: CartItem[];
+  cartIcon: CartIconVariant;
   checkout: () => void;
   close: () => void;
   closeRef: React.RefObject<HTMLButtonElement | null>;
+  changeQuantity: (id: string, delta: number) => void;
   removeItem: (id: string) => void;
 }) {
-  const subtotalCents = cart.reduce((total, item) => total + item.unitPriceCents, 0);
+  const itemCount = cart.reduce((total, item) => total + item.quantity, 0);
+  const subtotalCents = cart.reduce(
+    (total, item) => total + item.unitPriceCents * item.quantity,
+    0,
+  );
   return (
     <div
       className="overlay cart-overlay"
@@ -3129,7 +3236,7 @@ function CartDrawer({
         role="dialog"
       >
         <div className="drawer-header">
-          <strong id="cart-title">Your cart{cart.length ? ` · ${cart.length}` : ''}</strong>
+          <strong id="cart-title">Your cart{itemCount ? ` · ${itemCount}` : ''}</strong>
           <button aria-label="Close cart" onClick={close} ref={closeRef} type="button">
             ×
           </button>
@@ -3155,10 +3262,39 @@ function CartDrawer({
                       <span>
                         {itemColor.name} · {itemSize.name}
                       </span>
-                      <b>{USD_FORMATTER.format(item.unitPriceCents / 100)}</b>
-                      <button onClick={() => removeItem(item.id)} type="button">
-                        Remove
-                      </button>
+                      <b>{USD_FORMATTER.format((item.unitPriceCents * item.quantity) / 100)}</b>
+                      <div className="cart-item-actions">
+                        <div className="cart-item-quantity" aria-label="Quantity">
+                          <button
+                            aria-label={`Decrease ${PRODUCT_PROFILE.name} quantity`}
+                            disabled={item.quantity === 1}
+                            onClick={() => changeQuantity(item.id, -1)}
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <output
+                            aria-live="polite"
+                            aria-label={`${item.quantity} ${item.quantity === 1 ? 'item' : 'items'}`}
+                          >
+                            {item.quantity}
+                          </output>
+                          <button
+                            aria-label={`Increase ${PRODUCT_PROFILE.name} quantity`}
+                            onClick={() => changeQuantity(item.id, 1)}
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                        <button
+                          className="cart-item-remove"
+                          onClick={() => removeItem(item.id)}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
                   </article>
                 );
@@ -3169,13 +3305,13 @@ function CartDrawer({
               <strong>{USD_FORMATTER.format(subtotalCents / 100)}</strong>
             </div>
             <p className="cart-shipping-note">Shipping and taxes are calculated at checkout.</p>
-            <button className="create-button" onClick={checkout} type="button">
+            <button className="create-button checkout-button" onClick={checkout} type="button">
               Checkout <Icon>→</Icon>
             </button>
           </>
         ) : (
           <div className="cart-empty">
-            <CartGlyph />
+            <CartGlyph variant={cartIcon} />
             <h2>Your cart is empty.</h2>
             <p>
               Save a design when it’s ready, then come back here whenever you want to check out.
@@ -3191,9 +3327,13 @@ function CartDrawer({
 }
 
 function NavigationDrawer({
+  cartIcon,
+  chooseCartIcon,
   close,
   closeRef,
 }: {
+  cartIcon: CartIconVariant;
+  chooseCartIcon: (variant: CartIconVariant) => void;
   close: () => void;
   closeRef: React.RefObject<HTMLButtonElement | null>;
 }) {
@@ -3235,6 +3375,29 @@ function NavigationDrawer({
             ))}
           </section>
         ))}
+        <section className="prototype-cart-icons" aria-labelledby="prototype-cart-icons-heading">
+          <h2 id="prototype-cart-icons-heading">Prototype cart icon</h2>
+          <div role="group" aria-label="Choose cart icon">
+            {(
+              [
+                ['bag', 'Bag'],
+                ['basket', 'Basket'],
+                ['cart', 'Cart'],
+              ] as const
+            ).map(([variant, label]) => (
+              <button
+                aria-pressed={cartIcon === variant}
+                className={cartIcon === variant ? 'is-selected' : ''}
+                key={variant}
+                onClick={() => chooseCartIcon(variant)}
+                type="button"
+              >
+                <CartGlyph variant={variant} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        </section>
         <button className="sign-in" type="button">
           Sign in
         </button>
