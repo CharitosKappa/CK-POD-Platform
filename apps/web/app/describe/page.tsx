@@ -17,7 +17,9 @@ export default async function DescribeIdeaPlaceholder({
         ) : (
           <p>Choose a product before describing your idea.</p>
         )}
-        <AccountAccess />
+        <AccountAccess
+          returnTo={project ? `/describe?project=${encodeURIComponent(project)}` : '/describe'}
+        />
       </section>
     </main>
   );

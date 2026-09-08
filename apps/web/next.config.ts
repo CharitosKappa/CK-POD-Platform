@@ -3,6 +3,9 @@ import type { NextConfig } from 'next';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   agentRules: false,
+  // Explicitly allow the current local-network host to load Next dev assets on a phone.
+  // This is used only by `next dev`; deployed production hosts are unaffected.
+  allowedDevOrigins: ['192.168.1.122'],
   transpilePackages: ['@let-it-be/observability', '@let-it-be/editor-schema'],
   async headers() {
     return [

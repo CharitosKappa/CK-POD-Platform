@@ -1,9 +1,5 @@
-import { ProductSelector } from './product-selector';
+import { CreateExperience } from '../../ux-prototype/app/create-experience';
 
 export default function HomePage() {
-  return (
-    <main>
-      <ProductSelector />
-    </main>
-  );
+  return <CreateExperience />;
 }
