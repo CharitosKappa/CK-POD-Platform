@@ -51,6 +51,7 @@ export * from './identity';
 export * from './prompt-pipeline';
 export * from './provider-output-validation';
 export * from './projects';
+export * from './reference-assets';
 export * from './prepress';
 export * from './printify';
 export * from './styles';

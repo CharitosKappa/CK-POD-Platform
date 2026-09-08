@@ -1,8 +1,21 @@
 'use client';
 
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { CreateExperience } from '../../ux-prototype/app/create-experience';
+import {
+  CreateExperience,
+  type ColorId,
+  type CartItem,
+  type CartPersistenceResult,
+  type CreateExperienceProps,
+  type EditorTransform,
+  type GenerationLifecyclePhase,
+  type GenerationLifecycleResult,
+  type ReferenceImageState,
+  type SizeId,
+  type StyleId,
+  type ToneId,
+} from '../../ux-prototype/app/create-experience';
 
 interface CatalogProduct {
   id: string;
@@ -11,17 +24,163 @@ interface CatalogProduct {
 
 interface ProjectSnapshot {
   id: string;
+  productModelId: string | null;
+  selectedColorCode: string | null;
   revision: number;
+}
+
+interface CreationDraftSnapshot {
+  prompt: string;
+  referenceAssetIds: string[];
+  prototypeStyleId: string | null;
+  prototypeToneId: string;
+  selectedSize: string | null;
+}
+
+interface ReferenceMutationResponse {
+  projectRevision: number;
+  asset: { id: string } | null;
+}
+
+interface GenerationSnapshot {
+  id: string;
+  status:
+    | 'QUEUED'
+    | 'PROCESSING'
+    | 'VALIDATING'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'REJECTED_INTERNAL'
+    | 'CANCELLED';
+  previewAsset: { id: string } | null;
+}
+
+interface CartSnapshot {
+  id: string;
+  revision: number;
+  status: string;
+  item: {
+    id: string;
+    projectId: string;
+    previewAssetId: string;
+    colorCode: string;
+    colorName: string;
+    size: string;
+    quantity: number;
+    unitPriceCents: number;
+  } | null;
+}
+
+interface PrepressSnapshot {
+  status:
+    'PENDING' | 'RENDERING' | 'VALIDATING' | 'PASSED' | 'REVIEW_REQUIRED' | 'BLOCKED' | 'FAILED';
+}
+
+const activeCreationKey = 'let-it-be-active-creation-project';
+const activeCartKey = 'let-it-be-active-cart';
+
+class ApiRequestError extends Error {
+  public constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
 }
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error ?? 'The request could not be completed.');
+  if (!response.ok) {
+    throw new ApiRequestError(body.error ?? 'The request could not be completed.', response.status);
+  }
   return body;
 }
 
 export function ProductionCreateExperience() {
   const projectRef = useRef<ProjectSnapshot | null>(null);
+  const cartRef = useRef<CartSnapshot | null>(null);
+  const [initialCreation, setInitialCreation] = useState<
+    CreateExperienceProps['initialCreation'] | undefined
+  >();
+  const [creditBalance, setCreditBalance] = useState<number>();
+  const [initialCart, setInitialCart] = useState<CartItem[]>();
+  const [resumeState, setResumeState] = useState<'loading' | 'ready' | 'failed'>('loading');
+
+  useEffect(() => {
+    let active = true;
+    const resume = async () => {
+      try {
+        const creditResponse = await fetch('/api/credits', { cache: 'no-store' });
+        const creditAccount = await readJson<{ balance: number }>(creditResponse);
+        if (!active) return;
+        setCreditBalance(creditAccount.balance);
+
+        const projectId = window.localStorage.getItem(activeCreationKey);
+        if (!projectId) {
+          setResumeState('ready');
+          return;
+        }
+        const [projectResponse, draftResponse] = await Promise.all([
+          fetch(`/api/projects/${encodeURIComponent(projectId)}`, { cache: 'no-store' }),
+          fetch(`/api/projects/${encodeURIComponent(projectId)}/draft`, { cache: 'no-store' }),
+        ]);
+        const [{ project }, { draft }] = await Promise.all([
+          readJson<{ project: ProjectSnapshot }>(projectResponse),
+          readJson<{ draft: CreationDraftSnapshot }>(draftResponse),
+        ]);
+        if (!active) return;
+        projectRef.current = project;
+        const referenceId = draft.referenceAssetIds[0];
+        const creation: NonNullable<CreateExperienceProps['initialCreation']> = {
+          step: draft.prototypeStyleId ? 'product' : draft.prompt ? 'style' : 'idea',
+          prompt: draft.prompt,
+          reference: referenceId
+            ? {
+                assetId: referenceId,
+                name: 'Reference image',
+                url: referencePreviewUrl(project.id, referenceId),
+              }
+            : null,
+          style: draft.prototypeStyleId as StyleId | null,
+          tone: draft.prototypeToneId as ToneId,
+          color: (project.selectedColorCode ?? 'black') as ColorId,
+          size: draft.selectedSize as SizeId | null,
+        };
+        setInitialCreation(creation);
+        const cartId = window.localStorage.getItem(activeCartKey);
+        if (cartId) {
+          try {
+            const cartResponse = await fetch(`/api/carts/${encodeURIComponent(cartId)}`, {
+              cache: 'no-store',
+            });
+            const { cart } = await readJson<{ cart: CartSnapshot }>(cartResponse);
+            if (cart.item && cart.status === 'READY') {
+              cartRef.current = cart;
+              setInitialCart([cartItemFromSnapshot(cart, creation)]);
+            } else {
+              window.localStorage.removeItem(activeCartKey);
+            }
+          } catch (error) {
+            if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+            window.localStorage.removeItem(activeCartKey);
+          }
+        }
+        setResumeState('ready');
+      } catch (error) {
+        if (!active) return;
+        if (error instanceof ApiRequestError && error.status === 404) {
+          window.localStorage.removeItem(activeCreationKey);
+          setResumeState('ready');
+          return;
+        }
+        setResumeState('failed');
+      }
+    };
+    void resume();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function createProject(): Promise<ProjectSnapshot> {
     const catalogResponse = await fetch('/api/catalog/products');
@@ -38,19 +197,305 @@ export function ProductionCreateExperience() {
     });
     const result = await readJson<{ project: ProjectSnapshot }>(projectResponse);
     projectRef.current = result.project;
+    window.localStorage.setItem(activeCreationKey, result.project.id);
     return result.project;
   }
 
-  async function persistIdea(prompt: string): Promise<void> {
+  async function persistDraft(patch: Record<string, string | null>): Promise<void> {
     const project = projectRef.current ?? (await createProject());
     const draftResponse = await fetch(`/api/projects/${encodeURIComponent(project.id)}/draft`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: project.revision, prompt }),
+      body: JSON.stringify({ expectedRevision: project.revision, ...patch }),
     });
     const saved = await readJson<{ project: ProjectSnapshot }>(draftResponse);
     projectRef.current = saved.project;
   }
 
-  return <CreateExperience onContinueFromIdea={persistIdea} />;
+  async function persistIdea(prompt: string): Promise<void> {
+    await persistDraft({ prompt });
+  }
+
+  async function persistStyle(selection: { style: string; tone: string }): Promise<void> {
+    const project = projectRef.current ?? (await createProject());
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/creation-style`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: project.revision,
+        prototypeStyleId: selection.style,
+        prototypeToneId: selection.tone,
+      }),
+    });
+    const saved = await readJson<{ project: ProjectSnapshot }>(response);
+    projectRef.current = saved.project;
+  }
+
+  async function persistProduct(selection: { color: string; size: string }): Promise<void> {
+    const project = projectRef.current ?? (await createProject());
+    if (!project.productModelId) throw new Error('The product catalog is unavailable.');
+    const response = await fetch(
+      `/api/projects/${encodeURIComponent(project.id)}/creation-product`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: project.revision,
+          productModelId: project.productModelId,
+          colorCode: selection.color,
+          selectedSize: selection.size,
+        }),
+      },
+    );
+    const saved = await readJson<{ project: ProjectSnapshot }>(response);
+    projectRef.current = saved.project;
+  }
+
+  async function persistReference(file: File): Promise<ReferenceImageState> {
+    const project = projectRef.current ?? (await createProject());
+    const form = new FormData();
+    form.set('file', file);
+    form.set('expectedRevision', String(project.revision));
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/reference`, {
+      method: 'POST',
+      body: form,
+    });
+    const saved = await readJson<ReferenceMutationResponse>(response);
+    const assetId = saved.asset?.id;
+    if (!assetId) throw new Error('The reference image was not saved.');
+    projectRef.current = { ...project, revision: saved.projectRevision };
+    return {
+      assetId,
+      name: file.name,
+      url: referencePreviewUrl(project.id, assetId),
+    };
+  }
+
+  async function removeReference(assetId: string): Promise<void> {
+    const project = projectRef.current;
+    if (!project) return;
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/reference`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetId, expectedRevision: project.revision }),
+    });
+    const saved = await readJson<ReferenceMutationResponse>(response);
+    projectRef.current = { ...project, revision: saved.projectRevision };
+  }
+
+  async function generateDesign(
+    input: { prompt: string; referenceAssetIds: string[] },
+    reportPhase: (phase: GenerationLifecyclePhase) => void,
+  ): Promise<GenerationLifecycleResult> {
+    const project = projectRef.current;
+    if (!project) throw new Error('Your design project could not be found.');
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    let { generation } = await readJson<{ generation: GenerationSnapshot }>(response);
+    reportPhase(generationPhase(generation.status));
+
+    for (let poll = 0; poll < 120; poll += 1) {
+      if (generation.status === 'SUCCEEDED') {
+        const previewAssetId = generation.previewAsset?.id;
+        if (!previewAssetId) throw new Error('The generated preview is not available yet.');
+        const creditResponse = await fetch('/api/credits', { cache: 'no-store' });
+        const creditAccount = await readJson<{ balance: number }>(creditResponse);
+        return {
+          creditBalance: creditAccount.balance,
+          generationId: generation.id,
+          previewAssetId,
+          previewUrl: referencePreviewUrl(project.id, previewAssetId),
+        };
+      }
+      if (
+        generation.status === 'FAILED' ||
+        generation.status === 'REJECTED_INTERNAL' ||
+        generation.status === 'CANCELLED'
+      ) {
+        throw new Error(
+          generation.status === 'REJECTED_INTERNAL'
+            ? 'We couldn’t use that request. Try a different idea or reference image. Your credit wasn’t used.'
+            : 'We couldn’t create this version. Your credit wasn’t used.',
+        );
+      }
+      await wait(500);
+      const statusResponse = await fetch(
+        `/api/projects/${encodeURIComponent(project.id)}/generations/${encodeURIComponent(generation.id)}`,
+        { cache: 'no-store' },
+      );
+      generation = (await readJson<{ generation: GenerationSnapshot }>(statusResponse)).generation;
+      reportPhase(generationPhase(generation.status));
+    }
+    throw new Error('This design is taking longer than expected. Please try again.');
+  }
+
+  async function addToCart(input: {
+    generationId: string;
+    size: SizeId;
+    transform: EditorTransform;
+  }): Promise<CartPersistenceResult> {
+    const project = projectRef.current;
+    if (!project) throw new Error('Your design project could not be found.');
+    const deliveredResponse = await fetch(
+      `/api/projects/${encodeURIComponent(project.id)}/delivered-design`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          expectedRevision: project.revision,
+          generationId: input.generationId,
+          transform: input.transform,
+        }),
+      },
+    );
+    const delivered = await readJson<{ project: ProjectSnapshot }>(deliveredResponse);
+    projectRef.current = delivered.project;
+
+    let prepress = (
+      await readJson<{ prepress: PrepressSnapshot }>(
+        await fetch(`/api/projects/${encodeURIComponent(project.id)}/prepress`, {
+          method: 'POST',
+        }),
+      )
+    ).prepress;
+    for (let poll = 0; poll < 120; poll += 1) {
+      if (prepress.status === 'PASSED' || prepress.status === 'REVIEW_REQUIRED') break;
+      if (prepress.status === 'BLOCKED') {
+        throw new Error('This placement needs an adjustment before it can be printed.');
+      }
+      if (prepress.status === 'FAILED') {
+        throw new Error('We couldn’t prepare the print file. Please try again.');
+      }
+      await wait(500);
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/prepress`, {
+        cache: 'no-store',
+      });
+      const latest = await readJson<{ prepress: PrepressSnapshot | null }>(response);
+      if (!latest.prepress) throw new Error('The print-quality check is unavailable.');
+      prepress = latest.prepress;
+    }
+    if (prepress.status !== 'PASSED' && prepress.status !== 'REVIEW_REQUIRED') {
+      throw new Error('The print-quality check is taking longer than expected. Please try again.');
+    }
+    const cartResponse = await fetch('/api/carts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: project.id, size: input.size.toUpperCase(), quantity: 1 }),
+    });
+    const { cart } = await readJson<{ cart: CartSnapshot }>(cartResponse);
+    cartRef.current = cart;
+    window.localStorage.setItem(activeCartKey, cart.id);
+    return cartPersistenceResult(cart);
+  }
+
+  async function updateCartQuantity(
+    _itemId: string,
+    quantity: number,
+  ): Promise<CartPersistenceResult> {
+    const cart = cartRef.current;
+    if (!cart) throw new Error('Your cart could not be found.');
+    const response = await fetch(`/api/carts/${encodeURIComponent(cart.id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: cart.revision, quantity }),
+    });
+    const saved = await readJson<{ cart: CartSnapshot }>(response);
+    cartRef.current = saved.cart;
+    return cartPersistenceResult(saved.cart);
+  }
+
+  async function removeCart(): Promise<void> {
+    const cart = cartRef.current;
+    if (!cart) return;
+    const response = await fetch(`/api/carts/${encodeURIComponent(cart.id)}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: cart.revision }),
+    });
+    await readJson<{ cart: CartSnapshot }>(response);
+    cartRef.current = null;
+    window.localStorage.removeItem(activeCartKey);
+  }
+
+  if (resumeState === 'loading') return null;
+  if (resumeState === 'failed') {
+    return (
+      <main className="prototype theme-a">
+        <section className="phone-stage composition-canvas">
+          <div className="flow-error-state" role="alert">
+            <p>We couldn’t restore your design.</p>
+            <button onClick={() => window.location.reload()} type="button">
+              Try again
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <CreateExperience
+      {...(creditBalance === undefined ? {} : { creditBalance })}
+      {...(initialCreation ? { initialCreation } : {})}
+      onContinueFromIdea={persistIdea}
+      onContinueFromProduct={persistProduct}
+      onContinueFromStyle={persistStyle}
+      onGenerateDesign={generateDesign}
+      onAddToCart={addToCart}
+      onCartQuantityChange={updateCartQuantity}
+      onCartRemove={removeCart}
+      {...(initialCart ? { initialCart } : {})}
+      onReferenceRemoved={removeReference}
+      onReferenceSelected={persistReference}
+    />
+  );
+}
+
+function cartPersistenceResult(cart: CartSnapshot): CartPersistenceResult {
+  const item = cart.item;
+  if (!item) throw new Error('The cart item is unavailable.');
+  return {
+    id: item.id,
+    quantity: item.quantity,
+    unitPriceCents: item.unitPriceCents,
+    previewUrl: referencePreviewUrl(item.projectId, item.previewAssetId),
+  };
+}
+
+function cartItemFromSnapshot(
+  cart: CartSnapshot,
+  creation: NonNullable<CreateExperienceProps['initialCreation']>,
+): CartItem {
+  const item = cart.item;
+  if (!item) throw new Error('The cart item is unavailable.');
+  return {
+    id: item.id,
+    prompt: creation.prompt,
+    style: creation.style,
+    tone: creation.tone,
+    color: item.colorCode as ColorId,
+    size: item.size.toLowerCase() as SizeId,
+    generationVersion: 0,
+    generatedPreviewUrl: referencePreviewUrl(item.projectId, item.previewAssetId),
+    transform: { x: 50, y: 50, scale: 1, rotation: 0, flipped: false },
+    quantity: item.quantity,
+    unitPriceCents: item.unitPriceCents,
+  };
+}
+
+function referencePreviewUrl(projectId: string, assetId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/preview`;
+}
+
+function generationPhase(status: GenerationSnapshot['status']): GenerationLifecyclePhase {
+  if (status === 'PROCESSING') return 'processing';
+  if (status === 'VALIDATING' || status === 'SUCCEEDED') return 'validating';
+  return 'queued';
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }

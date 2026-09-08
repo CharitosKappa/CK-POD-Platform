@@ -87,6 +87,123 @@ export interface ManualStyleSelectionInput {
   presetId: string;
 }
 
+export const prototypeStyleIds = [
+  'vintage-retro',
+  'illustrated',
+  'streetwear-y2k',
+  'typography',
+  'minimal-modern',
+  'dark-alternative',
+] as const;
+export const prototypeToneIds = [
+  'funny',
+  'sarcastic',
+  'bold',
+  'cute',
+  'dark',
+  'heartfelt',
+  'auto',
+] as const;
+export type PrototypeStyleId = (typeof prototypeStyleIds)[number];
+export type PrototypeToneId = (typeof prototypeToneIds)[number];
+type ExplicitPrototypeTone = Exclude<PrototypeToneId, 'auto'>;
+
+const prototypeStyleSelections: Record<
+  PrototypeStyleId,
+  Record<PrototypeToneId, ManualStyleSelectionInput>
+> = {
+  'vintage-retro': {
+    funny: choice('family-vintage', 'preset-vintage-70s-retro'),
+    sarcastic: choice('family-vintage', 'preset-vintage-distressed'),
+    bold: choice('family-vintage', 'preset-vintage-distressed'),
+    cute: choice('family-vintage', 'preset-vintage-70s-retro'),
+    dark: choice('family-vintage', 'preset-vintage-engraving'),
+    heartfelt: choice('family-vintage', 'preset-vintage-heritage-badge'),
+    auto: choice('family-vintage', 'preset-vintage-heritage-badge'),
+  },
+  illustrated: {
+    funny: choice('family-illustration', 'preset-illustration-bold-cartoon'),
+    sarcastic: choice('family-illustration', 'preset-illustration-comic'),
+    bold: choice('family-illustration', 'preset-illustration-comic'),
+    cute: choice('family-illustration', 'preset-illustration-hand-drawn'),
+    dark: choice('family-illustration', 'preset-illustration-comic'),
+    heartfelt: choice('family-illustration', 'preset-illustration-hand-drawn'),
+    auto: choice('family-illustration', 'preset-illustration-hand-drawn'),
+  },
+  'streetwear-y2k': {
+    funny: choice('family-illustration', 'preset-illustration-bold-cartoon'),
+    sarcastic: choice('family-dark', 'preset-dark-blackwork'),
+    bold: choice('family-typography', 'preset-type-bold-statement'),
+    cute: choice('family-illustration', 'preset-illustration-bold-cartoon'),
+    dark: choice('family-dark', 'preset-dark-blackwork'),
+    heartfelt: choice('family-minimal', 'preset-minimal-modern-badge'),
+    auto: choice('family-typography', 'preset-type-bold-statement'),
+  },
+  typography: {
+    funny: choice('family-typography', 'preset-type-bold-statement'),
+    sarcastic: choice('family-typography', 'preset-type-retro'),
+    bold: choice('family-typography', 'preset-type-bold-statement'),
+    cute: choice('family-typography', 'preset-type-hand-lettered'),
+    dark: choice('family-typography', 'preset-type-college'),
+    heartfelt: choice('family-typography', 'preset-type-hand-lettered'),
+    auto: choice('family-typography', 'preset-type-hand-lettered'),
+  },
+  'minimal-modern': {
+    funny: choice('family-minimal', 'preset-minimal-icon'),
+    sarcastic: choice('family-minimal', 'preset-minimal-clean-typography'),
+    bold: choice('family-minimal', 'preset-minimal-modern-badge'),
+    cute: choice('family-minimal', 'preset-minimal-line-art'),
+    dark: choice('family-minimal', 'preset-minimal-modern-badge'),
+    heartfelt: choice('family-minimal', 'preset-minimal-line-art'),
+    auto: choice('family-minimal', 'preset-minimal-icon'),
+  },
+  'dark-alternative': {
+    funny: choice('family-dark', 'preset-dark-blackwork'),
+    sarcastic: choice('family-dark', 'preset-dark-engraving'),
+    bold: choice('family-dark', 'preset-dark-gothic'),
+    cute: choice('family-dark', 'preset-dark-woodcut'),
+    dark: choice('family-dark', 'preset-dark-woodcut'),
+    heartfelt: choice('family-dark', 'preset-dark-blackwork'),
+    auto: choice('family-dark', 'preset-dark-engraving'),
+  },
+};
+
+const prototypeAutoToneRules: Array<{ tone: ExplicitPrototypeTone; words: string[] }> = [
+  { tone: 'dark', words: ['dark', 'horror', 'metal', 'skull', 'night', 'goth', 'death'] },
+  { tone: 'sarcastic', words: ['sarcastic', 'ironic', 'obviously', 'monday', 'office desk'] },
+  { tone: 'funny', words: ['funny', 'joke', 'laugh', 'meme', 'pun'] },
+  { tone: 'cute', words: ['cute', 'sweet', 'adorable', 'kawaii'] },
+  { tone: 'heartfelt', words: ['love', 'family', 'memory', 'heart', 'tribute'] },
+  { tone: 'bold', words: ['bold', 'strong', 'power', 'loud', 'statement'] },
+];
+
+/** Resolves prototype-only visual choices into the immutable server-owned style catalog. */
+export function mapPrototypeStyleSelection(input: {
+  style: string;
+  tone: string;
+  prompt: string;
+}): ManualStyleSelectionInput {
+  if (!prototypeStyleIds.includes(input.style as PrototypeStyleId)) {
+    throw new Error('Choose a valid style.');
+  }
+  if (!prototypeToneIds.includes(input.tone as PrototypeToneId)) {
+    throw new Error('Choose a valid tone.');
+  }
+  const style = input.style as PrototypeStyleId;
+  const requestedTone = input.tone as PrototypeToneId;
+  const tone =
+    requestedTone === 'auto'
+      ? (prototypeAutoToneRules.find((rule) =>
+          rule.words.some((word) => input.prompt.toLowerCase().includes(word)),
+        )?.tone ?? 'auto')
+      : requestedTone;
+  return prototypeStyleSelections[style][tone];
+}
+
+function choice(styleFamilyId: string, presetId: string): ManualStyleSelectionInput {
+  return { styleFamilyId, presetId };
+}
+
 interface PublicStyleRow {
   family_id: string;
   family_slug: string;

@@ -10,6 +10,8 @@ import {
   OrderOperationsAccessError,
   OrderTransitionError,
   ProjectConflictError,
+  ProjectValidationError,
+  ReferenceAssetValidationError,
 } from '@let-it-be/domain';
 
 import { ApiRateLimitError } from './security';
@@ -41,6 +43,12 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (error instanceof ProjectConflictError) {
     return NextResponse.json({ error: error.message, code: 'STALE_PROJECT' }, { status: 409 });
+  }
+  if (error instanceof ProjectValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof ReferenceAssetValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
   if (error instanceof GenerationAccessError) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });

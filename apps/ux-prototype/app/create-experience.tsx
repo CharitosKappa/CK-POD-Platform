@@ -90,11 +90,11 @@ const TONES = [
   },
   { id: 'auto', name: 'Auto', hint: 'We’ll infer it from your idea.', art: 'auto', image: null },
 ] as const;
-type StyleId = (typeof STYLES)[number]['id'];
-type ToneId = (typeof TONES)[number]['id'];
+export type StyleId = (typeof STYLES)[number]['id'];
+export type ToneId = (typeof TONES)[number]['id'];
 type ExplicitTone = Exclude<ToneId, 'auto'>;
 type Look = { id: string; name: string };
-type ColorId =
+export type ColorId =
   | 'white'
   | 'ivory'
   | 'pepper'
@@ -128,15 +128,15 @@ type ColorId =
   | 'neon-pink'
   | 'chili'
   | 'red';
-type SizeId = 's' | 'm' | 'l' | 'xl' | '2xl' | '3xl' | '4xl';
-type EditorTransform = {
+export type SizeId = 's' | 'm' | 'l' | 'xl' | '2xl' | '3xl' | '4xl';
+export type EditorTransform = {
   x: number;
   y: number;
   scale: number;
   rotation: number;
   flipped: boolean;
 };
-type CartItem = {
+export type CartItem = {
   id: string;
   prompt: string;
   style: StyleId | null;
@@ -144,6 +144,7 @@ type CartItem = {
   color: ColorId;
   size: SizeId;
   generationVersion: number;
+  generatedPreviewUrl?: string;
   transform: EditorTransform;
   quantity: number;
   unitPriceCents: number;
@@ -653,33 +654,111 @@ function snapEditorRotation(rotation: number, threshold = 4) {
   return target === undefined ? normalized : normalizeEditorRotation(target);
 }
 
-export interface CreateExperienceProps {
-  onContinueFromIdea?: (prompt: string) => Promise<void>;
+function releaseReferenceUrl(reference: ReferenceImageState | null): void {
+  if (reference?.url.startsWith('blob:')) URL.revokeObjectURL(reference.url);
 }
 
-export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) {
+export interface CreateExperienceProps {
+  creditBalance?: number;
+  initialCart?: CartItem[];
+  initialCreation?: {
+    step: 'idea' | 'style' | 'product';
+    prompt: string;
+    reference: ReferenceImageState | null;
+    style: StyleId | null;
+    tone: ToneId;
+    color: ColorId;
+    size: SizeId | null;
+  };
+  onContinueFromIdea?: (prompt: string) => Promise<void>;
+  onContinueFromStyle?: (selection: { style: StyleId; tone: ToneId }) => Promise<void>;
+  onContinueFromProduct?: (selection: { color: ColorId; size: SizeId }) => Promise<void>;
+  onGenerateDesign?: (
+    input: { prompt: string; referenceAssetIds: string[] },
+    reportPhase: (phase: GenerationLifecyclePhase) => void,
+  ) => Promise<GenerationLifecycleResult>;
+  onAddToCart?: (input: {
+    generationId: string;
+    size: SizeId;
+    transform: EditorTransform;
+  }) => Promise<CartPersistenceResult>;
+  onCartQuantityChange?: (itemId: string, quantity: number) => Promise<CartPersistenceResult>;
+  onCartRemove?: (itemId: string) => Promise<void>;
+  onReferenceRemoved?: (assetId: string) => Promise<void>;
+  onReferenceSelected?: (file: File) => Promise<ReferenceImageState>;
+}
+
+export type GenerationLifecyclePhase = 'queued' | 'processing' | 'validating';
+
+export interface GenerationLifecycleResult {
+  creditBalance: number;
+  generationId: string;
+  previewAssetId: string;
+  previewUrl: string;
+}
+
+export interface CartPersistenceResult {
+  id: string;
+  quantity: number;
+  unitPriceCents: number;
+  previewUrl: string;
+}
+
+export interface ReferenceImageState {
+  assetId?: string;
+  name: string;
+  url: string;
+}
+
+export function CreateExperience({
+  creditBalance,
+  initialCart,
+  initialCreation,
+  onAddToCart,
+  onCartQuantityChange,
+  onCartRemove,
+  onContinueFromIdea,
+  onContinueFromProduct,
+  onContinueFromStyle,
+  onGenerateDesign,
+  onReferenceRemoved,
+  onReferenceSelected,
+}: CreateExperienceProps) {
   const [step, setStep] = useState<
     'idea' | 'style' | 'product' | 'generate' | 'checkout' | 'editor'
-  >('idea');
-  const [prompt, setPrompt] = useState('');
-  const [reference, setReference] = useState<{ name: string; url: string } | null>(null);
+  >(initialCreation?.step ?? 'idea');
+  const [prompt, setPrompt] = useState(initialCreation?.prompt ?? '');
+  const [reference, setReference] = useState<ReferenceImageState | null>(
+    initialCreation?.reference ?? null,
+  );
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(initialCart ?? []);
   const [cartAdded, setCartAdded] = useState(false);
+  const [cartSaving, setCartSaving] = useState(false);
+  const [cartError, setCartError] = useState('');
   const cartIcon: CartIconVariant = 'bag';
   const [promptError, setPromptError] = useState('');
   const [savingIdea, setSavingIdea] = useState(false);
+  const [savingReference, setSavingReference] = useState(false);
+  const [referenceError, setReferenceError] = useState('');
+  const [savingStyle, setSavingStyle] = useState(false);
   const [styleError, setStyleError] = useState('');
-  const [style, setStyle] = useState<StyleId | null>(null);
-  const [tone, setTone] = useState<ToneId>('auto');
+  const [style, setStyle] = useState<StyleId | null>(initialCreation?.style ?? null);
+  const [tone, setTone] = useState<ToneId>(initialCreation?.tone ?? 'auto');
   const [manualLook, setManualLook] = useState<string | null>(null);
   const [lookPickerOpen, setLookPickerOpen] = useState(false);
-  const [color, setColor] = useState<ColorId>('black');
-  const [size, setSize] = useState<SizeId | null>(null);
+  const [color, setColor] = useState<ColorId>(initialCreation?.color ?? 'black');
+  const [size, setSize] = useState<SizeId | null>(initialCreation?.size ?? null);
   const [selectionSheet, setSelectionSheet] = useState<'color' | 'size' | 'credits' | null>(null);
   const [productInfoOpen, setProductInfoOpen] = useState(false);
-  const [generationStatus, setGenerationStatus] = useState<'idle' | 'creating' | 'ready'>('idle');
+  const [generationStatus, setGenerationStatus] = useState<
+    'idle' | 'creating' | 'ready' | 'failed'
+  >('idle');
+  const [generationPhase, setGenerationPhase] = useState<GenerationLifecyclePhase>('queued');
+  const [generationError, setGenerationError] = useState('');
+  const [generatedPreviewUrl, setGeneratedPreviewUrl] = useState<string | null>(null);
+  const [generatedGenerationId, setGeneratedGenerationId] = useState<string | null>(null);
   const [generationVersion, setGenerationVersion] = useState(0);
   const [generatedCreativeSignature, setGeneratedCreativeSignature] = useState<string | null>(null);
   const [appliedProduct, setAppliedProduct] = useState<{
@@ -687,10 +766,11 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
     size: SizeId;
   } | null>(null);
   const [previewUpdating, setPreviewUpdating] = useState(false);
-  const [credits, setCredits] = useState(1);
+  const [credits, setCredits] = useState(creditBalance ?? 1);
   const [editorTransform, setEditorTransform] = useState<EditorTransform>(DEFAULT_EDITOR_TRANSFORM);
   const [reviewNotice, setReviewNotice] = useState('');
   const [sizeError, setSizeError] = useState('');
+  const [savingProduct, setSavingProduct] = useState(false);
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const [checkoutHelpOpen, setCheckoutHelpOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -743,7 +823,7 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
 
   useEffect(
     () => () => {
-      if (reference) URL.revokeObjectURL(reference.url);
+      releaseReferenceUrl(reference);
     },
     [reference],
   );
@@ -795,10 +875,10 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
     setCheckoutHelpOpen(false);
   }, [step]);
   useEffect(() => {
-    if (step !== 'generate' || generationStatus !== 'creating') return;
+    if (onGenerateDesign || step !== 'generate' || generationStatus !== 'creating') return;
     const timer = window.setTimeout(() => setGenerationStatus('ready'), 1900);
     return () => window.clearTimeout(timer);
-  }, [generationStatus, generationVersion, step]);
+  }, [generationStatus, generationVersion, onGenerateDesign, step]);
   useEffect(() => {
     if (!previewUpdating) return;
     const timer = window.setTimeout(() => setPreviewUpdating(false), 650);
@@ -914,10 +994,11 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
     window.setTimeout(() => triggerRef.current?.focus(), 0);
   };
   const resetDesign = () => {
-    if (reference) URL.revokeObjectURL(reference.url);
+    releaseReferenceUrl(reference);
     setPrompt('');
     setReference(null);
     setPromptError('');
+    setReferenceError('');
     setStyleError('');
     setStyle(null);
     setTone('auto');
@@ -927,6 +1008,10 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
     setSize(null);
     setSelectionSheet(null);
     setGenerationStatus('idle');
+    setGenerationPhase('queued');
+    setGenerationError('');
+    setGeneratedPreviewUrl(null);
+    setGeneratedGenerationId(null);
     setGeneratedCreativeSignature(null);
     setAppliedProduct(null);
     setPreviewUpdating(false);
@@ -940,34 +1025,101 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
   };
   const addCurrentDesignToCart = () => {
     if (!style || !size) return;
-    setCart((items) => [
-      ...items,
-      {
-        id: `cart-${Date.now()}-${generationVersion}`,
-        prompt,
-        style,
-        tone,
-        color,
-        size,
-        generationVersion,
-        transform: editorTransform,
-        quantity: 1,
-        unitPriceCents: shirtPriceCents(size),
-      },
-    ]);
-    setReviewNotice('');
-    setCartAdded(true);
+    const localItem: CartItem = {
+      id: `cart-${Date.now()}-${generationVersion}`,
+      prompt,
+      style,
+      tone,
+      color,
+      size,
+      generationVersion,
+      ...(generatedPreviewUrl ? { generatedPreviewUrl } : {}),
+      transform: editorTransform,
+      quantity: 1,
+      unitPriceCents: shirtPriceCents(size),
+    };
+    setCartError('');
+    if (!onAddToCart) {
+      setCart((items) => [...items, localItem]);
+      setReviewNotice('');
+      setCartAdded(true);
+      return;
+    }
+    if (!generatedGenerationId) {
+      setCartError('The delivered design is not ready yet. Try again.');
+      return;
+    }
+    setCartSaving(true);
+    void onAddToCart({ generationId: generatedGenerationId, size, transform: editorTransform })
+      .then((saved) => {
+        setCart([
+          {
+            ...localItem,
+            id: saved.id,
+            quantity: saved.quantity,
+            unitPriceCents: saved.unitPriceCents,
+            generatedPreviewUrl: saved.previewUrl,
+          },
+        ]);
+        setReviewNotice('');
+        setCartAdded(true);
+      })
+      .catch((error: unknown) =>
+        setCartError(
+          error instanceof Error
+            ? error.message
+            : 'We couldn’t prepare this shirt for your cart. Please try again.',
+        ),
+      )
+      .finally(() => setCartSaving(false));
   };
   const removeCartItem = (id: string) => {
-    setCart((items) => items.filter((item) => item.id !== id));
-    setCartAdded(false);
+    setCartError('');
+    if (!onCartRemove) {
+      setCart((items) => items.filter((item) => item.id !== id));
+      setCartAdded(false);
+      return;
+    }
+    setCartSaving(true);
+    void onCartRemove(id)
+      .then(() => {
+        setCart((items) => items.filter((item) => item.id !== id));
+        setCartAdded(false);
+      })
+      .catch((error: unknown) =>
+        setCartError(error instanceof Error ? error.message : 'We couldn’t remove that item.'),
+      )
+      .finally(() => setCartSaving(false));
   };
   const changeCartItemQuantity = (id: string, delta: number) => {
-    setCart((items) =>
-      items.map((item) =>
-        item.id === id ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item,
-      ),
-    );
+    const current = cart.find((item) => item.id === id);
+    if (!current) return;
+    const quantity = Math.max(1, current.quantity + delta);
+    if (!onCartQuantityChange) {
+      setCart((items) => items.map((item) => (item.id === id ? { ...item, quantity } : item)));
+      return;
+    }
+    setCartError('');
+    setCartSaving(true);
+    void onCartQuantityChange(id, quantity)
+      .then((saved) =>
+        setCart((items) =>
+          items.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  quantity: saved.quantity,
+                  unitPriceCents: saved.unitPriceCents,
+                  generatedPreviewUrl: saved.previewUrl,
+                }
+              : item,
+          ),
+        ),
+      )
+      .catch((error: unknown) =>
+        setCartError(error instanceof Error ? error.message : 'We couldn’t update the quantity.'),
+      )
+      .finally(() => setCartSaving(false));
   };
   const startCheckout = () => {
     setCartOpen(false);
@@ -1007,7 +1159,15 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
       return;
     }
     setStyleError('');
-    setStep('product');
+    if (!onContinueFromStyle) {
+      setStep('product');
+      return;
+    }
+    setSavingStyle(true);
+    void onContinueFromStyle({ style, tone })
+      .then(() => setStep('product'))
+      .catch(() => setStyleError('We couldn’t save your style. Please try again.'))
+      .finally(() => setSavingStyle(false));
   };
   const chooseColor = (id: ColorId) => {
     setColor(id);
@@ -1036,7 +1196,50 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
     }
     setSizeError('');
     setReviewNotice('');
-    const nextProduct = { color, size };
+    if (!onContinueFromProduct) {
+      completeProductSubmission(size);
+      return;
+    }
+    setSavingProduct(true);
+    void onContinueFromProduct({ color, size })
+      .then(() => completeProductSubmission(size))
+      .catch(() => setSizeError('We couldn’t save your color and size. Please try again.'))
+      .finally(() => setSavingProduct(false));
+  };
+  const runGeneration = (signature: string) => {
+    setGenerationPhase('queued');
+    setGenerationError('');
+    setGenerationStatus('creating');
+    setStep('generate');
+    if (!onGenerateDesign) {
+      setGeneratedCreativeSignature(signature);
+      return;
+    }
+    void onGenerateDesign(
+      {
+        prompt: prompt.trim(),
+        referenceAssetIds: reference?.assetId ? [reference.assetId] : [],
+      },
+      setGenerationPhase,
+    )
+      .then((result) => {
+        setGeneratedCreativeSignature(signature);
+        setGeneratedPreviewUrl(result.previewUrl);
+        setGeneratedGenerationId(result.generationId);
+        setCredits(result.creditBalance);
+        setGenerationStatus('ready');
+      })
+      .catch((error: unknown) => {
+        setGenerationError(
+          error instanceof Error
+            ? error.message
+            : 'We couldn’t create this version. Your credit wasn’t used.',
+        );
+        setGenerationStatus('failed');
+      });
+  };
+  const completeProductSubmission = (selectedSize: SizeId) => {
+    const nextProduct = { color, size: selectedSize };
     const requiresGeneration =
       generatedCreativeSignature === null || generatedCreativeSignature !== creativeSignature;
 
@@ -1052,10 +1255,8 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
       setGenerationVersion((version) => version + 1);
     }
     setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
-    setGeneratedCreativeSignature(creativeSignature);
     setPreviewUpdating(false);
-    setGenerationStatus('creating');
-    setStep('generate');
+    runGeneration(creativeSignature);
   };
   const regenerate = () => {
     if (credits < RETRY_CREDIT_COST) {
@@ -1063,21 +1264,53 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
       return;
     }
     setCartAdded(false);
-    setCredits((balance) => balance - RETRY_CREDIT_COST);
+    if (!onGenerateDesign) setCredits((balance) => balance - RETRY_CREDIT_COST);
     setReviewNotice('');
     setPreviewUpdating(false);
     setEditorTransform(DEFAULT_EDITOR_TRANSFORM);
-    setGeneratedCreativeSignature(creativeSignature);
     if (size) setAppliedProduct({ color, size });
     setGenerationVersion((version) => version + 1);
-    setGenerationStatus('creating');
+    runGeneration(creativeSignature);
   };
   const changeReference = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (reference) URL.revokeObjectURL(reference.url);
-    setReference({ name: file.name, url: URL.createObjectURL(file) });
     event.target.value = '';
+    setReferenceError('');
+    if (!onReferenceSelected) {
+      releaseReferenceUrl(reference);
+      setReference({ name: file.name, url: URL.createObjectURL(file) });
+      return;
+    }
+    setSavingReference(true);
+    void onReferenceSelected(file)
+      .then((saved) => {
+        releaseReferenceUrl(reference);
+        setReference(saved);
+      })
+      .catch((error: unknown) =>
+        setReferenceError(
+          error instanceof Error ? error.message : 'We couldn’t save that image. Please try again.',
+        ),
+      )
+      .finally(() => setSavingReference(false));
+  };
+  const removeReference = () => {
+    if (!reference) return;
+    setReferenceError('');
+    if (!reference.assetId || !onReferenceRemoved) {
+      releaseReferenceUrl(reference);
+      setReference(null);
+      return;
+    }
+    setSavingReference(true);
+    void onReferenceRemoved(reference.assetId)
+      .then(() => {
+        releaseReferenceUrl(reference);
+        setReference(null);
+      })
+      .catch(() => setReferenceError('We couldn’t remove that image. Please try again.'))
+      .finally(() => setSavingReference(false));
   };
   const cartQuantity = cart.reduce((total, item) => total + item.quantity, 0);
 
@@ -1208,26 +1441,30 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
                   <img alt="Selected reference preview" src={reference.url} />
                   <div>
                     <strong>{reference.name}</strong>
-                    <button
-                      onClick={() => {
-                        URL.revokeObjectURL(reference.url);
-                        setReference(null);
-                      }}
-                      type="button"
-                    >
-                      Remove
+                    <button disabled={savingReference} onClick={removeReference} type="button">
+                      {savingReference ? 'Removing…' : 'Remove'}
                     </button>
                   </div>
                 </div>
               ) : (
                 <label className="reference-picker">
-                  <input accept="image/*" onChange={changeReference} type="file" />
+                  <input
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={savingReference}
+                    onChange={changeReference}
+                    type="file"
+                  />
                   <span>
-                    <b>+</b> Add a reference image
+                    <b>+</b> {savingReference ? 'Saving image…' : 'Add a reference image'}
                   </span>
                   <small>Optional</small>
                 </label>
               )}
+              {referenceError ? (
+                <InlineFeedback className="prompt-error" role="alert" tone="error">
+                  {referenceError}
+                </InlineFeedback>
+              ) : null}
             </section>
             <button
               aria-busy={savingIdea}
@@ -1239,7 +1476,9 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
               Choose a Style <Icon>→</Icon>
             </button>
             <div className="creation-meta">
-              <span className="credit-copy">1 credit available</span>
+              <span className="credit-copy">
+                {credits} {credits === 1 ? 'credit' : 'credits'} available
+              </span>
               <p className="reassurance">
                 Free to create <span>·</span> Pay when you order
               </p>
@@ -1362,7 +1601,13 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
               )
             ) : null}
             <div className="step-actions">
-              <button className="create-button" onClick={submitStyle} type="button">
+              <button
+                aria-busy={savingStyle}
+                className="create-button"
+                disabled={savingStyle}
+                onClick={submitStyle}
+                type="button"
+              >
                 Continue to color &amp; size <Icon>→</Icon>
               </button>
               <div className="secondary-action-row is-single">
@@ -1470,7 +1715,9 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
             ) : null}
             <div className="step-actions product-actions">
               <button
+                aria-busy={savingProduct}
                 className={`create-button ${productActionLabel === 'Back to preview' ? 'is-back-action' : ''}`}
+                disabled={savingProduct}
                 onClick={submitProduct}
                 type="button"
               >
@@ -1487,8 +1734,13 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
         ) : step === 'generate' ? (
           <GenerateStep
             cartAdded={cartAdded}
+            cartError={cartError}
+            cartSaving={cartSaving}
             color={color}
             garmentAsset={garmentAsset}
+            generatedPreviewUrl={generatedPreviewUrl}
+            generationError={generationError}
+            generationPhase={generationPhase}
             generationStatus={generationStatus}
             generationVersion={generationVersion}
             previewUpdating={previewUpdating}
@@ -1527,6 +1779,7 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
           <EditorStep
             color={color}
             garmentAsset={garmentAsset}
+            generatedPreviewUrl={generatedPreviewUrl}
             generationVersion={generationVersion}
             prompt={prompt}
             size={size}
@@ -1598,6 +1851,8 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
           close={closeCart}
           closeRef={cartCloseRef}
           changeQuantity={changeCartItemQuantity}
+          cartError={cartError}
+          cartSaving={cartSaving}
           cartIcon={cartIcon}
           removeItem={removeCartItem}
         />
@@ -1632,9 +1887,14 @@ export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) 
 
 function GenerateStep({
   cartAdded,
+  cartError,
+  cartSaving,
   color,
   credits,
   garmentAsset,
+  generatedPreviewUrl,
+  generationError,
+  generationPhase,
   generationStatus,
   generationVersion,
   previewUpdating,
@@ -1651,10 +1911,15 @@ function GenerateStep({
   regenerate,
 }: {
   cartAdded: boolean;
+  cartError: string;
+  cartSaving: boolean;
   color: ColorId;
   credits: number;
   garmentAsset: string;
-  generationStatus: 'idle' | 'creating' | 'ready';
+  generatedPreviewUrl: string | null;
+  generationError: string;
+  generationPhase: GenerationLifecyclePhase;
+  generationStatus: 'idle' | 'creating' | 'ready' | 'failed';
   generationVersion: number;
   previewUpdating: boolean;
   prompt: string;
@@ -1671,9 +1936,37 @@ function GenerateStep({
 }) {
   const selectedColor = PRODUCT_COLORS.find((item) => item.id === color)!;
   const selectedSize = SIZES.find((item) => item.id === size);
-  const isCreating = generationStatus !== 'ready';
+  const isCreating = generationStatus === 'idle' || generationStatus === 'creating';
+
+  if (generationStatus === 'failed') {
+    return (
+      <div className="generation-flow generation-loading" aria-live="polite">
+        <div
+          className={`generation-garment-stage ${garmentPreviewClass(selectedColor)}`}
+          style={garmentPreviewStyle(selectedColor)}
+          aria-hidden="true"
+        >
+          <img alt="" src={garmentAsset} />
+        </div>
+        <section className="generation-copy">
+          <p className="eyebrow">Generation paused</p>
+          <h1>Let’s try that again.</h1>
+          <InlineFeedback role="alert" tone="error">
+            {generationError || 'We couldn’t create this version. Your credit wasn’t used.'}
+          </InlineFeedback>
+          <button className="create-button" onClick={regenerate} type="button">
+            Try again <Icon>↻</Icon>
+          </button>
+          <button className="step-back" onClick={back} type="button">
+            ← Back to color &amp; size
+          </button>
+        </section>
+      </div>
+    );
+  }
 
   if (isCreating) {
+    const lifecycleCopy = generationLifecycleCopy(generationPhase);
     return (
       <div className="generation-flow generation-loading" aria-live="polite">
         <div
@@ -1685,9 +1978,9 @@ function GenerateStep({
           <span className="generation-scan" />
         </div>
         <section className="generation-copy">
-          <p className="eyebrow">Creating your design</p>
-          <h1>Making it yours…</h1>
-          <p>Combining your idea, style, and shirt color.</p>
+          <p className="eyebrow">{lifecycleCopy.eyebrow}</p>
+          <h1>{lifecycleCopy.title}</h1>
+          <p>{lifecycleCopy.description}</p>
           <div
             aria-label="Generating shirt preview"
             aria-valuemax={100}
@@ -1718,7 +2011,13 @@ function GenerateStep({
       >
         <div className="result-garment-zoom">
           <img alt={`${selectedColor.name} ${PRODUCT_PROFILE.name} preview`} src={garmentAsset} />
-          <GeneratedArtwork prompt={prompt} style={style} tone={tone} version={generationVersion} />
+          <ArtworkPreview
+            generatedPreviewUrl={generatedPreviewUrl}
+            prompt={prompt}
+            style={style}
+            tone={tone}
+            version={generationVersion}
+          />
         </div>
         {previewUpdating ? (
           <span className="preview-update-indicator" role="status">
@@ -1755,10 +2054,22 @@ function GenerateStep({
             </div>
           </section>
         ) : (
-          <button className="create-button" onClick={addToCart} type="button">
-            Add to cart · {shirtPrice(size)} <Icon>→</Icon>
+          <button
+            aria-busy={cartSaving}
+            className="create-button"
+            disabled={cartSaving}
+            onClick={addToCart}
+            type="button"
+          >
+            {cartSaving ? 'Preparing your print…' : `Add to cart · ${shirtPrice(size)}`}{' '}
+            <Icon>{cartSaving ? '·' : '→'}</Icon>
           </button>
         )}
+        {cartError ? (
+          <InlineFeedback role="alert" tone="error">
+            {cartError}
+          </InlineFeedback>
+        ) : null}
         {reviewNotice ? (
           <InlineFeedback className="review-notice" tone="info">
             {reviewNotice}
@@ -1799,7 +2110,8 @@ function CartSummaryLine({ item }: { item: CartItem }) {
   return (
     <div className="checkout-order-summary">
       <div className="checkout-product-art" aria-label="Your generated artwork">
-        <GeneratedArtwork
+        <ArtworkPreview
+          generatedPreviewUrl={item.generatedPreviewUrl ?? null}
           prompt={item.prompt}
           style={item.style}
           tone={item.tone}
@@ -2475,6 +2787,7 @@ function CheckoutStep({
 function EditorStep({
   color,
   garmentAsset,
+  generatedPreviewUrl,
   generationVersion,
   prompt,
   size,
@@ -2488,6 +2801,7 @@ function EditorStep({
 }: {
   color: ColorId;
   garmentAsset: string;
+  generatedPreviewUrl: string | null;
   generationVersion: number;
   prompt: string;
   size: SizeId | null;
@@ -2891,7 +3205,8 @@ function EditorStep({
               onPointerUp={finishGesture}
               type="button"
             >
-              <GeneratedArtwork
+              <ArtworkPreview
+                generatedPreviewUrl={generatedPreviewUrl}
                 prompt={prompt}
                 style={style}
                 tone={tone}
@@ -3175,6 +3490,54 @@ function GeneratedArtwork({
   );
 }
 
+function ArtworkPreview({
+  generatedPreviewUrl,
+  prompt,
+  style,
+  tone,
+  version,
+}: {
+  generatedPreviewUrl: string | null;
+  prompt: string;
+  style: StyleId | null;
+  tone: ToneId;
+  version: number;
+}) {
+  if (generatedPreviewUrl) {
+    return (
+      <img
+        alt=""
+        aria-hidden="true"
+        className="generated-artwork generated-preview-image"
+        src={generatedPreviewUrl}
+      />
+    );
+  }
+  return <GeneratedArtwork prompt={prompt} style={style} tone={tone} version={version} />;
+}
+
+function generationLifecycleCopy(phase: GenerationLifecyclePhase) {
+  if (phase === 'processing') {
+    return {
+      eyebrow: 'Creating your design',
+      title: 'Making it yours…',
+      description: 'Combining your idea, style, and shirt color.',
+    };
+  }
+  if (phase === 'validating') {
+    return {
+      eyebrow: 'Checking your design',
+      title: 'Finishing the details…',
+      description: 'Making sure your artwork is ready to review.',
+    };
+  }
+  return {
+    eyebrow: 'Preparing your design',
+    title: 'Getting everything ready…',
+    description: 'Your design request is safely in the queue.',
+  };
+}
+
 function SelectionSheet({
   title,
   name,
@@ -3406,7 +3769,9 @@ function CreditPurchaseSheet({ close, purchase }: { close: () => void; purchase:
 
 function CartDrawer({
   cart,
+  cartError,
   cartIcon,
+  cartSaving,
   checkout,
   close,
   closeRef,
@@ -3414,7 +3779,9 @@ function CartDrawer({
   removeItem,
 }: {
   cart: CartItem[];
+  cartError: string;
   cartIcon: CartIconVariant;
+  cartSaving: boolean;
   checkout: () => void;
   close: () => void;
   closeRef: React.RefObject<HTMLButtonElement | null>;
@@ -3448,6 +3815,11 @@ function CartDrawer({
         </div>
         {cart.length ? (
           <>
+            {cartError ? (
+              <InlineFeedback role="alert" tone="error">
+                {cartError}
+              </InlineFeedback>
+            ) : null}
             <div className="cart-item-list">
               {cart.map((item) => {
                 const itemColor = PRODUCT_COLORS.find((color) => color.id === item.color)!;
@@ -3455,7 +3827,8 @@ function CartDrawer({
                 return (
                   <article className="cart-item" key={item.id}>
                     <div className="cart-item-art" aria-label="Saved design preview">
-                      <GeneratedArtwork
+                      <ArtworkPreview
+                        generatedPreviewUrl={item.generatedPreviewUrl ?? null}
                         prompt={item.prompt}
                         style={item.style}
                         tone={item.tone}
@@ -3472,7 +3845,7 @@ function CartDrawer({
                         <div className="cart-item-quantity" aria-label="Quantity">
                           <button
                             aria-label={`Decrease ${PRODUCT_PROFILE.name} quantity`}
-                            disabled={item.quantity === 1}
+                            disabled={cartSaving || item.quantity === 1}
                             onClick={() => changeQuantity(item.id, -1)}
                             type="button"
                           >
@@ -3486,6 +3859,7 @@ function CartDrawer({
                           </output>
                           <button
                             aria-label={`Increase ${PRODUCT_PROFILE.name} quantity`}
+                            disabled={cartSaving}
                             onClick={() => changeQuantity(item.id, 1)}
                             type="button"
                           >
@@ -3494,6 +3868,7 @@ function CartDrawer({
                         </div>
                         <button
                           className="cart-item-remove"
+                          disabled={cartSaving}
                           onClick={() => removeItem(item.id)}
                           type="button"
                         >

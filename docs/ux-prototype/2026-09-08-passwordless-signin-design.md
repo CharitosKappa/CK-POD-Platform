@@ -28,12 +28,7 @@ No email is sent, no account is persisted, and no backend, newsletter, order, or
 The code UI displays six visual slots but is driven by one native text input. That input uses:
 
 ```html
-<input
-  autocomplete="one-time-code"
-  inputmode="numeric"
-  maxlength="6"
-  pattern="[0-9]*"
-/>
+<input autocomplete="one-time-code" inputmode="numeric" maxlength="6" pattern="[0-9]*" />
 ```
 
 The browser or operating system can offer a received OTP above the mobile keyboard. Selecting it fills the one native input, and the component mirrors its value into the six visible slots. This preserves the native autofill path, supports typing and paste, and avoids six independent inputs that can interfere with the one-time-code suggestion. Autofill availability remains device, browser, mail-client, and platform dependent; the manual entry path is always available.

@@ -3,10 +3,12 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { MemoryObjectStorage } from '@let-it-be/storage';
 
 import { ProductCatalogService } from './catalog.js';
 import { IdentityService, InMemoryEmailCodeDelivery } from './identity.js';
 import { ProjectConflictError, ProjectService, emptyEditorDocument } from './projects.js';
+import { ReferenceAssetService } from './reference-assets.js';
 
 const integrationDatabaseUrl = process.env.DATABASE_URL;
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
@@ -63,13 +65,86 @@ integrationSuite('identity, projects, and catalog integration', () => {
     expect((await projects.getCreationDraft(guest, project.id))?.prompt).toBe(
       'A sunset disco cat in a vintage print.',
     );
+    const styled = await projects.updateCreationStyle(guest, project.id, {
+      expectedRevision: saved.project.revision,
+      prototypeStyleId: 'vintage-retro',
+      prototypeToneId: 'heartfelt',
+    });
+    expect(styled.draft).toMatchObject({
+      prompt: 'A sunset disco cat in a vintage print.',
+      prototypeStyleId: 'vintage-retro',
+      prototypeToneId: 'heartfelt',
+    });
+    expect(styled.project.styleSelection).toMatchObject({
+      selectionMode: 'MANUAL',
+      styleFamilyId: 'family-vintage',
+      presetId: 'preset-vintage-heritage-badge',
+    });
+    const configured = await projects.updateCreationProduct(guest, project.id, {
+      expectedRevision: styled.project.revision,
+      productModelId: 'essential-dtg-tee',
+      colorCode: 'red',
+      selectedSize: '2xl',
+    });
+    expect(configured.project.selectedColorCode).toBe('red');
+    expect(configured.draft.selectedSize).toBe('2xl');
     await expect(
       projects.updateCreationDraft(guest, project.id, {
         expectedRevision: project.revision,
         prompt: 'A stale update.',
       }),
     ).rejects.toBeInstanceOf(ProjectConflictError);
-    expect(await projects.getCreationDraft(await identity.createGuestSession(), project.id)).toBeNull();
+    expect(
+      await projects.getCreationDraft(await identity.createGuestSession(), project.id),
+    ).toBeNull();
+  });
+
+  it('replaces and removes a private reference image while preserving project ownership', async () => {
+    const guest = await identity.createGuestSession();
+    const otherGuest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const storage = new MemoryObjectStorage();
+    const references = new ReferenceAssetService(pool, storage);
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const first = await references.replace(guest, project.id, {
+      expectedRevision: project.revision,
+      body: png,
+      contentType: 'image/png',
+      width: 1,
+      height: 1,
+    });
+    expect(first.asset).toMatchObject({ contentType: 'image/png', width: 1, height: 1 });
+    expect((await projects.getCreationDraft(guest, project.id))?.referenceAssetIds).toEqual([
+      first.asset?.id,
+    ]);
+
+    await expect(
+      references.remove(otherGuest, project.id, first.asset!.id, first.projectRevision),
+    ).rejects.toThrow('Project not found.');
+
+    const second = await references.replace(guest, project.id, {
+      expectedRevision: first.projectRevision,
+      body: png,
+      contentType: 'image/png',
+      width: 1,
+      height: 1,
+    });
+    const replaced = await pool.query<{ status: string; storage_key: string }>(
+      'SELECT status, storage_key FROM app.assets WHERE id = $1',
+      [first.asset?.id],
+    );
+    expect(replaced.rows[0]?.status).toBe('DELETED');
+    expect(await storage.exists(replaced.rows[0]!.storage_key)).toBe(false);
+
+    const removed = await references.remove(
+      guest,
+      project.id,
+      second.asset!.id,
+      second.projectRevision,
+    );
+    expect(removed.referenceAssetIds).toEqual([]);
+    expect((await projects.getCreationDraft(guest, project.id))?.referenceAssetIds).toEqual([]);
   });
 
   it('migrates a guest project and all versions to an account while preserving ownership protection', async () => {

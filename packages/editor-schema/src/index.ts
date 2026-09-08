@@ -49,6 +49,8 @@ export interface BaseLayer {
   height: number;
   /** Clockwise degrees around the layer centre. */
   rotation: number;
+  /** Horizontal reflection around the layer centre. */
+  flipX?: boolean;
   opacity: number;
   visible: boolean;
   locked: boolean;
@@ -124,6 +126,7 @@ export function createGeneratedLayer(input: {
     width: 0.55,
     height: 0.55,
     rotation: 0,
+    flipX: false,
     opacity: 1,
     visible: true,
     locked: false,
@@ -439,6 +442,7 @@ function readLayer(value: unknown): EditorLayer {
     height: readUnit(value.height),
     rotation:
       typeof value.rotation === 'number' && Number.isFinite(value.rotation) ? value.rotation : 0,
+    flipX: value.flipX === true,
     opacity: readUnit(value.opacity),
     visible: value.visible === true,
     locked: value.locked === true,

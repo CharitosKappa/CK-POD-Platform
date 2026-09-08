@@ -75,6 +75,7 @@ describe('editor schema', () => {
         width: 0.3,
         height: 0.3,
         rotation: 0,
+        flipX: true,
         opacity: 1,
         visible: true,
         locked: false,
@@ -86,6 +87,7 @@ describe('editor schema', () => {
     });
     expect(serializeEditorDocument(withGenerated)).toContain('Exact, Punctuation!');
     expect(serializeEditorDocument(withGenerated)).toContain('preview-1');
+    expect(serializeEditorDocument(withGenerated)).toContain('"flipX":true');
   });
 
   it('blocks mutations of locked layers and tracks undo/redo as committed actions', () => {

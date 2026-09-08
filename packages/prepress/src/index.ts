@@ -208,7 +208,9 @@ export class SharpProductionRenderer implements ProductionRenderer {
         isVector: asset.contentType === 'image/svg+xml',
       };
     }
-    const rotated = await sharp(body)
+    let composited = sharp(body);
+    if (layer.flipX) composited = composited.flop();
+    const rotated = await composited
       .rotate(layer.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
       .png({ compressionLevel: 9, adaptiveFiltering: false })
       .toBuffer({ resolveWithObject: true });

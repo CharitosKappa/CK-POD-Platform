@@ -138,6 +138,32 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(JSON.stringify(cart)).not.toContain('storage_key');
   });
 
+  it('persists cart quantity changes with revision protection and supports removing the item', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const created = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'XL',
+      quantity: 1,
+    });
+    expect(created.item?.unitPriceCents).toBeGreaterThan(0);
+
+    const updated = await commerce.updateCartQuantity(ready.guest, created.id, {
+      expectedRevision: created.revision,
+      quantity: 4,
+    });
+    expect(updated.revision).toBe(created.revision + 1);
+    expect(updated.item?.quantity).toBe(4);
+    await expect(
+      commerce.updateCartQuantity(ready.guest, created.id, {
+        expectedRevision: created.revision,
+        quantity: 2,
+      }),
+    ).rejects.toBeInstanceOf(CommerceValidationError);
+
+    const removed = await commerce.removeCartItem(ready.guest, created.id, updated.revision);
+    expect(removed).toMatchObject({ status: 'ABANDONED', item: null });
+  });
+
   it('uses a product/color-specific profile and reuses the deterministic proof for the same immutable state', async () => {
     const ready = await readyProject(pool, identity, projects, storage, 'navy');
     const first = await commerce.createCart(ready.guest, {
@@ -217,21 +243,21 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       `checkout-${randomBytes(8).toString('hex')}`,
     );
     expect(checkout.pricing).toMatchObject({
-      unitRetailCents: 2900,
+      unitRetailCents: 3999,
       quantity: 3,
-      discountCents: 870,
-      subtotalCents: 7830,
+      discountCents: 1200,
+      subtotalCents: 10797,
       customerShippingCents: 0,
       freeShippingApplied: true,
-      taxCents: 685,
-      totalCents: 8515,
+      taxCents: 945,
+      totalCents: 11742,
     });
     expect(checkout.shipping).toMatchObject({
       provisional: true,
       providerShippingCostCents: 550,
       customerShippingCents: 0,
     });
-    expect(checkout.tax).toMatchObject({ provider: 'FAKE', taxableSubtotalCents: 7830 });
+    expect(checkout.tax).toMatchObject({ provider: 'FAKE', taxableSubtotalCents: 10797 });
   });
 
   it('supports safe guest checkout, verified idempotent payment events, and canonical PAID order state only', async () => {

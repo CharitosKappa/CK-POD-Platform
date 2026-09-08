@@ -1,4 +1,4 @@
-import type { SqlClient, SqlPool } from '@let-it-be/db';
+import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
 import { GenerationCreditError } from './ai-contracts';
 import type { ActiveSession } from './identity';
@@ -128,6 +128,10 @@ export class CreditService {
       [session.id, session.userId],
     );
     return result.rows[0] ? mapAccount(result.rows[0]) : null;
+  }
+
+  async getOrCreateBalance(session: ActiveSession): Promise<CreditAccount> {
+    return withTransaction(this.pool, (client) => this.ensureAccount(client, session));
   }
 
   private async ensureAccount(client: SqlClient, session: ActiveSession): Promise<CreditAccount> {

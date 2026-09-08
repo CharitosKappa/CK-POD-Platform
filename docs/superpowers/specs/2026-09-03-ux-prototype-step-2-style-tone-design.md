@@ -16,7 +16,7 @@ The page keeps its established hierarchy:
 4. A visible, low-emphasis default-first recommendation card: `AI-PICKED LOOK`, the current recommended consumer-facing look name, `We think this fits your idea best.`, and secondary `Change look →` affordance.
 5. `Continue to color & size →` remains the primary CTA and is blocked only until a Style is chosen.
 
-The consumer never sees the terms *Substyle*, *visual recipe*, or *AI routing*. They can continue with Tone set to Auto and the recommendation untouched.
+The consumer never sees the terms _Substyle_, _visual recipe_, or _AI routing_. They can continue with Tone set to Auto and the recommendation untouched.
 
 ## Optional Look control
 
@@ -35,25 +35,25 @@ The isolated client holds the Step 1 prompt, selected Style, selected Tone, `aiR
 
 Each Style owns four local fixtures:
 
-| Style | Available looks |
-| --- | --- |
-| Vintage & Retro | 70s Retro; 80s/90s Throwback; Heritage; Bootleg & Distressed |
-| Illustrated | Bold Cartoon; Hand Drawn; Comic / Manga; Surreal / Psychedelic |
-| Streetwear & Y2K | Cyber Y2K; Grunge Streetwear; Racing / Motorsport; Pop / Coquette Y2K |
-| Typography | Bold Statement; Retro Type; Hand Lettered; Experimental Type |
-| Minimal & Modern | Line Art; Geometric / Bauhaus; Minimal Symbol; Clean Type |
-| Dark & Alternative | Gothic Engraving; Tattoo Flash; Heavy Metal; Dark Fantasy |
+| Style              | Available looks                                                       |
+| ------------------ | --------------------------------------------------------------------- |
+| Vintage & Retro    | 70s Retro; 80s/90s Throwback; Heritage; Bootleg & Distressed          |
+| Illustrated        | Bold Cartoon; Hand Drawn; Comic / Manga; Surreal / Psychedelic        |
+| Streetwear & Y2K   | Cyber Y2K; Grunge Streetwear; Racing / Motorsport; Pop / Coquette Y2K |
+| Typography         | Bold Statement; Retro Type; Hand Lettered; Experimental Type          |
+| Minimal & Modern   | Line Art; Geometric / Bauhaus; Minimal Symbol; Clean Type             |
+| Dark & Alternative | Gothic Engraving; Tattoo Flash; Heavy Metal; Dark Fantasy             |
 
 The mock resolver is deterministic, inspectable, and semantic rather than ordinal. Each explicit Tone maps to a named look within its Style family:
 
-| Style | Funny | Sarcastic | Bold | Cute | Dark | Heartfelt | Auto fallback |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Vintage & Retro | 80s/90s Throwback | Bootleg & Distressed | Bootleg & Distressed | 70s Retro | Bootleg & Distressed | Heritage | Heritage |
-| Illustrated | Bold Cartoon | Bold Cartoon | Comic / Manga | Hand Drawn | Surreal / Psychedelic | Hand Drawn | Hand Drawn |
-| Streetwear & Y2K | Pop / Coquette Y2K | Grunge Streetwear | Racing / Motorsport | Pop / Coquette Y2K | Grunge Streetwear | Cyber Y2K | Cyber Y2K |
-| Typography | Bold Statement | Retro Type | Bold Statement | Hand Lettered | Experimental Type | Hand Lettered | Clean Type |
-| Minimal & Modern | Minimal Symbol | Clean Type | Geometric / Bauhaus | Line Art | Geometric / Bauhaus | Line Art | Minimal Symbol |
-| Dark & Alternative | Tattoo Flash | Gothic Engraving | Heavy Metal | Dark Fantasy | Dark Fantasy | Tattoo Flash | Gothic Engraving |
+| Style              | Funny              | Sarcastic            | Bold                 | Cute               | Dark                  | Heartfelt     | Auto fallback    |
+| ------------------ | ------------------ | -------------------- | -------------------- | ------------------ | --------------------- | ------------- | ---------------- |
+| Vintage & Retro    | 80s/90s Throwback  | Bootleg & Distressed | Bootleg & Distressed | 70s Retro          | Bootleg & Distressed  | Heritage      | Heritage         |
+| Illustrated        | Bold Cartoon       | Bold Cartoon         | Comic / Manga        | Hand Drawn         | Surreal / Psychedelic | Hand Drawn    | Hand Drawn       |
+| Streetwear & Y2K   | Pop / Coquette Y2K | Grunge Streetwear    | Racing / Motorsport  | Pop / Coquette Y2K | Grunge Streetwear     | Cyber Y2K     | Cyber Y2K        |
+| Typography         | Bold Statement     | Retro Type           | Bold Statement       | Hand Lettered      | Experimental Type     | Hand Lettered | Clean Type       |
+| Minimal & Modern   | Minimal Symbol     | Clean Type           | Geometric / Bauhaus  | Line Art           | Geometric / Bauhaus   | Line Art      | Minimal Symbol   |
+| Dark & Alternative | Tattoo Flash       | Gothic Engraving     | Heavy Metal          | Dark Fantasy       | Dark Fantasy          | Tattoo Flash  | Gothic Engraving |
 
 For Auto, a small keyword rule set first infers a consumer tone from the Step 1 prompt: dark/horror/metal/skull/night terms infer Dark; ironic/sarcastic/obviously/Monday terms infer Sarcastic; joke/funny/comedy terms infer Funny; love/family/tribute/memory terms infer Heartfelt; cute/sweet/pet/flower terms infer Cute; and power/strong/racing/street terms infer Bold. The resolver then uses that Style's explicit semantic mapping. If no rule matches, it uses the Style-specific Auto fallback. Thus the raccoon, Monday, and “Obviously” example with Illustrated + Sarcastic resolves to Bold Cartoon without a prompt hash.
 

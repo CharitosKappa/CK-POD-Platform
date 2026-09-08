@@ -2742,6 +2742,17 @@ input:focus-visible {
 .generated-artwork.artwork-minimal-modern {
   border-radius: 50%;
 }
+.generated-artwork.generated-preview-image {
+  display: block;
+  aspect-ratio: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 0;
+  object-fit: contain;
+  box-shadow: 0 5px 13px rgb(0 0 0 / 18%);
+}
 .generation-summary {
   display: grid;
   gap: 7px;

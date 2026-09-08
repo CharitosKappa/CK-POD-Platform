@@ -1,14 +1,17 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 import {
   createEmptyEditorDocument,
+  createGeneratedLayer,
   migrateEditorDocument,
+  withPlacementStatus,
   type EditorDocumentV1,
+  type GeneratedLayer,
 } from '@let-it-be/editor-schema';
 
 import type { ActiveSession } from './identity';
-import { StyleCatalogService, type StyleSelection } from './styles';
+import { mapPrototypeStyleSelection, StyleCatalogService, type StyleSelection } from './styles';
 import type { LifecycleOrchestrator } from './operations-analytics';
 
 export type EditorDocument = EditorDocumentV1;
@@ -53,6 +56,29 @@ export interface ProjectCreationDraft {
 export interface UpdateProjectCreationDraftInput {
   expectedRevision: number;
   prompt: string;
+}
+
+export interface UpdateProjectCreationStyleInput {
+  expectedRevision: number;
+  prototypeStyleId: string;
+  prototypeToneId: string;
+}
+
+export interface UpdateProjectCreationProductInput extends ProjectSelection {
+  expectedRevision: number;
+  selectedSize: string;
+}
+
+export interface ApplyDeliveredGenerationInput {
+  expectedRevision: number;
+  generationId: string;
+  transform: {
+    x: number;
+    y: number;
+    scale: number;
+    rotation: number;
+    flipped: boolean;
+  };
 }
 
 export type GuidedStyleSelectionInput =
@@ -101,6 +127,7 @@ interface CreationDraftRow {
 }
 
 export class ProjectConflictError extends Error {}
+export class ProjectValidationError extends Error {}
 
 export class ProjectService {
   private readonly guestRetentionDays: number;
@@ -244,6 +271,94 @@ export class ProjectService {
     });
   }
 
+  async updateCreationStyle(
+    session: ActiveSession,
+    projectId: string,
+    input: UpdateProjectCreationStyleInput,
+  ): Promise<{ project: Project; draft: ProjectCreationDraft }> {
+    return withTransaction(this.pool, async (client) => {
+      await this.requireAccess(client, session, projectId);
+      const currentDraft = await client.query<CreationDraftRow>(
+        `SELECT project_id, prompt, reference_asset_ids, prototype_style_id,
+                prototype_tone_id, selected_size, updated_at
+         FROM app.project_creation_drafts
+         WHERE project_id = $1
+         FOR UPDATE`,
+        [projectId],
+      );
+      const draft = requireRow(currentDraft.rows[0]);
+      const mapped = mapPrototypeStyleSelection({
+        style: input.prototypeStyleId,
+        tone: input.prototypeToneId,
+        prompt: draft.prompt,
+      });
+      const resolved = await new StyleCatalogService(client).resolveManual(mapped);
+      const updatedProject = await client.query<ProjectRow>(
+        `UPDATE app.projects
+         SET style_selection_mode = 'MANUAL', style_family_id = $1, style_preset_id = $2,
+             style_preset_version = $3, revision = revision + 1, updated_at = now()
+         WHERE id = $4 AND revision = $5
+         RETURNING *`,
+        [
+          resolved.styleFamilyId,
+          resolved.presetId,
+          resolved.presetVersion,
+          projectId,
+          input.expectedRevision,
+        ],
+      );
+      if (!updatedProject.rows[0]) {
+        throw new ProjectConflictError('Project changed before this style could be saved.');
+      }
+      const updatedDraft = await client.query<CreationDraftRow>(
+        `UPDATE app.project_creation_drafts
+         SET prototype_style_id = $2, prototype_tone_id = $3, updated_at = now()
+         WHERE project_id = $1
+         RETURNING project_id, prompt, reference_asset_ids, prototype_style_id,
+                   prototype_tone_id, selected_size, updated_at`,
+        [projectId, input.prototypeStyleId, input.prototypeToneId],
+      );
+      return {
+        project: mapProject(requireRow(updatedProject.rows[0])),
+        draft: mapCreationDraft(requireRow(updatedDraft.rows[0])),
+      };
+    });
+  }
+
+  async updateCreationProduct(
+    session: ActiveSession,
+    projectId: string,
+    input: UpdateProjectCreationProductInput,
+  ): Promise<{ project: Project; draft: ProjectCreationDraft }> {
+    return withTransaction(this.pool, async (client) => {
+      await this.requireAccess(client, session, projectId);
+      await assertSelectableVariant(client, input);
+      const updatedProject = await client.query<ProjectRow>(
+        `UPDATE app.projects
+         SET product_model_id = $1, selected_color_code = $2,
+             revision = revision + 1, updated_at = now()
+         WHERE id = $3 AND revision = $4
+         RETURNING *`,
+        [input.productModelId, input.colorCode, projectId, input.expectedRevision],
+      );
+      if (!updatedProject.rows[0]) {
+        throw new ProjectConflictError('Project changed before this product could be saved.');
+      }
+      const updatedDraft = await client.query<CreationDraftRow>(
+        `UPDATE app.project_creation_drafts
+         SET selected_size = $2, updated_at = now()
+         WHERE project_id = $1
+         RETURNING project_id, prompt, reference_asset_ids, prototype_style_id,
+                   prototype_tone_id, selected_size, updated_at`,
+        [projectId, input.selectedSize],
+      );
+      return {
+        project: mapProject(requireRow(updatedProject.rows[0])),
+        draft: mapCreationDraft(requireRow(updatedDraft.rows[0])),
+      };
+    });
+  }
+
   async selectProduct(
     session: ActiveSession,
     projectId: string,
@@ -346,6 +461,118 @@ export class ProjectService {
     });
   }
 
+  /**
+   * Promotes an owned, delivered generation into the immutable project history.
+   * Consumer editor coordinates are mapped into the qualified safe area and fitted
+   * once more on the server before prepress can consume the document.
+   */
+  async applyDeliveredGeneration(
+    session: ActiveSession,
+    projectId: string,
+    input: ApplyDeliveredGenerationInput,
+  ): Promise<{ project: Project; version: ProjectVersion; unchanged: boolean }> {
+    validateDeliveredTransform(input.transform);
+    return withTransaction(this.pool, async (client) => {
+      const project = await this.requireAccess(client, session, projectId);
+      const generationResult = await client.query<{
+        id: string;
+        status: string;
+        delivered_asset_id: string | null;
+        asset_status: string | null;
+      }>(
+        `SELECT g.id, g.status, g.delivered_asset_id, a.status AS asset_status
+         FROM app.generations g
+         LEFT JOIN app.assets a ON a.id = g.delivered_asset_id AND a.project_id = g.project_id
+         WHERE g.id = $1 AND g.project_id = $2`,
+        [input.generationId, projectId],
+      );
+      const generation = generationResult.rows[0];
+      if (
+        !generation ||
+        generation.status !== 'SUCCEEDED' ||
+        !generation.delivered_asset_id ||
+        generation.asset_status !== 'ACTIVE'
+      ) {
+        throw new ProjectValidationError('The delivered design is not ready to print.');
+      }
+      if (!project.activeVersionId) {
+        throw new ProjectValidationError('The active design version is unavailable.');
+      }
+      const activeResult = await client.query<VersionRow>(
+        `SELECT id, project_id, version_number, editor_document, snapshot_reason, created_at, document_hash
+         FROM app.project_versions WHERE id = $1 AND project_id = $2`,
+        [project.activeVersionId, projectId],
+      );
+      const active = requireRow(activeResult.rows[0]);
+      const currentDocument = migrateEditorDocument(active.editor_document);
+      const existingGenerated = currentDocument.layers.find((layer) => layer.type === 'generated');
+      const layer = fitGeneratedLayer(currentDocument, {
+        ...createGeneratedLayer({
+          layerId: existingGenerated?.id ?? randomUUID(),
+          assetId: generation.delivered_asset_id,
+          generationId: generation.id,
+          zIndex:
+            existingGenerated?.zIndex ??
+            currentDocument.layers.reduce(
+              (maximum, candidate) => Math.max(maximum, candidate.zIndex),
+              -1,
+            ) + 1,
+        }),
+        x:
+          currentDocument.printArea.safeBounds.x +
+          (input.transform.x / 100) * currentDocument.printArea.safeBounds.width,
+        y:
+          currentDocument.printArea.safeBounds.y +
+          (input.transform.y / 100) * currentDocument.printArea.safeBounds.height,
+        width: 0.55 * input.transform.scale,
+        height: 0.55 * input.transform.scale,
+        rotation: input.transform.rotation,
+        flipX: input.transform.flipped,
+      });
+      const nextDocument = withPlacementStatus({
+        ...currentDocument,
+        layers: existingGenerated
+          ? currentDocument.layers.map((candidate) =>
+              candidate.id === existingGenerated.id ? layer : candidate,
+            )
+          : [...currentDocument.layers, layer],
+      });
+      if (nextDocument.placementStatus !== 'VALID') {
+        throw new ProjectValidationError('Keep the design inside the printable area.');
+      }
+      const documentHash = hashDocument(nextDocument);
+      if (active.document_hash === documentHash) {
+        return { project, version: mapVersion(active), unchanged: true };
+      }
+      const updated = await client.query<ProjectRow>(
+        `UPDATE app.projects SET revision = revision + 1, updated_at = now()
+         WHERE id = $1 AND revision = $2 RETURNING *`,
+        [projectId, input.expectedRevision],
+      );
+      if (!updated.rows[0]) {
+        throw new ProjectConflictError('Project changed before the design could be prepared.');
+      }
+      const version = await this.insertVersion(
+        client,
+        projectId,
+        active.version_number + 1,
+        nextDocument,
+        'GENERATION',
+        session,
+      );
+      const activated = await client.query<ProjectRow>(
+        'UPDATE app.projects SET active_version_id = $1 WHERE id = $2 RETURNING *',
+        [version.id, projectId],
+      );
+      await this.trimVersions(client, projectId);
+      return {
+        project: mapProject(requireRow(activated.rows[0])),
+        version,
+        unchanged: false,
+      };
+    });
+  }
+
   private async requireAccess(
     client: SqlClient,
     session: ActiveSession,
@@ -401,6 +628,47 @@ export class ProjectService {
   }
 }
 
+function validateDeliveredTransform(input: ApplyDeliveredGenerationInput['transform']): void {
+  if (
+    !Number.isFinite(input.x) ||
+    !Number.isFinite(input.y) ||
+    input.x < 0 ||
+    input.x > 100 ||
+    input.y < 0 ||
+    input.y > 100 ||
+    !Number.isFinite(input.scale) ||
+    input.scale <= 0 ||
+    input.scale > 1.4 ||
+    !Number.isFinite(input.rotation) ||
+    typeof input.flipped !== 'boolean'
+  ) {
+    throw new ProjectValidationError('The design placement is invalid.');
+  }
+}
+
+function fitGeneratedLayer(document: EditorDocument, candidate: GeneratedLayer): GeneratedLayer {
+  const safe = document.printArea.safeBounds;
+  const radians = (candidate.rotation * Math.PI) / 180;
+  const cosine = Math.abs(Math.cos(radians));
+  const sine = Math.abs(Math.sin(radians));
+  let width = candidate.width;
+  let height = candidate.height;
+  let extentX = (width * cosine + height * sine) / 2;
+  let extentY = (width * sine + height * cosine) / 2;
+  const fit = Math.min(1, safe.width / (extentX * 2), safe.height / (extentY * 2));
+  width *= fit;
+  height *= fit;
+  extentX = (width * cosine + height * sine) / 2;
+  extentY = (width * sine + height * cosine) / 2;
+  return {
+    ...candidate,
+    width,
+    height,
+    x: Math.min(Math.max(candidate.x, safe.x + extentX), safe.x + safe.width - extentX),
+    y: Math.min(Math.max(candidate.y, safe.y + extentY), safe.y + safe.height - extentY),
+  };
+}
+
 export function emptyEditorDocument(): EditorDocument {
   return createEmptyEditorDocument();
 }
@@ -423,6 +691,21 @@ async function assertSelectable(client: SqlClient, selection: ProjectSelection):
     [selection.productModelId, selection.colorCode],
   );
   if (!result.rows[0]) throw new Error('Selected product color is unavailable.');
+}
+
+async function assertSelectableVariant(
+  client: SqlClient,
+  selection: UpdateProjectCreationProductInput,
+): Promise<void> {
+  const result = await client.query<{ id: string }>(
+    `SELECT v.id FROM app.product_models p
+     JOIN app.product_variants v ON v.product_model_id = p.id
+     WHERE p.id = $1 AND v.color_code = $2 AND v.size = $3
+       AND p.status = 'ACTIVE' AND v.status = 'ACTIVE'
+     LIMIT 1`,
+    [selection.productModelId, selection.colorCode, selection.selectedSize.toUpperCase()],
+  );
+  if (!result.rows[0]) throw new Error('That color and size combination is unavailable.');
 }
 
 function hashDocument(document: EditorDocument): string {

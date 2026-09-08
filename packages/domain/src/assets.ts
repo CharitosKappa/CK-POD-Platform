@@ -7,7 +7,7 @@ export interface ControlledPreviewAsset {
   contentType: string;
 }
 
-/** Resolves a preview for server-side delivery only. Storage keys never leave this domain boundary. */
+/** Resolves a consumer-visible asset for server-side delivery only. Storage keys never leave this boundary. */
 export class AssetService {
   public constructor(private readonly pool: SqlPool) {}
 
@@ -20,7 +20,9 @@ export class AssetService {
       `SELECT a.storage_key AS "storageKey", a.content_type AS "contentType"
        FROM app.assets a
        JOIN app.projects p ON p.id = a.project_id
-       WHERE a.id = $1 AND a.project_id = $2 AND a.asset_type IN ('PREVIEW', 'PREPRESS_PREVIEW', 'MOCKUP_PROOF') AND a.status = 'ACTIVE'
+       WHERE a.id = $1 AND a.project_id = $2
+         AND a.asset_type IN ('REFERENCE', 'PREVIEW', 'PREPRESS_PREVIEW', 'MOCKUP_PROOF')
+         AND a.status = 'ACTIVE'
          AND ((p.owner_type = 'GUEST' AND p.owner_session_id = $3)
            OR (p.owner_type = 'USER' AND p.owner_user_id = $4::uuid))`,
       [assetId, projectId, session.id, session.userId],

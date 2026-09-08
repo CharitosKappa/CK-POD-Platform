@@ -64,6 +64,7 @@ export interface CartView {
     colorName: string;
     size: string;
     quantity: number;
+    unitPriceCents: number;
   } | null;
   proofApproved: boolean;
 }
@@ -332,10 +333,77 @@ export class CommerceService {
             colorName: item.color_name,
             size: item.size,
             quantity: item.quantity,
+            unitPriceCents: item.unit_price_cents,
           }
         : null,
       proofApproved: Boolean(approved.rows[0]),
     };
+  }
+
+  async updateCartQuantity(
+    session: ActiveSession,
+    cartId: string,
+    input: { quantity: number; expectedRevision: number },
+  ): Promise<CartView> {
+    validateQuantity(input.quantity);
+    await withTransaction(this.pool, async (client) => {
+      const cartResult = await client.query<CartRow>(
+        `SELECT c.id, c.revision, c.status, c.currency
+         FROM app.carts c
+         WHERE c.id = $1 AND ${cartOwnershipClause(2, 3)}
+         FOR UPDATE`,
+        [cartId, session.id, session.userId],
+      );
+      const cart = requireRow(cartResult.rows[0], 'Cart not found.');
+      if (cart.status !== 'READY') {
+        throw new CommerceValidationError('This cart can no longer be changed.');
+      }
+      if (cart.revision !== input.expectedRevision) {
+        throw new CommerceValidationError('Your cart changed. Refresh it and try again.');
+      }
+      const updatedItem = await client.query<{ id: string }>(
+        `UPDATE app.cart_items SET quantity = $2, updated_at = now()
+         WHERE cart_id = $1 RETURNING id`,
+        [cartId, input.quantity],
+      );
+      requireRow(updatedItem.rows[0], 'Cart has no items.');
+      await client.query(
+        `UPDATE app.carts SET revision = revision + 1, updated_at = now() WHERE id = $1`,
+        [cartId],
+      );
+    });
+    return this.getCart(session, cartId);
+  }
+
+  async removeCartItem(
+    session: ActiveSession,
+    cartId: string,
+    expectedRevision: number,
+  ): Promise<CartView> {
+    await withTransaction(this.pool, async (client) => {
+      const cartResult = await client.query<CartRow>(
+        `SELECT c.id, c.revision, c.status, c.currency
+         FROM app.carts c
+         WHERE c.id = $1 AND ${cartOwnershipClause(2, 3)}
+         FOR UPDATE`,
+        [cartId, session.id, session.userId],
+      );
+      const cart = requireRow(cartResult.rows[0], 'Cart not found.');
+      if (cart.status !== 'READY') {
+        throw new CommerceValidationError('This cart can no longer be changed.');
+      }
+      if (cart.revision !== expectedRevision) {
+        throw new CommerceValidationError('Your cart changed. Refresh it and try again.');
+      }
+      await client.query('DELETE FROM app.cart_items WHERE cart_id = $1', [cartId]);
+      await client.query(
+        `UPDATE app.carts
+         SET status = 'ABANDONED', revision = revision + 1, updated_at = now()
+         WHERE id = $1`,
+        [cartId],
+      );
+    });
+    return this.getCart(session, cartId);
   }
 
   async approveProof(session: ActiveSession, cartId: string): Promise<void> {

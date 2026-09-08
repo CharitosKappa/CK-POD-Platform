@@ -20,11 +20,11 @@ The visual structure is familiar to ecommerce shoppers but is implemented with L
 
 ## Shipping fixtures
 
-| Option | Customer-facing price | Estimated delivery |
-| --- | --- | --- |
-| Economy | $3.99 | 4–8 business days |
-| Standard (default) | $4.75 | 2–5 business days |
-| Priority | Calculated later | 2–3 business days |
+| Option             | Customer-facing price | Estimated delivery |
+| ------------------ | --------------------- | ------------------ |
+| Economy            | $3.99                 | 4–8 business days  |
+| Standard (default) | $4.75                 | 2–5 business days  |
+| Priority           | Calculated later      | 2–3 business days  |
 
 The fixtures reflect the Printify shipping options and Monster Digital's current Priority eligibility. The provider and carrier remain internal: fulfillment selects the carrier based on the destination and availability after an order exists.
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DeterministicSvgProvider } from './ai-providers.js';
 import { DefaultPromptPipeline } from './prompt-pipeline.js';
-import type { ResolvedStyleSelection } from './styles.js';
+import { mapPrototypeStyleSelection, type ResolvedStyleSelection } from './styles.js';
 
 const productContext = {
   productModelId: 'essential-dtg-tee',
@@ -13,6 +13,29 @@ const productContext = {
 };
 
 describe('structured preset conditioning', () => {
+  it('maps prototype style and tone choices through explicit server-owned rules', () => {
+    expect(
+      mapPrototypeStyleSelection({
+        style: 'vintage-retro',
+        tone: 'heartfelt',
+        prompt: 'A family reunion badge.',
+      }),
+    ).toEqual({
+      styleFamilyId: 'family-vintage',
+      presetId: 'preset-vintage-heritage-badge',
+    });
+    expect(
+      mapPrototypeStyleSelection({
+        style: 'streetwear-y2k',
+        tone: 'auto',
+        prompt: 'A dark skull for a midnight concert.',
+      }),
+    ).toEqual({ styleFamilyId: 'family-dark', presetId: 'preset-dark-blackwork' });
+    expect(() =>
+      mapPrototypeStyleSelection({ style: 'unknown', tone: 'auto', prompt: 'Anything.' }),
+    ).toThrow('valid style');
+  });
+
   it('keeps exact text separate while changing deterministic provider output by preset', async () => {
     const vintage = style(
       'family-vintage',
