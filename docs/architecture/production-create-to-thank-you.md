@@ -6,6 +6,10 @@ Move the approved mobile primary purchase journey from `apps/ux-prototype` into 
 
 `apps/ux-prototype` remains the visual source of truth. Its primary purchase screens are reproduced in `apps/web`; business behavior is supplied by API routes and domain services rather than prototype-only client state.
 
+## Implementation sequence
+
+The first production frontend change is a faithful transfer of the existing primary-flow prototype components, styles, assets, copy, spacing, transitions, and mobile behavior. It is not a redesign or a new UI implementation. API integration is then substituted behind those transferred controls one interaction at a time. Existing generic `apps/web` creation, review, cart, checkout, and thank-you presentation must not be used as the visual starting point.
+
 ## Scope
 
 ### Slice 1 — Create: Steps 1–3
