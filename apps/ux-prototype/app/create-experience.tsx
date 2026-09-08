@@ -653,7 +653,11 @@ function snapEditorRotation(rotation: number, threshold = 4) {
   return target === undefined ? normalized : normalizeEditorRotation(target);
 }
 
-export function CreateExperience() {
+export interface CreateExperienceProps {
+  onContinueFromIdea?: (prompt: string) => Promise<void>;
+}
+
+export function CreateExperience({ onContinueFromIdea }: CreateExperienceProps) {
   const [step, setStep] = useState<
     'idea' | 'style' | 'product' | 'generate' | 'checkout' | 'editor'
   >('idea');
@@ -665,6 +669,7 @@ export function CreateExperience() {
   const [cartAdded, setCartAdded] = useState(false);
   const cartIcon: CartIconVariant = 'bag';
   const [promptError, setPromptError] = useState('');
+  const [savingIdea, setSavingIdea] = useState(false);
   const [styleError, setStyleError] = useState('');
   const [style, setStyle] = useState<StyleId | null>(null);
   const [tone, setTone] = useState<ToneId>('auto');
@@ -986,7 +991,15 @@ export function CreateExperience() {
       return;
     }
     setPromptError('');
-    setStep('style');
+    if (!onContinueFromIdea) {
+      setStep('style');
+      return;
+    }
+    setSavingIdea(true);
+    void onContinueFromIdea(prompt.trim())
+      .then(() => setStep('style'))
+      .catch(() => setPromptError('We couldn’t save your idea. Please try again.'))
+      .finally(() => setSavingIdea(false));
   };
   const submitStyle = () => {
     if (!style) {
@@ -1216,7 +1229,13 @@ export function CreateExperience() {
                 </label>
               )}
             </section>
-            <button className="create-button" onClick={submitIdea} type="button">
+            <button
+              aria-busy={savingIdea}
+              className="create-button"
+              disabled={savingIdea}
+              onClick={submitIdea}
+              type="button"
+            >
               Choose a Style <Icon>→</Icon>
             </button>
             <div className="creation-meta">

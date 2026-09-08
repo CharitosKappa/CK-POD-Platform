@@ -1,5 +1,5 @@
-import { CreateExperience } from '../../ux-prototype/app/create-experience';
+import { ProductionCreateExperience } from './production-create-experience';
 
 export default function HomePage() {
-  return <CreateExperience />;
+  return <ProductionCreateExperience />;
 }

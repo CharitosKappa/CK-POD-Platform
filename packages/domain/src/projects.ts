@@ -40,6 +40,21 @@ export interface ProjectSelection {
   colorCode: string;
 }
 
+export interface ProjectCreationDraft {
+  projectId: string;
+  prompt: string;
+  referenceAssetIds: string[];
+  prototypeStyleId: string | null;
+  prototypeToneId: string;
+  selectedSize: string | null;
+  updatedAt: Date;
+}
+
+export interface UpdateProjectCreationDraftInput {
+  expectedRevision: number;
+  prompt: string;
+}
+
 export type GuidedStyleSelectionInput =
   { selectionMode: 'AUTO' } | { selectionMode: 'MANUAL'; styleFamilyId: string; presetId: string };
 
@@ -73,6 +88,16 @@ interface VersionRow {
   snapshot_reason: ProjectVersion['snapshotReason'];
   created_at: Date;
   document_hash: string;
+}
+
+interface CreationDraftRow {
+  project_id: string;
+  prompt: string;
+  reference_asset_ids: string[];
+  prototype_style_id: string | null;
+  prototype_tone_id: string;
+  selected_size: string | null;
+  updated_at: Date;
 }
 
 export class ProjectConflictError extends Error {}
@@ -127,6 +152,12 @@ export class ProjectService {
         'UPDATE app.projects SET active_version_id = $1 WHERE id = $2 RETURNING *',
         [version.id, project.id],
       );
+      await client.query(
+        `INSERT INTO app.project_creation_drafts (project_id)
+         VALUES ($1)
+         ON CONFLICT (project_id) DO NOTHING`,
+        [project.id],
+      );
       return mapProject(requireRow(active.rows[0]));
     });
     if (session.userId && this.lifecycle) {
@@ -163,6 +194,54 @@ export class ProjectService {
       [projectId],
     );
     return result.rows.map(mapVersion);
+  }
+
+  async getCreationDraft(
+    session: ActiveSession,
+    projectId: string,
+  ): Promise<ProjectCreationDraft | null> {
+    const result = await this.pool.query<CreationDraftRow>(
+      `SELECT d.project_id, d.prompt, d.reference_asset_ids, d.prototype_style_id,
+              d.prototype_tone_id, d.selected_size, d.updated_at
+       FROM app.project_creation_drafts d
+       JOIN app.projects p ON p.id = d.project_id
+       WHERE d.project_id = $1 AND ${ownershipClause()}`,
+      [projectId, session.id, session.userId],
+    );
+    return result.rows[0] ? mapCreationDraft(result.rows[0]) : null;
+  }
+
+  async updateCreationDraft(
+    session: ActiveSession,
+    projectId: string,
+    input: UpdateProjectCreationDraftInput,
+  ): Promise<{ project: Project; draft: ProjectCreationDraft }> {
+    return withTransaction(this.pool, async (client) => {
+      await this.requireAccess(client, session, projectId);
+      const updatedProject = await client.query<ProjectRow>(
+        `UPDATE app.projects
+         SET revision = revision + 1, updated_at = now()
+         WHERE id = $1 AND revision = $2
+         RETURNING *`,
+        [projectId, input.expectedRevision],
+      );
+      if (!updatedProject.rows[0]) {
+        throw new ProjectConflictError('Project changed before this draft could be saved.');
+      }
+      const updatedDraft = await client.query<CreationDraftRow>(
+        `INSERT INTO app.project_creation_drafts (project_id, prompt)
+         VALUES ($1, $2)
+         ON CONFLICT (project_id) DO UPDATE
+           SET prompt = EXCLUDED.prompt, updated_at = now()
+         RETURNING project_id, prompt, reference_asset_ids, prototype_style_id,
+                   prototype_tone_id, selected_size, updated_at`,
+        [projectId, input.prompt],
+      );
+      return {
+        project: mapProject(requireRow(updatedProject.rows[0])),
+        draft: mapCreationDraft(requireRow(updatedDraft.rows[0])),
+      };
+    });
   }
 
   async selectProduct(
@@ -389,6 +468,18 @@ function mapVersion(row: VersionRow): ProjectVersion {
     editorDocument: migrateEditorDocument(row.editor_document),
     snapshotReason: row.snapshot_reason,
     createdAt: row.created_at,
+  };
+}
+
+function mapCreationDraft(row: CreationDraftRow): ProjectCreationDraft {
+  return {
+    projectId: row.project_id,
+    prompt: row.prompt,
+    referenceAssetIds: row.reference_asset_ids,
+    prototypeStyleId: row.prototype_style_id,
+    prototypeToneId: row.prototype_tone_id,
+    selectedSize: row.selected_size,
+    updatedAt: row.updated_at,
   };
 }
 

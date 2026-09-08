@@ -43,6 +43,35 @@ integrationSuite('identity, projects, and catalog integration', () => {
     expect(await projects.get(await identity.createGuestSession(), project.id)).toBeNull();
   });
 
+  it('persists a private creation prompt with optimistic revision protection', async () => {
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+
+    expect(await projects.getCreationDraft(guest, project.id)).toMatchObject({
+      projectId: project.id,
+      prompt: '',
+      prototypeToneId: 'auto',
+      referenceAssetIds: [],
+    });
+
+    const saved = await projects.updateCreationDraft(guest, project.id, {
+      expectedRevision: project.revision,
+      prompt: 'A sunset disco cat in a vintage print.',
+    });
+    expect(saved.project.revision).toBe(project.revision + 1);
+    expect(saved.draft.prompt).toBe('A sunset disco cat in a vintage print.');
+    expect((await projects.getCreationDraft(guest, project.id))?.prompt).toBe(
+      'A sunset disco cat in a vintage print.',
+    );
+    await expect(
+      projects.updateCreationDraft(guest, project.id, {
+        expectedRevision: project.revision,
+        prompt: 'A stale update.',
+      }),
+    ).rejects.toBeInstanceOf(ProjectConflictError);
+    expect(await projects.getCreationDraft(await identity.createGuestSession(), project.id)).toBeNull();
+  });
+
   it('migrates a guest project and all versions to an account while preserving ownership protection', async () => {
     const guest = await identity.createGuestSession();
     const project = await projects.create(guest, selection('white'));
