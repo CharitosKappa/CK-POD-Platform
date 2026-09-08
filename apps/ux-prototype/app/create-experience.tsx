@@ -19,6 +19,9 @@ const GARMENT_ASSETS = {
 } as const;
 // Kept off-screen while the Look-recommendation direction is being revisited.
 const SHOW_LOOK_RECOMMENDATION = false;
+// Kept off-screen while the after-sale referral direction is being revisited.
+const SHOW_REFERRAL_CARD = false;
+const OTP_AUTOFILL_PREVIEW_CODE = '482916';
 const STYLES = [
   { id: 'vintage-retro', name: 'Vintage & Retro', description: 'Bold & nostalgic', art: 'retro' },
   { id: 'illustrated', name: 'Illustrated', description: 'Hand-drawn feel', art: 'illustrated' },
@@ -660,7 +663,7 @@ export function CreateExperience() {
   const [cartOpen, setCartOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartAdded, setCartAdded] = useState(false);
-  const [cartIcon, setCartIcon] = useState<CartIconVariant>('bag');
+  const cartIcon: CartIconVariant = 'bag';
   const [promptError, setPromptError] = useState('');
   const [styleError, setStyleError] = useState('');
   const [style, setStyle] = useState<StyleId | null>(null);
@@ -685,9 +688,19 @@ export function CreateExperience() {
   const [sizeError, setSizeError] = useState('');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const [checkoutHelpOpen, setCheckoutHelpOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountPageOpen, setAccountPageOpen] = useState(false);
+  const [authStage, setAuthStage] = useState<'email' | 'code'>('email');
+  const [authEmail, setAuthEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const cartCloseRef = useRef<HTMLButtonElement | null>(null);
+  const authEmailRef = useRef<HTMLInputElement | null>(null);
+  const verificationCodeRef = useRef<HTMLInputElement | null>(null);
   const toneSectionRef = useRef<HTMLElement | null>(null);
   const productInfoRef = useRef<HTMLDivElement | null>(null);
   const checkoutHelpRef = useRef<HTMLDivElement | null>(null);
@@ -730,7 +743,15 @@ export function CreateExperience() {
     [reference],
   );
   useEffect(() => {
-    if (!drawerOpen && !cartOpen) return;
+    const search = new URLSearchParams(window.location.search);
+    if (search.get('menu') !== '1') return;
+    setDrawerOpen(true);
+    search.delete('menu');
+    const suffix = search.size ? `?${search.toString()}` : '';
+    window.history.replaceState(null, '', `${window.location.pathname}${suffix}`);
+  }, []);
+  useEffect(() => {
+    if (!drawerOpen && !cartOpen && !accountOpen && !accountPageOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     if (drawerOpen) closeRef.current?.focus();
@@ -738,7 +759,15 @@ export function CreateExperience() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [cartOpen, drawerOpen]);
+  }, [accountOpen, accountPageOpen, cartOpen, drawerOpen]);
+  useEffect(() => {
+    if (!accountOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (authStage === 'email') authEmailRef.current?.focus();
+      else verificationCodeRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [accountOpen, authStage]);
   useEffect(() => {
     if (!selectionSheet) return;
     const scrollY = window.scrollY;
@@ -811,6 +840,69 @@ export function CreateExperience() {
   const closeDrawer = () => {
     setDrawerOpen(false);
     window.setTimeout(() => triggerRef.current?.focus(), 0);
+  };
+  const startNewDesignFromMenu = () => {
+    setDrawerOpen(false);
+    resetDesign();
+  };
+  const openCartFromMenu = () => {
+    setDrawerOpen(false);
+    setCartOpen(true);
+  };
+  const openAccountFromMenu = () => {
+    setDrawerOpen(false);
+    if (signedInEmail) {
+      setAccountPageOpen(true);
+      return;
+    }
+    setAccountOpen(true);
+    setAuthStage('email');
+    setAuthError('');
+    setAuthNotice('');
+    setVerificationCode('');
+  };
+  const closeAccountPage = () => {
+    setAccountPageOpen(false);
+    setDrawerOpen(true);
+  };
+  const returnToMenuFromAccount = () => {
+    setAccountOpen(false);
+    setAuthError('');
+    setAuthNotice('');
+    setDrawerOpen(true);
+  };
+  const continueWithEmail = () => {
+    const normalizedEmail = authEmail.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+      setAuthError('Enter a valid email address to continue.');
+      return;
+    }
+    setAuthEmail(normalizedEmail);
+    setAuthError('');
+    setAuthNotice('');
+    setVerificationCode('');
+    setAuthStage('code');
+  };
+  const changeAuthEmail = () => {
+    setAuthStage('email');
+    setAuthError('');
+    setAuthNotice('');
+    setVerificationCode('');
+  };
+  const updateVerificationCode = (value: string) => {
+    setVerificationCode(value.replace(/\D/g, '').slice(0, 6));
+    if (authError) setAuthError('');
+  };
+  const verifyCode = () => {
+    if (verificationCode.length !== 6) {
+      setAuthError('Enter the 6-digit code to continue.');
+      return;
+    }
+    setSignedInEmail(authEmail);
+    setAccountOpen(false);
+    setAuthError('');
+    setAuthNotice('');
+    setDrawerOpen(true);
   };
   const closeCart = () => {
     setCartOpen(false);
@@ -1437,10 +1529,47 @@ export function CreateExperience() {
       </section>
       {drawerOpen ? (
         <NavigationDrawer
-          cartIcon={cartIcon}
-          chooseCartIcon={setCartIcon}
+          cartQuantity={cartQuantity}
           close={closeDrawer}
           closeRef={closeRef}
+          openAccount={openAccountFromMenu}
+          openCart={openCartFromMenu}
+          signedInEmail={signedInEmail}
+          signOut={() => setSignedInEmail(null)}
+          startNewDesign={startNewDesignFromMenu}
+        />
+      ) : null}
+      {accountOpen ? (
+        <PasswordlessSignInPage
+          authEmail={authEmail}
+          authEmailRef={authEmailRef}
+          authError={authError}
+          authNotice={authNotice}
+          close={returnToMenuFromAccount}
+          changeEmail={changeAuthEmail}
+          continueWithEmail={continueWithEmail}
+          onAuthEmailChange={(value) => {
+            setAuthEmail(value);
+            if (authError) setAuthError('');
+          }}
+          onVerificationCodeChange={updateVerificationCode}
+          resendCode={() => setAuthNotice('A new code is on its way.')}
+          suggestedCode={OTP_AUTOFILL_PREVIEW_CODE}
+          stage={authStage}
+          verificationCode={verificationCode}
+          verificationCodeRef={verificationCodeRef}
+          verifyCode={verifyCode}
+        />
+      ) : null}
+      {accountPageOpen ? (
+        <AccountPage
+          credits={credits}
+          close={closeAccountPage}
+          getMoreCredits={() => {
+            setAccountPageOpen(false);
+            setSelectionSheet('credits');
+          }}
+          signedInEmail={signedInEmail ?? 'alex.morgan@example.com'}
         />
       ) : null}
       {cartOpen ? (
@@ -1798,37 +1927,45 @@ function CheckoutStep({
                 : USD_FORMATTER.format(estimatedTotal / 100)}
             </strong>
           </div>
+          <p className="checkout-cart-summary-note">Includes product, shipping, and taxes.</p>
         </section>
-        <section className="referral-card" aria-labelledby="referral-heading">
-          <p className="referral-kicker">Pass it on</p>
-          <h2 id="referral-heading">Give 15% off. Get $10 credit.</h2>
-          <p>
-            Share your link with a friend. When they order their first shirt, your credit is on us.
-          </p>
-          {referralOpen ? (
-            <div className="referral-actions">
-              <label htmlFor="referral-link">Your personal link</label>
-              <input id="referral-link" readOnly value={referralLink} />
-              <div>
-                <button onClick={() => void copyReferralLink()} type="button">
-                  Copy link
-                </button>
-                <button onClick={() => void shareReferralLink()} type="button">
-                  Share
-                </button>
+        {SHOW_REFERRAL_CARD ? (
+          <section className="referral-card" aria-labelledby="referral-heading">
+            <p className="referral-kicker">Pass it on</p>
+            <h2 id="referral-heading">Give 15% off. Get $10 credit.</h2>
+            <p>
+              Share your link with a friend. When they order their first shirt, your credit is on
+              us.
+            </p>
+            {referralOpen ? (
+              <div className="referral-actions">
+                <label htmlFor="referral-link">Your personal link</label>
+                <input id="referral-link" readOnly value={referralLink} />
+                <div>
+                  <button onClick={() => void copyReferralLink()} type="button">
+                    Copy link
+                  </button>
+                  <button onClick={() => void shareReferralLink()} type="button">
+                    Share
+                  </button>
+                </div>
+                {referralMessage ? (
+                  <InlineFeedback className="referral-message" tone={referralMessage.tone}>
+                    {referralMessage.copy}
+                  </InlineFeedback>
+                ) : null}
               </div>
-              {referralMessage ? (
-                <InlineFeedback className="referral-message" tone={referralMessage.tone}>
-                  {referralMessage.copy}
-                </InlineFeedback>
-              ) : null}
-            </div>
-          ) : (
-            <button className="referral-reveal" onClick={() => setReferralOpen(true)} type="button">
-              Get your link <Icon>→</Icon>
-            </button>
-          )}
-        </section>
+            ) : (
+              <button
+                className="referral-reveal"
+                onClick={() => setReferralOpen(true)}
+                type="button"
+              >
+                Get your link <Icon>→</Icon>
+              </button>
+            )}
+          </section>
+        ) : null}
         <button className="create-button" onClick={createAnother} type="button">
           Create another design <Icon>→</Icon>
         </button>
@@ -3376,81 +3513,587 @@ function CartDrawer({
 }
 
 function NavigationDrawer({
-  cartIcon,
-  chooseCartIcon,
+  cartQuantity,
   close,
   closeRef,
+  openAccount,
+  openCart,
+  signedInEmail,
+  signOut,
+  startNewDesign,
 }: {
-  cartIcon: CartIconVariant;
-  chooseCartIcon: (variant: CartIconVariant) => void;
+  cartQuantity: number;
   close: () => void;
   closeRef: React.RefObject<HTMLButtonElement | null>;
+  openAccount: () => void;
+  openCart: () => void;
+  signedInEmail: string | null;
+  signOut: () => void;
+  startNewDesign: () => void;
 }) {
-  const groups = [
-    ['Create', 'Create a shirt', 'My designs', 'My orders'],
-    ['Learn', 'How it works', 'Our T-shirts', 'Print quality', 'Size guide'],
-    [
-      'Help',
-      'Shipping & delivery',
-      'Returns & reprints',
-      'Payments & security',
-      'FAQ',
-      'Contact',
-      'Track order',
-    ],
-  ];
   return (
-    <div
-      className="overlay"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
-      <nav aria-label="Main navigation" aria-modal="true" className="drawer" role="dialog">
-        <div className="drawer-header">
+    <div className="overlay fullscreen-menu-overlay" role="presentation">
+      <nav
+        aria-label="Main navigation"
+        aria-modal="true"
+        className="fullscreen-menu"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') close();
+        }}
+        role="dialog"
+      >
+        <div className="fullscreen-menu-header">
           <strong>LET IT BE</strong>
           <button aria-label="Close menu" onClick={close} ref={closeRef} type="button">
             ×
           </button>
         </div>
-        {groups.map(([heading, ...links]) => (
-          <section key={heading}>
-            <h2>{heading}</h2>
-            {links.map((link) => (
-              <button key={link} type="button">
-                {link}
+        <div className="fullscreen-menu-links">
+          <button className="fullscreen-menu-primary" onClick={startNewDesign} type="button">
+            <span>Make a shirt</span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <button type="button">My designs</button>
+          <button onClick={openCart} type="button">
+            <span>My cart</span>
+            {cartQuantity ? <b>{cartQuantity}</b> : null}
+          </button>
+          <button type="button">How it works</button>
+          <a href="/faq">Help &amp; support</a>
+        </div>
+        <footer className="fullscreen-menu-footer">
+          {signedInEmail ? (
+            <div className="fullscreen-menu-account">
+              <span>Signed in as {signedInEmail}</span>
+              <button onClick={openAccount} type="button">
+                My account
               </button>
-            ))}
-          </section>
-        ))}
-        <section className="prototype-cart-icons" aria-labelledby="prototype-cart-icons-heading">
-          <h2 id="prototype-cart-icons-heading">Prototype cart icon</h2>
-          <div role="group" aria-label="Choose cart icon">
-            {(
-              [
-                ['bag', 'Bag'],
-                ['basket', 'Basket'],
-                ['cart', 'Cart'],
-              ] as const
-            ).map(([variant, label]) => (
+              <button onClick={signOut} type="button">
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <button className="fullscreen-menu-sign-in" onClick={openAccount} type="button">
+              Sign in
+            </button>
+          )}
+          <div aria-label="Helpful links" className="fullscreen-menu-utility-links">
+            <a href="/shipping">Shipping</a>
+            <a href="/payments">Payments</a>
+            <a href="/returns">Returns</a>
+            <a href="/faq">FAQ</a>
+            <a href="/contact">Contact</a>
+            <a href="/terms">Terms</a>
+            <a href="/privacy">Privacy</a>
+          </div>
+        </footer>
+      </nav>
+    </div>
+  );
+}
+
+function PasswordlessSignInPage({
+  authEmail,
+  authEmailRef,
+  authError,
+  authNotice,
+  changeEmail,
+  close,
+  continueWithEmail,
+  onAuthEmailChange,
+  onVerificationCodeChange,
+  resendCode,
+  stage,
+  suggestedCode,
+  verificationCode,
+  verificationCodeRef,
+  verifyCode,
+}: {
+  authEmail: string;
+  authEmailRef: React.RefObject<HTMLInputElement | null>;
+  authError: string;
+  authNotice: string;
+  changeEmail: () => void;
+  close: () => void;
+  continueWithEmail: () => void;
+  onAuthEmailChange: (value: string) => void;
+  onVerificationCodeChange: (value: string) => void;
+  resendCode: () => void;
+  stage: 'email' | 'code';
+  suggestedCode: string;
+  verificationCode: string;
+  verificationCodeRef: React.RefObject<HTMLInputElement | null>;
+  verifyCode: () => void;
+}) {
+  const isEmailStage = stage === 'email';
+  const feedbackId = isEmailStage ? 'signin-email-feedback' : 'signin-code-feedback';
+  return (
+    <div className="overlay account-overlay" role="presentation">
+      <section
+        aria-label="Passwordless sign in"
+        aria-modal="true"
+        className="account-page"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') close();
+        }}
+        role="dialog"
+      >
+        <header className="account-page-header">
+          <button aria-label="Back to menu" className="account-back" onClick={close} type="button">
+            <Icon>←</Icon>
+          </button>
+          <strong>LET IT BE</strong>
+          <span aria-hidden="true" />
+        </header>
+        <div className="account-page-content">
+          <p className="account-kicker">Passwordless sign in</p>
+          {isEmailStage ? (
+            <form
+              className="account-form"
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault();
+                continueWithEmail();
+              }}
+            >
+              <h1>Good to see you.</h1>
+              <p>Enter your email and we’ll send a secure sign-in code.</p>
+              <label htmlFor="signin-email">Email address</label>
+              <input
+                aria-describedby={authError ? feedbackId : undefined}
+                aria-invalid={authError ? true : undefined}
+                autoComplete="email"
+                enterKeyHint="next"
+                id="signin-email"
+                inputMode="email"
+                onChange={(event) => onAuthEmailChange(event.target.value)}
+                placeholder="you@example.com"
+                ref={authEmailRef}
+                type="email"
+                value={authEmail}
+              />
+              {authError ? (
+                <InlineFeedback id={feedbackId} role="alert" tone="reminder">
+                  {authError}
+                </InlineFeedback>
+              ) : null}
+              <button className="create-button account-submit" type="submit">
+                Continue with email <Icon>→</Icon>
+              </button>
+              <p className="account-helper">
+                New here? We’ll create your passwordless account automatically after you verify your
+                email.
+              </p>
+              <p className="account-legal">
+                By continuing, you agree to our{' '}
+                <a href="/terms" rel="noreferrer" target="_blank">
+                  Terms &amp; Conditions
+                </a>{' '}
+                and{' '}
+                <a href="/privacy" rel="noreferrer" target="_blank">
+                  Privacy Policy
+                </a>
+                .
+              </p>
+            </form>
+          ) : (
+            <form
+              className="account-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                verifyCode();
+              }}
+            >
+              <h1>Enter your code.</h1>
+              <p>We sent a six-digit code to:</p>
+              <button className="account-email-change" onClick={changeEmail} type="button">
+                {authEmail} <span>· Change email</span>
+              </button>
+              <label htmlFor="signin-code">Verification code</label>
+              <div className="otp-field" data-filled={verificationCode.length}>
+                <div aria-hidden="true" className="otp-slots">
+                  {Array.from({ length: 6 }, (_, index) => (
+                    <span
+                      className={[
+                        verificationCode[index] ? 'is-filled' : '',
+                        index === verificationCode.length ? 'is-active' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      key={index}
+                    >
+                      {verificationCode[index] ?? ''}
+                    </span>
+                  ))}
+                </div>
+                <input
+                  aria-describedby={authError ? feedbackId : undefined}
+                  aria-invalid={authError ? true : undefined}
+                  aria-label="Verification code"
+                  autoComplete="one-time-code"
+                  enterKeyHint="done"
+                  id="signin-code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  name="one-time-code"
+                  onChange={(event) => onVerificationCodeChange(event.target.value)}
+                  pattern="[0-9]*"
+                  ref={verificationCodeRef}
+                  type="text"
+                  value={verificationCode}
+                />
+              </div>
               <button
-                aria-pressed={cartIcon === variant}
-                className={cartIcon === variant ? 'is-selected' : ''}
-                key={variant}
-                onClick={() => chooseCartIcon(variant)}
+                aria-label={`Autofill code ${suggestedCode}`}
+                className="otp-autofill-suggestion"
+                onClick={() => onVerificationCodeChange(suggestedCode)}
                 type="button"
               >
-                <CartGlyph variant={variant} />
-                <span>{label}</span>
+                <span aria-hidden="true">✦</span>
+                <span>One-time code</span>
+                <strong>{suggestedCode}</strong>
               </button>
-            ))}
-          </div>
-        </section>
-        <button className="sign-in" type="button">
-          Sign in
+              {authError ? (
+                <InlineFeedback id={feedbackId} role="alert" tone="reminder">
+                  {authError}
+                </InlineFeedback>
+              ) : null}
+              <button className="create-button account-submit" type="submit">
+                Sign in <Icon>→</Icon>
+              </button>
+              <p className="account-resend">
+                Didn’t receive it?{' '}
+                <button onClick={resendCode} type="button">
+                  Resend code
+                </button>
+              </p>
+              {authNotice ? <InlineFeedback tone="info">{authNotice}</InlineFeedback> : null}
+              <p className="account-helper">The code expires in 10 minutes. Keep it private.</p>
+            </form>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AccountPage({
+  credits,
+  close,
+  getMoreCredits,
+  signedInEmail,
+}: {
+  credits: number;
+  close: () => void;
+  getMoreCredits: () => void;
+  signedInEmail: string;
+}) {
+  const [view, setView] = useState<
+    | 'overview'
+    | 'personal'
+    | 'addresses'
+    | 'designs'
+    | 'design-detail'
+    | 'credits'
+    | 'orders'
+    | 'order-detail'
+  >('overview');
+  const [name, setName] = useState('Alex Morgan');
+  const [addresses, setAddresses] = useState(['245 Ocean Drive, Miami, FL 33139']);
+  const [draftAddress, setDraftAddress] = useState('');
+  const [designs, setDesigns] = useState(['Coastal dreams', 'More sun']);
+  const [selectedDesign, setSelectedDesign] = useState('Coastal dreams');
+  const heading =
+    view === 'overview'
+      ? 'My account'
+      : view === 'personal'
+        ? 'Personal details'
+        : view === 'addresses'
+          ? 'Addresses'
+          : view === 'designs' || view === 'design-detail'
+            ? 'Saved designs'
+            : view === 'credits'
+              ? 'Design credits'
+              : 'Orders';
+  const returnBack = () => (view === 'overview' ? close() : setView('overview'));
+  const openDesign = (design: string) => {
+    setSelectedDesign(design);
+    setView('design-detail');
+  };
+  return (
+    <div className="overlay account-overlay" role="presentation">
+      <section
+        aria-label={heading}
+        aria-modal="true"
+        className="account-page account-hub"
+        role="dialog"
+      >
+        <header className="account-page-header">
+          <button aria-label="Back" className="account-back" onClick={returnBack} type="button">
+            <Icon>←</Icon>
+          </button>
+          <strong>LET IT BE</strong>
+          <span aria-hidden="true" />
+        </header>
+        <div className="account-hub-content">
+          <p className="account-kicker">{heading}</p>
+          {view === 'overview' ? (
+            <>
+              <h1>Hi, {name.split(' ')[0]}.</h1>
+              <p className="account-email">{signedInEmail}</p>
+              <AccountSection
+                title="Personal & addresses"
+                action="Edit"
+                onAction={() => setView('personal')}
+              >
+                <button
+                  className="account-summary-card"
+                  onClick={() => setView('addresses')}
+                  type="button"
+                >
+                  <b>{name}</b>
+                  <span>
+                    {addresses[0] ?? 'Add a delivery address'} <em>›</em>
+                  </span>
+                </button>
+              </AccountSection>
+              <AccountSection
+                title="Saved designs"
+                action="View all"
+                onAction={() => setView('designs')}
+              >
+                <div className="account-design-grid">
+                  {designs.slice(0, 2).map((design) => (
+                    <button key={design} onClick={() => openDesign(design)} type="button">
+                      <span>{design}</span>
+                      <b>Ready to customise</b>
+                    </button>
+                  ))}
+                </div>
+              </AccountSection>
+              <AccountSection
+                title="Design credits"
+                action="View history"
+                onAction={() => setView('credits')}
+              >
+                <button
+                  className="account-credits-card"
+                  onClick={() => setView('credits')}
+                  type="button"
+                >
+                  <span>Available to create</span>
+                  <b>{credits} credits</b>
+                  <small>
+                    Generated “Coastal dreams” <strong>−1</strong>
+                  </small>
+                  <em>Sep 8, 2026 · 11:42 AM</em>
+                </button>
+              </AccountSection>
+              <AccountSection title="Orders" action="View all" onAction={() => setView('orders')}>
+                <button
+                  className="account-summary-card"
+                  onClick={() => setView('order-detail')}
+                  type="button"
+                >
+                  <b>#LIB-1042</b>
+                  <span>
+                    1 custom shirt · In production <em>›</em>
+                  </span>
+                </button>
+              </AccountSection>
+            </>
+          ) : null}
+          {view === 'personal' ? (
+            <form
+              className="account-editor"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setView('overview');
+              }}
+            >
+              <h1>Your details.</h1>
+              <label htmlFor="account-name">Full name</label>
+              <input
+                id="account-name"
+                onChange={(event) => setName(event.target.value)}
+                value={name}
+              />
+              <label htmlFor="account-email-edit">Email</label>
+              <input id="account-email-edit" readOnly value={signedInEmail} />
+              <button className="create-button" type="submit">
+                Save changes <Icon>→</Icon>
+              </button>
+              <button
+                className="account-text-action"
+                onClick={() => setView('addresses')}
+                type="button"
+              >
+                Manage addresses
+              </button>
+            </form>
+          ) : null}
+          {view === 'addresses' ? (
+            <div className="account-editor">
+              <h1>Your addresses.</h1>
+              {addresses.map((address, index) => (
+                <div className="account-address-card" key={address}>
+                  <b>{index === 0 ? 'Default delivery address' : 'Saved address'}</b>
+                  <span>
+                    {name}
+                    <br />
+                    {address}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setAddresses((items) => items.filter((item) => item !== address))
+                    }
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <label htmlFor="new-address">Add an address</label>
+              <input
+                id="new-address"
+                onChange={(event) => setDraftAddress(event.target.value)}
+                placeholder="Street, city, state, ZIP"
+                value={draftAddress}
+              />
+              <button
+                className="create-button"
+                onClick={() => {
+                  if (draftAddress.trim()) {
+                    setAddresses((items) => [...items, draftAddress.trim()]);
+                    setDraftAddress('');
+                  }
+                }}
+                type="button"
+              >
+                Add address <Icon>→</Icon>
+              </button>
+            </div>
+          ) : null}
+          {view === 'designs' ? (
+            <div className="account-list-view">
+              <h1>Your designs.</h1>
+              {designs.map((design) => (
+                <button
+                  className="account-list-row"
+                  key={design}
+                  onClick={() => openDesign(design)}
+                  type="button"
+                >
+                  <b>{design}</b>
+                  <span>Saved design · Ready to customise</span>
+                  <em>›</em>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {view === 'design-detail' ? (
+            <div className="account-list-view">
+              <h1>{selectedDesign}.</h1>
+              <div className="account-design-preview">{selectedDesign}</div>
+              <p>Saved design ready for another shirt.</p>
+              <button className="create-button" onClick={() => setView('overview')} type="button">
+                Use this design <Icon>→</Icon>
+              </button>
+              <button
+                className="account-text-action"
+                onClick={() => {
+                  setDesigns((items) => items.filter((item) => item !== selectedDesign));
+                  setView('designs');
+                }}
+                type="button"
+              >
+                Remove design
+              </button>
+            </div>
+          ) : null}
+          {view === 'credits' ? (
+            <div className="account-list-view">
+              <h1>{credits} design credits.</h1>
+              <button className="create-button" onClick={getMoreCredits} type="button">
+                Get more credits <Icon>→</Icon>
+              </button>
+              <h2>History</h2>
+              <AccountLog
+                label="Generated “Coastal dreams”"
+                timestamp="Sep 8, 2026 · 11:42 AM"
+                value="−1"
+              />
+              <AccountLog label="Credit pack added" timestamp="Sep 7, 2026 · 4:18 PM" value="+5" />
+            </div>
+          ) : null}
+          {view === 'orders' ? (
+            <div className="account-list-view">
+              <h1>Your orders.</h1>
+              <button
+                className="account-list-row"
+                onClick={() => setView('order-detail')}
+                type="button"
+              >
+                <b>#LIB-1042</b>
+                <span>Sep 8 · In production</span>
+                <em>›</em>
+              </button>
+            </div>
+          ) : null}
+          {view === 'order-detail' ? (
+            <div className="account-list-view">
+              <h1>Order #LIB-1042.</h1>
+              <AccountLog label="Classic T-Shirt · Black · M" value="$29.00" />
+              <AccountLog label="Shipping to" value="Miami, FL" />
+              <AccountLog label="Order total" value="$36.48" />
+              <p className="account-status">In production</p>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AccountSection({
+  title,
+  action,
+  onAction,
+  children,
+}: {
+  title: string;
+  action: string;
+  onAction: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="account-section">
+      <div>
+        <h2>{title}</h2>
+        <button onClick={onAction} type="button">
+          {action}
         </button>
-      </nav>
+      </div>
+      {children}
+    </section>
+  );
+}
+function AccountLog({
+  label,
+  timestamp,
+  value,
+}: {
+  label: string;
+  timestamp?: string;
+  value: string;
+}) {
+  return (
+    <div className="account-log">
+      <span>
+        {label}
+        {timestamp ? <small>{timestamp}</small> : null}
+      </span>
+      <b>{value}</b>
     </div>
   );
 }
