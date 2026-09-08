@@ -1,11 +1,12 @@
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
-import type { LifecycleOrchestrator } from './operations-analytics';
 
-const scrypt = promisify(scryptCallback);
 const SESSION_TTL_DAYS = 7;
+const EMAIL_CODE_TTL_MS = 10 * 60_000;
+const MAX_EMAIL_CODE_ATTEMPTS = 5;
+const DEVELOPMENT_EMAIL_CODE_PEPPER =
+  'local-development-email-code-pepper-change-before-production';
 
 export type SessionKind = 'GUEST' | 'AUTHENTICATED';
 
@@ -30,14 +31,71 @@ interface SessionRow {
 interface UserRow {
   id: string;
   email: string;
-  password_hash: string;
+  email_verified_at: Date;
+}
+
+interface EmailLoginChallengeRow {
+  id: string;
+  code_hash: string;
+  expires_at: Date;
+  attempt_count: number;
+}
+
+export interface EmailCodeDelivery {
+  deliver(input: { email: string; code: string; expiresAt: Date }): Promise<void>;
+}
+
+export interface IdentityServiceOptions {
+  codeDelivery?: EmailCodeDelivery;
+  codePepper?: string;
+}
+
+/** Local-only adapter. It intentionally writes the code only to the local server log. */
+export class LocalEmailCodeDelivery implements EmailCodeDelivery {
+  async deliver(input: { email: string; code: string; expiresAt: Date }): Promise<void> {
+    console.info(
+      JSON.stringify({
+        event: 'development.email_login_code_delivered',
+        email: input.email,
+        code: input.code,
+        expiresAt: input.expiresAt.toISOString(),
+      }),
+    );
+  }
+}
+
+/** Deterministic adapter for tests; it never sends email or opens a network connection. */
+export class InMemoryEmailCodeDelivery implements EmailCodeDelivery {
+  public readonly deliveries: Array<{ email: string; code: string; expiresAt: Date }> = [];
+
+  async deliver(input: { email: string; code: string; expiresAt: Date }): Promise<void> {
+    this.deliveries.push(input);
+  }
+
+  latestCodeFor(email: string): string | undefined {
+    const normalizedEmail = normalizeEmail(email);
+    return [...this.deliveries].reverse().find((delivery) => delivery.email === normalizedEmail)
+      ?.code;
+  }
+}
+
+export class InvalidEmailCodeError extends Error {
+  public constructor() {
+    super('The code is invalid or has expired.');
+  }
 }
 
 export class IdentityService {
+  private readonly codeDelivery: EmailCodeDelivery;
+  private readonly codePepper: string;
+
   public constructor(
     private readonly pool: SqlPool,
-    private readonly lifecycle?: LifecycleOrchestrator,
-  ) {}
+    options: IdentityServiceOptions = {},
+  ) {
+    this.codeDelivery = options.codeDelivery ?? new LocalEmailCodeDelivery();
+    this.codePepper = options.codePepper ?? DEVELOPMENT_EMAIL_CODE_PEPPER;
+  }
 
   async createGuestSession(): Promise<SessionWithToken> {
     const token = randomBytes(32).toString('base64url');
@@ -66,50 +124,137 @@ export class IdentityService {
       : null;
   }
 
+  async requestEmailCode(email: string): Promise<{ expiresAt: Date }> {
+    const normalizedEmail = normalizeEmail(email);
+    const code = generateEmailCode();
+    const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MS);
+    const emailHash = hashEmail(normalizedEmail);
+    const codeHash = hashEmailCode(normalizedEmail, code, this.codePepper);
+    const challenge = await withTransaction(this.pool, async (client) => {
+      await client.query(
+        `UPDATE app.email_login_challenges
+         SET consumed_at = now()
+         WHERE email_hash = $1 AND consumed_at IS NULL`,
+        [emailHash],
+      );
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO app.email_login_challenges (email_hash, code_hash, expires_at)
+         VALUES ($1, $2, $3)
+         RETURNING id`,
+        [emailHash, codeHash, expiresAt],
+      );
+      return requireRow(result.rows[0], 'Could not create an email sign-in challenge.');
+    });
+
+    try {
+      await this.codeDelivery.deliver({ email: normalizedEmail, code, expiresAt });
+    } catch (error) {
+      await this.pool.query(
+        'UPDATE app.email_login_challenges SET consumed_at = now() WHERE id = $1',
+        [challenge.id],
+      );
+      throw error;
+    }
+    return { expiresAt };
+  }
+
+  async verifyEmailCode(
+    session: ActiveSession,
+    email: string,
+    code: string,
+  ): Promise<SessionWithToken> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!/^\d{6}$/.test(code)) throw new InvalidEmailCodeError();
+    const emailHash = hashEmail(normalizedEmail);
+
+    return withTransaction(this.pool, async (client) => {
+      const challengeResult = await client.query<EmailLoginChallengeRow>(
+        `SELECT id, code_hash, expires_at, attempt_count
+         FROM app.email_login_challenges
+         WHERE email_hash = $1 AND consumed_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [emailHash],
+      );
+      const challenge = challengeResult.rows[0];
+      if (!challenge) throw new InvalidEmailCodeError();
+      if (
+        challenge.expires_at <= new Date() ||
+        challenge.attempt_count >= MAX_EMAIL_CODE_ATTEMPTS
+      ) {
+        await client.query(
+          'UPDATE app.email_login_challenges SET consumed_at = now() WHERE id = $1',
+          [challenge.id],
+        );
+        throw new InvalidEmailCodeError();
+      }
+
+      const expectedCodeHash = Buffer.from(challenge.code_hash, 'hex');
+      const suppliedCodeHash = Buffer.from(
+        hashEmailCode(normalizedEmail, code, this.codePepper),
+        'hex',
+      );
+      const validCode =
+        expectedCodeHash.length === suppliedCodeHash.length &&
+        timingSafeEqual(expectedCodeHash, suppliedCodeHash);
+      if (!validCode) {
+        await client.query(
+          `UPDATE app.email_login_challenges
+           SET attempt_count = attempt_count + 1,
+               consumed_at = CASE WHEN attempt_count + 1 >= $2 THEN now() ELSE NULL END
+           WHERE id = $1`,
+          [challenge.id, MAX_EMAIL_CODE_ATTEMPTS],
+        );
+        throw new InvalidEmailCodeError();
+      }
+
+      await client.query(
+        'UPDATE app.email_login_challenges SET consumed_at = now() WHERE id = $1',
+        [challenge.id],
+      );
+      const userResult = await client.query<UserRow>(
+        `INSERT INTO app.users (email, password_hash, email_verified_at)
+         VALUES ($1, NULL, now())
+         ON CONFLICT (email) DO UPDATE SET email_verified_at = COALESCE(app.users.email_verified_at, now()), updated_at = now()
+         RETURNING id, email, email_verified_at`,
+        [normalizedEmail],
+      );
+      const user = requireRow(userResult.rows[0], 'Could not establish the account.');
+      return this.attachUserAndMigrate(client, session, user.id);
+    });
+  }
+
+  /**
+   * Internal fixture/provisioning helper retained for domain integration tests.
+   * It is not exposed by a consumer API; real consumer accounts use verifyEmailCode.
+   */
   async register(
     session: ActiveSession,
     email: string,
-    password: string,
+    _legacyPassword?: string,
   ): Promise<SessionWithToken> {
-    validateCredentials(email, password);
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const active = await withTransaction(this.pool, async (client) => {
-      const passwordHash = await hashPassword(password);
+    void _legacyPassword;
+    const normalizedEmail = normalizeEmail(email);
+    return withTransaction(this.pool, async (client) => {
       const userResult = await client.query<UserRow>(
-        `INSERT INTO app.users (email, password_hash)
-         VALUES ($1, $2)
-         RETURNING id, email, password_hash`,
-        [normalizedEmail, passwordHash],
+        `INSERT INTO app.users (email, password_hash, email_verified_at)
+         VALUES ($1, NULL, now())
+         ON CONFLICT (email) DO UPDATE SET email_verified_at = COALESCE(app.users.email_verified_at, now()), updated_at = now()
+         RETURNING id, email, email_verified_at`,
+        [normalizedEmail],
       );
-      const user = requireRow(userResult.rows[0], 'Could not create account.');
+      const user = requireRow(userResult.rows[0], 'Could not provision an account.');
       return this.attachUserAndMigrate(client, session, user.id);
     });
-    if (this.lifecycle)
-      await this.lifecycle.trigger({
-        type: 'WELCOME',
-        classification: 'MARKETING',
-        recipientEmail: normalizedEmail,
-        idempotencyKey: `welcome:${active.userId}`,
-        payload: {},
-      });
-    return active;
   }
 
-  async login(session: ActiveSession, email: string, password: string): Promise<SessionWithToken> {
-    const normalizedEmail = email.trim().toLowerCase();
-    const userResult = await this.pool.query<UserRow>(
-      'SELECT id, email, password_hash FROM app.users WHERE email = $1',
-      [normalizedEmail],
+  async getAuthenticatedUser(userId: string): Promise<{ id: string; email: string } | null> {
+    const result = await this.pool.query<{ id: string; email: string }>(
+      'SELECT id, email FROM app.users WHERE id = $1 AND email_verified_at IS NOT NULL',
+      [userId],
     );
-    const user = userResult.rows[0];
-    if (!user || !(await verifyPassword(password, user.password_hash))) {
-      throw new Error('Invalid email or password.');
-    }
-
-    return withTransaction(this.pool, (client) =>
-      this.attachUserAndMigrate(client, session, user.id),
-    );
+    return result.rows[0] ?? null;
   }
 
   private async attachUserAndMigrate(
@@ -201,24 +346,24 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-async function hashPassword(password: string): Promise<string> {
-  const salt = randomBytes(16).toString('base64url');
-  const derived = (await scrypt(password, salt, 64)) as Buffer;
-  return `scrypt$${salt}$${derived.toString('base64url')}`;
-}
-
-async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [algorithm, salt, encoded] = stored.split('$');
-  if (algorithm !== 'scrypt' || !salt || !encoded) return false;
-  const derived = (await scrypt(password, salt, 64)) as Buffer;
-  const expected = Buffer.from(encoded, 'base64url');
-  return expected.length === derived.length && timingSafeEqual(expected, derived);
-}
-
-function validateCredentials(email: string, password: string): void {
-  if (!/^\S+@\S+\.\S+$/.test(email.trim()) || password.length < 12) {
-    throw new Error('Use a valid email and a password of at least 12 characters.');
+export function normalizeEmail(email: string): string {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+    throw new Error('Enter a valid email address.');
   }
+  return normalizedEmail;
+}
+
+export function generateEmailCode(): string {
+  return String(randomInt(100_000, 1_000_000));
+}
+
+export function hashEmail(email: string): string {
+  return createHash('sha256').update(email).digest('hex');
+}
+
+export function hashEmailCode(email: string, code: string, pepper: string): string {
+  return createHmac('sha256', pepper).update(`${email}:${code}`).digest('hex');
 }
 
 function requireRow<T>(row: T | undefined, message: string): T {

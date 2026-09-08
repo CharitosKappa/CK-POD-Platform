@@ -5,6 +5,7 @@ import {
   CommerceValidationError,
   GenerationAccessError,
   GenerationCreditError,
+  InvalidEmailCodeError,
   FulfillmentAccessError,
   OrderOperationsAccessError,
   OrderTransitionError,
@@ -50,6 +51,9 @@ export function handleRouteError(error: unknown): NextResponse {
       { status: 409 },
     );
   }
+  if (error instanceof InvalidEmailCodeError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
   if (error instanceof Error && error.message === 'Project not found.') {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
@@ -58,7 +62,7 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (
     error instanceof Error &&
-    /valid email|password|unavailable|Describe your idea|Reference assets|reference assets/.test(
+    /valid email|unavailable|Describe your idea|Reference assets|reference assets/.test(
       error.message,
     )
   ) {

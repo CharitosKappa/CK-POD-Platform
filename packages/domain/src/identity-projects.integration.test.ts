@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 
 import { ProductCatalogService } from './catalog.js';
-import { IdentityService } from './identity.js';
+import { IdentityService, InMemoryEmailCodeDelivery } from './identity.js';
 import { ProjectConflictError, ProjectService, emptyEditorDocument } from './projects.js';
 
 const integrationDatabaseUrl = process.env.DATABASE_URL;
@@ -15,6 +15,7 @@ integrationSuite('identity, projects, and catalog integration', () => {
   let pool: SqlPool;
   let close: () => Promise<void>;
   let identity: IdentityService;
+  let emailCodes: InMemoryEmailCodeDelivery;
   let projects: ProjectService;
   let catalog: ProductCatalogService;
 
@@ -22,7 +23,11 @@ integrationSuite('identity, projects, and catalog integration', () => {
     const database = createDatabaseClient(integrationDatabaseUrl as string);
     pool = database.pool;
     close = database.close;
-    identity = new IdentityService(pool);
+    emailCodes = new InMemoryEmailCodeDelivery();
+    identity = new IdentityService(pool, {
+      codeDelivery: emailCodes,
+      codePepper: 'test-email-code-pepper-that-is-long-enough-for-deterministic-tests',
+    });
     projects = new ProjectService(pool, { maxPersistentVersions: 20 });
     catalog = new ProductCatalogService(pool);
   });
@@ -48,8 +53,8 @@ integrationSuite('identity, projects, and catalog integration', () => {
       project.revision,
     );
     const email = uniqueEmail();
-    const password = 'correct-horse-battery-staple';
-    const account = await identity.register(guest, email, password);
+    await identity.requestEmailCode(email);
+    const account = await identity.verifyEmailCode(guest, email, emailCodes.latestCodeFor(email)!);
     const accessible = await projects.get(account, project.id);
 
     expect(account.kind).toBe('AUTHENTICATED');
@@ -61,10 +66,12 @@ integrationSuite('identity, projects, and catalog integration', () => {
       (await projects.getVersions(account, project.id)).map((version) => version.id),
     ).toContain(saved.version.id);
 
-    const resumedAccount = await identity.login(
-      await identity.createGuestSession(),
+    const returningGuest = await identity.createGuestSession();
+    await identity.requestEmailCode(email);
+    const resumedAccount = await identity.verifyEmailCode(
+      returningGuest,
       email,
-      password,
+      emailCodes.latestCodeFor(email)!,
     );
     expect((await projects.get(resumedAccount, project.id))?.id).toBe(project.id);
 
@@ -76,6 +83,24 @@ integrationSuite('identity, projects, and catalog integration', () => {
     expect(await projects.get(otherAccount, project.id)).toBeNull();
     await identity.invalidate(account);
     expect(await identity.getSession(account.token)).toBeNull();
+  });
+
+  it('consumes email codes once and creates an account only after successful verification', async () => {
+    const guest = await identity.createGuestSession();
+    const email = uniqueEmail();
+
+    await identity.requestEmailCode(email);
+    const code = emailCodes.latestCodeFor(email);
+    expect(code).toMatch(/^\d{6}$/);
+
+    await expect(identity.verifyEmailCode(guest, email, '000000')).rejects.toThrow(
+      'The code is invalid or has expired.',
+    );
+    const account = await identity.verifyEmailCode(guest, email, code!);
+    expect(account.kind).toBe('AUTHENTICATED');
+    await expect(
+      identity.verifyEmailCode(await identity.createGuestSession(), email, code!),
+    ).rejects.toThrow('The code is invalid or has expired.');
   });
 
   it('persists versions, skips unchanged autosave documents, and rejects stale writes', async () => {

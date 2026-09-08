@@ -18,6 +18,7 @@ import {
   LifecycleOrchestrator,
   KlaviyoLifecycleMessagingService,
   FakeLifecycleMessagingService,
+  LocalEmailCodeDelivery,
   ProjectService,
   StripePaymentService,
   StripeTaxService,
@@ -46,8 +47,15 @@ export function databasePool(): SqlPool {
 export function services() {
   const pool = databasePool();
   const lifecycle = lifecycleRuntime(pool);
+  const environment = serverEnvironment();
+  if (environment.AUTH_EMAIL_CODE_ADAPTER !== 'local') {
+    throw new Error('No transactional email-code delivery adapter is configured.');
+  }
   return {
-    identity: new IdentityService(pool, lifecycle),
+    identity: new IdentityService(pool, {
+      codeDelivery: new LocalEmailCodeDelivery(),
+      codePepper: environment.AUTH_EMAIL_CODE_PEPPER,
+    }),
     projects: new ProjectService(pool, {}, lifecycle),
     assets: new AssetService(pool),
     fulfillmentAdmin: new FulfillmentAdminService(pool),

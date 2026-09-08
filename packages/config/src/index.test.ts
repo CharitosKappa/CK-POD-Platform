@@ -16,6 +16,7 @@ describe('parseServerEnvironment', () => {
     expect(environment.QUEUE_DRIVER).toBe('memory');
     expect(environment.NODE_ENV).toBe('development');
     expect(environment.SESSION_COOKIE_SECURE).toBe(false);
+    expect(environment.AUTH_EMAIL_CODE_ADAPTER).toBe('local');
   });
 
   it('treats blank optional local provider and observability fields as absent', () => {
@@ -85,6 +86,7 @@ describe('parseServerEnvironment', () => {
         PRINTIFY_SHOP_ID: 'shop',
         PRINTIFY_WEBHOOK_SECRET: 'printify-webhook',
         SESSION_COOKIE_SECURE: 'true',
+        AUTH_EMAIL_CODE_ADAPTER: 'transactional',
       }).SESSION_COOKIE_SECURE,
     ).toBe(true);
   });
@@ -97,6 +99,7 @@ describe('parseServerEnvironment', () => {
     ['missing Printify credentials', { PRINTIFY_API_TOKEN: '' }, /PRINTIFY_API_TOKEN/],
     ['insecure cookies', { SESSION_COOKIE_SECURE: 'false' }, /SESSION_COOKIE_SECURE=true/],
     ['unsafe memory storage', { STORAGE_DRIVER: 'memory' }, /STORAGE_DRIVER=s3/],
+    ['local email code adapter', { AUTH_EMAIL_CODE_ADAPTER: 'local' }, /AUTH_EMAIL_CODE_ADAPTER/],
     ['missing durable queue', { QUEUE_DRIVER: 'memory' }, /QUEUE_DRIVER=redis/],
   ])('rejects production %s', (_name, override, expected) => {
     expect(() => parseServerEnvironment({ ...productionEnvironment(), ...override })).toThrow(
@@ -151,6 +154,7 @@ describe('parseServerEnvironment', () => {
     ['QUEUE_DRIVER', 'sqs'],
     ['LIFECYCLE_ADAPTER', 'unknown-lifecycle'],
     ['TAX_ADAPTER', 'unknown-tax'],
+    ['AUTH_EMAIL_CODE_ADAPTER', 'unknown-email'],
     ['APP_ENV', 'prod'],
     ['NODE_ENV', 'prod'],
   ])('rejects unknown allowlisted configuration %s=%s', (key, value) => {
@@ -207,5 +211,6 @@ function productionEnvironment() {
     PRINTIFY_SHOP_ID: 'shop',
     PRINTIFY_WEBHOOK_SECRET: 'printify-webhook',
     SESSION_COOKIE_SECURE: 'true',
+    AUTH_EMAIL_CODE_ADAPTER: 'transactional',
   };
 }

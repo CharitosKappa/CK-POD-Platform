@@ -8,6 +8,7 @@ const fulfillmentAdapterMode = z.enum(['fake', 'printify']);
 const paymentAdapterMode = z.enum(['fake', 'stripe']);
 const taxAdapterMode = z.enum(['fake', 'stripe']);
 const lifecycleAdapterMode = z.enum(['fake', 'klaviyo']);
+const emailCodeAdapterMode = z.enum(['local', 'transactional']);
 const positiveInteger = z.coerce.number().int().min(0);
 const strictBoolean = z.preprocess((value) => {
   if (value === 'true') return true;
@@ -89,6 +90,11 @@ export const serverEnvironmentSchema = z
     DEVELOPMENT_TAX_RATE_BASIS_POINTS: z.coerce.number().int().min(0).max(10_000).default(0),
     TAX_ADAPTER: taxAdapterMode.default('fake'),
     SESSION_COOKIE_SECURE: strictBoolean.default(false),
+    AUTH_EMAIL_CODE_ADAPTER: emailCodeAdapterMode.default('local'),
+    AUTH_EMAIL_CODE_PEPPER: z
+      .string()
+      .min(32)
+      .default('local-development-email-code-pepper-change-before-production'),
     LIFECYCLE_ADAPTER: lifecycleAdapterMode.default('fake'),
     LIFECYCLE_MARKETING_ENABLED: strictBoolean.default(true),
     KLAVIYO_API_KEY: optionalNonEmptyString,
@@ -130,6 +136,13 @@ export const serverEnvironmentSchema = z
       });
     }
     if (environment.APP_ENV === 'production') {
+      if (environment.AUTH_EMAIL_CODE_ADAPTER === 'local') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A non-local AUTH_EMAIL_CODE_ADAPTER is required in production.',
+          path: ['AUTH_EMAIL_CODE_ADAPTER'],
+        });
+      }
       if (environment.STORAGE_DRIVER !== 's3') {
         context.addIssue({
           code: z.ZodIssueCode.custom,
