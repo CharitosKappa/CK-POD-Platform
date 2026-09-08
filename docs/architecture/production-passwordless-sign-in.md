@@ -13,6 +13,12 @@ Connect the production store in `apps/web` to the existing passwordless identity
 - Verify a code through `POST /api/auth/verify-code`; successful verification preserves the existing guest-to-account migration implemented by the domain layer.
 - Use `autocomplete="one-time-code"` and inputs of at least 16px to support operating-system code suggestions and prevent iPhone input zoom.
 
+## Visual contract
+
+`apps/ux-prototype` is the visual source of truth for this production slice. The production `/sign-in` page must preserve the prototype's full-screen account-page composition: its back-and-logo header, content width, card, typography, spacing, email and code stages, six visible OTP slots, inline feedback, resend treatment, legal copy, and completion state.
+
+The production page supplies real API behavior beneath that unchanged presentation. The prototype-only one-time-code suggestion chip is explicitly excluded: it displays a fabricated value for demonstration and must not be rendered in production. Native operating-system suggestions remain available through the actual code input's `autocomplete="one-time-code"` attribute when delivery comes from a real email provider. During local development, the code remains terminal-log-only.
+
 ## Local development behavior
 
 `POST /api/auth/request-code` keeps its production-shaped generic success response. The development adapter writes the code only to the local web-server terminal. The browser receives neither the raw code nor a development inbox endpoint. This keeps the mobile test flow close to production while avoiding code exposure to devices on the local network.
