@@ -29,6 +29,7 @@ interface Address {
 interface Design {
   projectId: string;
   prompt: string;
+  generationId: string | null;
   previewAssetId: string | null;
   updatedAt: string;
 }
@@ -295,13 +296,13 @@ function AccountSection({ title, action, href, children }: { title: string; acti
 }
 
 function DesignCard({ design }: { design: Design }) {
-  return <button className="account-production-design-card" onClick={() => resumeDesign(design.projectId)} type="button">
+  return <button className="account-production-design-card" onClick={() => resumeDesign(design)} type="button">
     {design.previewAssetId ? <img alt="" src={previewUrl(design)} /> : null}<span>{design.prompt || 'Untitled design'}</span><b>Ready to customise</b>
   </button>;
 }
 
 function DesignRow({ design }: { design: Design }) {
-  return <button className="account-production-list-row" onClick={() => resumeDesign(design.projectId)} type="button"><b>{design.prompt || 'Untitled design'}</b><span>Saved {formatDate(design.updatedAt)}</span><em>›</em></button>;
+  return <button className="account-production-list-row" onClick={() => resumeDesign(design)} type="button"><b>{design.prompt || 'Untitled design'}</b><span>Saved {formatDate(design.updatedAt)}</span><em>›</em></button>;
 }
 
 function LedgerRow({ entry }: { entry: Credits['entries'][number] }) {
@@ -321,7 +322,18 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   return body;
 }
 
-function resumeDesign(projectId: string): void { window.localStorage.setItem('let-it-be-active-creation-project', projectId); window.location.assign('/'); }
+function resumeDesign(design: Design): void {
+  window.localStorage.setItem('let-it-be-active-creation-project', design.projectId);
+  if (design.generationId && design.previewAssetId) {
+    window.localStorage.setItem(
+      'let-it-be-active-creation-generation',
+      JSON.stringify({ projectId: design.projectId, generationId: design.generationId, previewAssetId: design.previewAssetId }),
+    );
+  } else {
+    window.localStorage.removeItem('let-it-be-active-creation-generation');
+  }
+  window.location.assign('/');
+}
 function previewUrl(design: Design): string { return `/api/projects/${encodeURIComponent(design.projectId)}/assets/${encodeURIComponent(design.previewAssetId!)}/preview`; }
 function addressLine(address: Pick<Address, 'line1' | 'line2' | 'city' | 'stateCode' | 'postalCode'>): string { return `${address.line1}${address.line2 ? `, ${address.line2}` : ''}, ${address.city}, ${address.stateCode} ${address.postalCode}`; }
 function formatDate(value: string): string { return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value)); }

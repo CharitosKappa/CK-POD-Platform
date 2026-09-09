@@ -666,13 +666,14 @@ export interface CreateExperienceProps {
   onCreateAnotherDesign?: () => void;
   initialCart?: CartItem[];
   initialCreation?: {
-    step: 'idea' | 'style' | 'product';
+    step: 'idea' | 'style' | 'product' | 'review';
     prompt: string;
     reference: ReferenceImageState | null;
     style: StyleId | null;
     tone: ToneId;
     color: ColorId;
     size: SizeId | null;
+    generation?: { id: string; previewUrl: string };
   };
   onContinueFromIdea?: (prompt: string) => Promise<void>;
   onContinueFromStyle?: (selection: { style: StyleId; tone: ToneId }) => Promise<void>;
@@ -757,7 +758,7 @@ export function CreateExperience({
 }: CreateExperienceProps) {
   const [step, setStep] = useState<
     'idea' | 'style' | 'product' | 'generate' | 'checkout' | 'editor'
-  >(initialCreation?.step ?? 'idea');
+  >(initialCreation?.step === 'review' ? 'generate' : initialCreation?.step ?? 'idea');
   const [prompt, setPrompt] = useState(initialCreation?.prompt ?? '');
   const [reference, setReference] = useState<ReferenceImageState | null>(
     initialCreation?.reference ?? null,
@@ -785,11 +786,15 @@ export function CreateExperience({
   const [productInfoOpen, setProductInfoOpen] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<
     'idle' | 'creating' | 'ready' | 'failed'
-  >('idle');
+  >(initialCreation?.step === 'review' ? 'ready' : 'idle');
   const [generationPhase, setGenerationPhase] = useState<GenerationLifecyclePhase>('queued');
   const [generationError, setGenerationError] = useState('');
-  const [generatedPreviewUrl, setGeneratedPreviewUrl] = useState<string | null>(null);
-  const [generatedGenerationId, setGeneratedGenerationId] = useState<string | null>(null);
+  const [generatedPreviewUrl, setGeneratedPreviewUrl] = useState<string | null>(
+    initialCreation?.generation?.previewUrl ?? null,
+  );
+  const [generatedGenerationId, setGeneratedGenerationId] = useState<string | null>(
+    initialCreation?.generation?.id ?? null,
+  );
   const [generationVersion, setGenerationVersion] = useState(0);
   const [generatedCreativeSignature, setGeneratedCreativeSignature] = useState<string | null>(null);
   const [appliedProduct, setAppliedProduct] = useState<{

@@ -28,6 +28,7 @@ export interface SavedAddress {
 export interface AccountDesign {
   projectId: string;
   prompt: string;
+  generationId: string | null;
   previewAssetId: string | null;
   updatedAt: Date;
 }
@@ -198,14 +199,15 @@ export class AccountService {
     const result = await this.pool.query<{
       project_id: string;
       prompt: string;
+      generation_id: string | null;
       preview_asset_id: string | null;
       updated_at: Date;
     }>(
-      `SELECT p.id AS project_id, d.prompt, preview.id AS preview_asset_id, p.updated_at
+      `SELECT p.id AS project_id, d.prompt, preview.generation_id, preview.preview_asset_id, p.updated_at
        FROM app.projects p
        JOIN app.project_creation_drafts d ON d.project_id = p.id
        LEFT JOIN LATERAL (
-         SELECT a.id FROM app.generations g
+         SELECT g.id AS generation_id, a.id AS preview_asset_id FROM app.generations g
          JOIN app.assets a ON a.generation_id = g.id
           AND a.asset_type = 'PREVIEW' AND a.status = 'ACTIVE'
          WHERE g.project_id = p.id AND g.status = 'SUCCEEDED'
@@ -218,6 +220,7 @@ export class AccountService {
     return result.rows.map((row) => ({
       projectId: row.project_id,
       prompt: row.prompt,
+      generationId: row.generation_id,
       previewAssetId: row.preview_asset_id,
       updatedAt: row.updated_at,
     }));

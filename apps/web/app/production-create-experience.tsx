@@ -95,6 +95,7 @@ interface PrepressSnapshot {
 }
 
 const activeCreationKey = 'let-it-be-active-creation-project';
+const activeGenerationKey = 'let-it-be-active-creation-generation';
 const activeCartKey = 'let-it-be-active-cart';
 
 class ApiRequestError extends Error {
@@ -162,6 +163,18 @@ export function ProductionCreateExperience() {
             color: (project.selectedColorCode ?? 'black') as ColorId,
             size: draft.selectedSize as SizeId | null,
           };
+          const resumedGeneration = readResumedGeneration(projectId);
+          if (resumedGeneration) {
+            creation = {
+              ...creation,
+              step: 'review',
+              generation: {
+                id: resumedGeneration.generationId,
+                previewUrl: referencePreviewUrl(project.id, resumedGeneration.previewAssetId),
+              },
+            };
+            window.localStorage.removeItem(activeGenerationKey);
+          }
           setInitialCreation(creation);
         }
         const cartId = window.localStorage.getItem(activeCartKey);
@@ -187,6 +200,7 @@ export function ProductionCreateExperience() {
         if (!active) return;
         if (error instanceof ApiRequestError && error.status === 404) {
           window.localStorage.removeItem(activeCreationKey);
+          window.localStorage.removeItem(activeGenerationKey);
           setResumeState('ready');
           return;
         }
@@ -437,6 +451,7 @@ export function ProductionCreateExperience() {
   function createAnotherDesign(): void {
     projectRef.current = null;
     window.localStorage.removeItem(activeCreationKey);
+    window.localStorage.removeItem(activeGenerationKey);
   }
 
   async function completeCheckout(
@@ -590,6 +605,30 @@ function emptyCreation(): NonNullable<CreateExperienceProps['initialCreation']> 
     color: 'black',
     size: null,
   };
+}
+
+function readResumedGeneration(projectId: string): { generationId: string; previewAssetId: string } | null {
+  const value = window.localStorage.getItem(activeGenerationKey);
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'projectId' in parsed &&
+      'generationId' in parsed &&
+      'previewAssetId' in parsed &&
+      parsed.projectId === projectId &&
+      typeof parsed.generationId === 'string' &&
+      typeof parsed.previewAssetId === 'string'
+    ) {
+      return { generationId: parsed.generationId, previewAssetId: parsed.previewAssetId };
+    }
+  } catch {
+    // A stale browser value should not interrupt a new design session.
+  }
+  window.localStorage.removeItem(activeGenerationKey);
+  return null;
 }
 
 function referencePreviewUrl(projectId: string, assetId: string): string {
