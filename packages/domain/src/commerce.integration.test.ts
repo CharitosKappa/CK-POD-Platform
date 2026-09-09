@@ -69,6 +69,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       size: 'M',
       quantity: 3,
       colorCode: 'black',
+      designPreviewAssetId: ready.previewAssetId,
     });
     expect(cart.proofApproved).toBe(false);
     await expect(

@@ -947,18 +947,22 @@ export class CommerceService {
 
   private async designPreviewAssetId(prepressRunId: string): Promise<string> {
     const result = await this.pool.query<{ id: string }>(
-      `SELECT preview.id
+      `SELECT COALESCE(generated_preview.id, prepress_preview.id) AS id
        FROM app.prepress_runs run
-       JOIN app.asset_lineage render_source
+       JOIN app.assets prepress_preview
+         ON prepress_preview.id = run.preview_asset_id
+        AND prepress_preview.asset_type = 'PREPRESS_PREVIEW'
+        AND prepress_preview.status = 'ACTIVE'
+       LEFT JOIN app.asset_lineage render_source
          ON render_source.derived_asset_id = run.production_master_asset_id
         AND render_source.relationship = 'PRODUCTION_RENDER_SOURCE'
-       JOIN app.assets source ON source.id = render_source.source_asset_id
-       JOIN app.assets preview
-         ON preview.generation_id = source.generation_id
-        AND preview.asset_type = 'PREVIEW'
-        AND preview.status = 'ACTIVE'
+       LEFT JOIN app.assets source ON source.id = render_source.source_asset_id
+       LEFT JOIN app.assets generated_preview
+         ON generated_preview.generation_id = source.generation_id
+        AND generated_preview.asset_type = 'PREVIEW'
+        AND generated_preview.status = 'ACTIVE'
        WHERE run.id = $1
-       ORDER BY preview.created_at DESC
+       ORDER BY generated_preview.created_at DESC NULLS LAST
        LIMIT 1`,
       [prepressRunId],
     );
