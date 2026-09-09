@@ -660,6 +660,10 @@ function releaseReferenceUrl(reference: ReferenceImageState | null): void {
 
 export interface CreateExperienceProps {
   creditBalance?: number;
+  /** Lets the production host route account access to its real passwordless flow. */
+  onAccountAccess?: () => void;
+  /** Clears the production draft when starting another independent design. */
+  onCreateAnotherDesign?: () => void;
   initialCart?: CartItem[];
   initialCreation?: {
     step: 'idea' | 'style' | 'product';
@@ -737,6 +741,8 @@ export function CreateExperience({
   creditBalance,
   initialCart,
   initialCreation,
+  onAccountAccess,
+  onCreateAnotherDesign,
   onAddToCart,
   onCartQuantityChange,
   onCartRemove,
@@ -959,6 +965,10 @@ export function CreateExperience({
     setCartOpen(true);
   };
   const openAccountFromMenu = () => {
+    if (onAccountAccess) {
+      onAccountAccess();
+      return;
+    }
     setDrawerOpen(false);
     if (signedInEmail) {
       setAccountPageOpen(true);
@@ -1018,6 +1028,7 @@ export function CreateExperience({
     window.setTimeout(() => triggerRef.current?.focus(), 0);
   };
   const resetDesign = () => {
+    onCreateAnotherDesign?.();
     releaseReferenceUrl(reference);
     setPrompt('');
     setReference(null);
@@ -1076,7 +1087,8 @@ export function CreateExperience({
     setCartSaving(true);
     void onAddToCart({ generationId: generatedGenerationId, size, transform: editorTransform })
       .then((saved) => {
-        setCart([
+        setCart((items) => [
+          ...items.filter((item) => item.id !== saved.id),
           {
             ...localItem,
             id: saved.id,
@@ -2035,7 +2047,11 @@ function GenerateStep({
         style={garmentPreviewStyle(selectedColor)}
       >
         <div className="result-garment-zoom">
-          <img alt={`${selectedColor.name} ${PRODUCT_PROFILE.name} preview`} src={garmentAsset} />
+          <img
+            alt={`${selectedColor.name} ${PRODUCT_PROFILE.name} preview`}
+            className="result-garment-image"
+            src={garmentAsset}
+          />
           <ArtworkPreview
             generatedPreviewUrl={generatedPreviewUrl}
             prompt={prompt}
@@ -2896,7 +2912,6 @@ function EditorStep({
   const [redoStack, setRedoStack] = useState<EditorTransform[]>([]);
   const [editorStatus, setEditorStatus] = useState('');
   const selectedColor = PRODUCT_COLORS.find((item) => item.id === color)!;
-  const selectedSize = SIZES.find((item) => item.id === size);
   const printArea = PRINT_AREAS_BY_SIZE[size ?? 'l'];
 
   const keepInsideDesignArea = (candidate: EditorTransform) =>
@@ -3412,21 +3427,13 @@ function EditorStep({
           <EditorGlyph name="reset" /> Reset placement
         </button>
       </section>
-      <section className="editor-product-summary" aria-label="Selected product">
-        <span>
-          {selectedColor.name} <b>·</b> {selectedSize?.name ?? 'Size'}
-        </span>
-        <strong>{shirtPrice(size)}</strong>
-      </section>
       <div className="step-actions editor-actions">
+        <button className="create-button is-back-action" onClick={onBack} type="button">
+          ← Back to preview
+        </button>
         <button className="create-button" onClick={onSave} type="button">
           Save &amp; continue <Icon>→</Icon>
         </button>
-        <div className="secondary-action-row is-single">
-          <button className="step-back" onClick={onBack} type="button">
-            ← Back to preview
-          </button>
-        </div>
       </div>
       <p aria-live="polite" className="sr-only">
         {editorStatus}
@@ -3896,7 +3903,10 @@ function CartDrawer({
                 const itemSize = SIZES.find((size) => size.id === item.size)!;
                 return (
                   <article className="cart-item" key={item.id}>
-                    <div className="cart-item-art" aria-label="Saved design preview">
+                    <div
+                      aria-label="Saved design preview"
+                      className="cart-item-art"
+                    >
                       <ArtworkPreview
                         generatedPreviewUrl={item.generatedPreviewUrl ?? null}
                         prompt={item.prompt}

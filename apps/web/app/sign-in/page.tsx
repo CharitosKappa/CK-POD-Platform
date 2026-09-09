@@ -14,6 +14,6 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
 }
 
 function safeReturnTo(value: string | undefined): string {
-  if (!value?.startsWith('/') || value.startsWith('//')) return '/describe';
+  if (!value?.startsWith('/') || value.startsWith('//')) return '/';
   return value;
 }

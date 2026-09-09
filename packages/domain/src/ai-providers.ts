@@ -47,14 +47,15 @@ export class DeterministicSvgProvider implements ImageGenerationService {
         `${this.id}:${request.enhancedPrompt}:${request.productContext.colorCode}:${request.styleSelection.styleFamilyId}:${request.styleSelection.presetId}:${request.styleSelection.presetVersion}`,
       )
       .digest('hex');
-    const primary = `#${digest.slice(0, 6)}`;
-    const secondary = `#${digest.slice(6, 12)}`;
-    const label = escapeXml(request.productContext.productDisplayName);
+    const palette = ['#e53935', '#ef6c00', '#f9a825', '#00897b', '#1e88e5', '#5e35b1', '#d81b60'];
+    const primary = palette[Number.parseInt(digest.slice(0, 2), 16) % palette.length]!;
+    const secondary = palette[Number.parseInt(digest.slice(2, 4), 16) % palette.length]!;
+    const label = escapeXml('LET IT BE');
     const shape =
       this.pattern === 'grid'
-        ? `<path d="M80 80h640M80 240h640M80 400h640M80 560h640M80 720h640M80 80v640M240 80v640M400 80v640M560 80v640M720 80v640" stroke="${secondary}" stroke-width="12" opacity=".55"/>`
-        : `<circle cx="400" cy="400" r="250" fill="none" stroke="${secondary}" stroke-width="70" opacity=".65"/><circle cx="400" cy="400" r="130" fill="none" stroke="#fff" stroke-width="18" opacity=".7"/>`;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800"><rect width="800" height="800" rx="48" fill="${primary}"/>${shape}<text x="400" y="720" text-anchor="middle" font-family="sans-serif" font-size="32" fill="#fff">${label}</text></svg>`;
+        ? `<path d="M150 230h500M150 350h500M150 470h500M230 150v500M350 150v500M470 150v500M590 150v500" stroke="${secondary}" stroke-width="28" opacity=".92"/>`
+        : `<circle cx="400" cy="400" r="188" fill="none" stroke="${secondary}" stroke-width="58"/><circle cx="400" cy="400" r="92" fill="none" stroke="#fff" stroke-width="18" opacity=".92"/>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800"><circle cx="400" cy="400" r="300" fill="${primary}"/>${shape}<text x="400" y="715" text-anchor="middle" font-family="sans-serif" font-size="38" font-weight="700" fill="#fff">${label}</text></svg>`;
 
     return {
       body: new TextEncoder().encode(svg),

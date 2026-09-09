@@ -40,6 +40,14 @@ describe('Printify fulfillment boundary', () => {
       adapter.quoteShipping({
         externalProviderId: 'fake-harbor',
         externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
+        externalVariantId: 'fake-essential-dtg-tee-black-2XL',
+        destinationCountry: 'US',
+      }),
+    ).resolves.toMatchObject({ shippingCents: 550, estimatedDeliveryMaxDays: 8 });
+    await expect(
+      adapter.quoteShipping({
+        externalProviderId: 'fake-harbor',
+        externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
         externalVariantId: 'fake-essential-dtg-tee-black-M',
         destinationCountry: 'GB',
       }),

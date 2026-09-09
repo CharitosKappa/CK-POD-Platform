@@ -28,6 +28,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import { createClientIdempotencyKey } from '../../lib/client-id';
+
 interface ProjectResponse {
   project: {
     id: string;
@@ -273,7 +275,7 @@ export function EditorClient() {
 
   function addText(): void {
     if (!document) return;
-    const id = `text-${crypto.randomUUID()}`;
+    const id = `text-${createClientIdempotencyKey()}`;
     commit({
       type: 'add-layer',
       layer: {
@@ -417,7 +419,7 @@ export function EditorClient() {
               More options
             </button>
           </div>
-          <div className="editor-actions">
+          <div className="backend-editor-actions">
             <button type="button" onClick={addText}>
               Add text
             </button>

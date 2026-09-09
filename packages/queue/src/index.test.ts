@@ -14,13 +14,13 @@ describe('InMemoryJobQueue', () => {
       queue: 'foundation',
       name: 'check',
       payload: { projectId: 'project-1' },
-      options: { idempotencyKey: 'foundation-check-project-1' },
+      options: { idempotencyKey: 'foundation:check:project-1' },
     });
     const duplicate = await queue.enqueue({
       queue: 'foundation',
       name: 'check',
       payload: { projectId: 'project-1' },
-      options: { idempotencyKey: 'foundation-check-project-1' },
+      options: { idempotencyKey: 'foundation:check:project-1' },
     });
 
     await queue.waitForIdle();

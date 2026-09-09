@@ -29,7 +29,7 @@ suite('Redis queue readiness', () => {
       ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
     });
     const queueName = `m10-recovery-${randomUUID()}`;
-    const idempotencyKey = `m10-job-${randomUUID()}`;
+    const idempotencyKey = `m10:job:${randomUUID()}`;
     let attempts = 0;
     let completedSideEffects = 0;
     const worker = await queue.process<{ operationId: string }>(queueName, async (job) => {

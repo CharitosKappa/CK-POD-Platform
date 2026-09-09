@@ -371,9 +371,41 @@ function fakeProviders() {
 }
 
 function colorsAndSizes() {
-  return ['black', 'white', 'navy'].flatMap((color) =>
-    ['S', 'M', 'L', 'XL'].map((size) => ({ color, size })),
-  );
+  return [
+    'white',
+    'ivory',
+    'pepper',
+    'black',
+    'mustard',
+    'yam',
+    'grey',
+    'moss',
+    'light-green',
+    'chambray',
+    'flo-blue',
+    'graphite',
+    'violet',
+    'orchid',
+    'blossom',
+    'crunchberry',
+    'berry',
+    'watermelon',
+    'bay',
+    'blue-jean',
+    'crimson',
+    'butter',
+    'chalky-mint',
+    'blue-spruce',
+    'brick',
+    'espresso',
+    'island-reef',
+    'lagoon-blue',
+    'sapphire',
+    'navy',
+    'neon-pink',
+    'chili',
+    'red',
+  ].flatMap((color) => ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL'].map((size) => ({ color, size })));
 }
 
 function responseError(status: number): FulfillmentIntegrationError {

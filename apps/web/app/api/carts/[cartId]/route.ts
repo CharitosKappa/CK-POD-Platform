@@ -25,8 +25,13 @@ export async function PATCH(
 ): Promise<NextResponse> {
   try {
     const { cartId } = await context.params;
-    const body = (await request.json()) as { quantity?: number; expectedRevision?: number };
+    const body = (await request.json()) as {
+      itemId?: string;
+      quantity?: number;
+      expectedRevision?: number;
+    };
     if (
+      !body.itemId ||
       body.quantity === undefined ||
       !Number.isInteger(body.quantity) ||
       body.expectedRevision === undefined ||
@@ -38,6 +43,7 @@ export async function PATCH(
       await commerceRuntime()
     ).updateCartQuantity(await requireSession(), cartId, {
       quantity: body.quantity,
+      itemId: body.itemId,
       expectedRevision: body.expectedRevision,
     });
     return NextResponse.json({ cart });
@@ -52,13 +58,16 @@ export async function DELETE(
 ): Promise<NextResponse> {
   try {
     const { cartId } = await context.params;
-    const body = (await request.json()) as { expectedRevision?: number };
-    if (body.expectedRevision === undefined || !Number.isInteger(body.expectedRevision)) {
+    const body = (await request.json()) as { itemId?: string; expectedRevision?: number };
+    if (!body.itemId || body.expectedRevision === undefined || !Number.isInteger(body.expectedRevision)) {
       return NextResponse.json({ error: 'A valid cart revision is required.' }, { status: 400 });
     }
     const cart = await (
       await commerceRuntime()
-    ).removeCartItem(await requireSession(), cartId, body.expectedRevision);
+    ).removeCartItem(await requireSession(), cartId, {
+      itemId: body.itemId,
+      expectedRevision: body.expectedRevision,
+    });
     return NextResponse.json({ cart });
   } catch (error) {
     return handleRouteError(error);

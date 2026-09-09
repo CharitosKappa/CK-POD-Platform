@@ -37,6 +37,7 @@ export type DomainModule = (typeof domainModules)[number];
 export * from './catalog';
 export * from './ai-contracts';
 export * from './analytics';
+export * from './account';
 export * from './assets';
 export * from './ai-providers';
 export * from './ai-runtime';

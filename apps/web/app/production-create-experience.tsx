@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { createClientIdempotencyKey } from '../lib/client-id';
+
 import {
   CreateExperience,
   type ColorId,
@@ -61,16 +63,20 @@ interface CartSnapshot {
   id: string;
   revision: number;
   status: string;
-  item: {
+  items: CartLineSnapshot[];
+  item: CartLineSnapshot | null;
+}
+
+interface CartLineSnapshot {
     id: string;
     projectId: string;
     previewAssetId: string;
+    designPreviewAssetId: string | null;
     colorCode: string;
     colorName: string;
     size: string;
     quantity: number;
     unitPriceCents: number;
-  } | null;
 }
 
 interface CheckoutSnapshot {
@@ -127,38 +133,37 @@ export function ProductionCreateExperience() {
         if (!active) return;
         setCreditBalance(creditAccount.balance);
 
+        let creation = emptyCreation();
         const projectId = window.localStorage.getItem(activeCreationKey);
-        if (!projectId) {
-          setResumeState('ready');
-          return;
+        if (projectId) {
+          const [projectResponse, draftResponse] = await Promise.all([
+            fetch(`/api/projects/${encodeURIComponent(projectId)}`, { cache: 'no-store' }),
+            fetch(`/api/projects/${encodeURIComponent(projectId)}/draft`, { cache: 'no-store' }),
+          ]);
+          const [{ project }, { draft }] = await Promise.all([
+            readJson<{ project: ProjectSnapshot }>(projectResponse),
+            readJson<{ draft: CreationDraftSnapshot }>(draftResponse),
+          ]);
+          if (!active) return;
+          projectRef.current = project;
+          const referenceId = draft.referenceAssetIds[0];
+          creation = {
+            step: draft.prototypeStyleId ? 'product' : draft.prompt ? 'style' : 'idea',
+            prompt: draft.prompt,
+            reference: referenceId
+              ? {
+                  assetId: referenceId,
+                  name: 'Reference image',
+                  url: referencePreviewUrl(project.id, referenceId),
+                }
+              : null,
+            style: draft.prototypeStyleId as StyleId | null,
+            tone: draft.prototypeToneId as ToneId,
+            color: (project.selectedColorCode ?? 'black') as ColorId,
+            size: draft.selectedSize as SizeId | null,
+          };
+          setInitialCreation(creation);
         }
-        const [projectResponse, draftResponse] = await Promise.all([
-          fetch(`/api/projects/${encodeURIComponent(projectId)}`, { cache: 'no-store' }),
-          fetch(`/api/projects/${encodeURIComponent(projectId)}/draft`, { cache: 'no-store' }),
-        ]);
-        const [{ project }, { draft }] = await Promise.all([
-          readJson<{ project: ProjectSnapshot }>(projectResponse),
-          readJson<{ draft: CreationDraftSnapshot }>(draftResponse),
-        ]);
-        if (!active) return;
-        projectRef.current = project;
-        const referenceId = draft.referenceAssetIds[0];
-        const creation: NonNullable<CreateExperienceProps['initialCreation']> = {
-          step: draft.prototypeStyleId ? 'product' : draft.prompt ? 'style' : 'idea',
-          prompt: draft.prompt,
-          reference: referenceId
-            ? {
-                assetId: referenceId,
-                name: 'Reference image',
-                url: referencePreviewUrl(project.id, referenceId),
-              }
-            : null,
-          style: draft.prototypeStyleId as StyleId | null,
-          tone: draft.prototypeToneId as ToneId,
-          color: (project.selectedColorCode ?? 'black') as ColorId,
-          size: draft.selectedSize as SizeId | null,
-        };
-        setInitialCreation(creation);
         const cartId = window.localStorage.getItem(activeCartKey);
         if (cartId) {
           try {
@@ -166,9 +171,9 @@ export function ProductionCreateExperience() {
               cache: 'no-store',
             });
             const { cart } = await readJson<{ cart: CartSnapshot }>(cartResponse);
-            if (cart.item && cart.status === 'READY') {
+            if (cart.items.length && cart.status === 'READY') {
               cartRef.current = cart;
-              setInitialCart([cartItemFromSnapshot(cart, creation)]);
+              setInitialCart(cart.items.map((item) => cartItemFromSnapshot(item, creation)));
             } else {
               window.localStorage.removeItem(activeCartKey);
             }
@@ -400,36 +405,38 @@ export function ProductionCreateExperience() {
     const { cart } = await readJson<{ cart: CartSnapshot }>(cartResponse);
     cartRef.current = cart;
     window.localStorage.setItem(activeCartKey, cart.id);
-    return cartPersistenceResult(cart);
+    return cartPersistenceResult(cart, project.id);
   }
 
-  async function updateCartQuantity(
-    _itemId: string,
-    quantity: number,
-  ): Promise<CartPersistenceResult> {
+  async function updateCartQuantity(itemId: string, quantity: number): Promise<CartPersistenceResult> {
     const cart = cartRef.current;
     if (!cart) throw new Error('Your cart could not be found.');
     const response = await fetch(`/api/carts/${encodeURIComponent(cart.id)}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: cart.revision, quantity }),
+      body: JSON.stringify({ itemId, expectedRevision: cart.revision, quantity }),
     });
     const saved = await readJson<{ cart: CartSnapshot }>(response);
     cartRef.current = saved.cart;
-    return cartPersistenceResult(saved.cart);
+    return cartPersistenceResult(saved.cart, undefined, itemId);
   }
 
-  async function removeCart(): Promise<void> {
+  async function removeCart(itemId: string): Promise<void> {
     const cart = cartRef.current;
     if (!cart) return;
     const response = await fetch(`/api/carts/${encodeURIComponent(cart.id)}`, {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: cart.revision }),
+      body: JSON.stringify({ itemId, expectedRevision: cart.revision }),
     });
-    await readJson<{ cart: CartSnapshot }>(response);
-    cartRef.current = null;
-    window.localStorage.removeItem(activeCartKey);
+    const { cart: saved } = await readJson<{ cart: CartSnapshot }>(response);
+    cartRef.current = saved.items.length ? saved : null;
+    if (!saved.items.length) window.localStorage.removeItem(activeCartKey);
+  }
+
+  function createAnotherDesign(): void {
+    projectRef.current = null;
+    window.localStorage.removeItem(activeCreationKey);
   }
 
   async function completeCheckout(
@@ -465,7 +472,7 @@ export function ProductionCreateExperience() {
     const checkoutResponse = await fetch(`/api/carts/${encodeURIComponent(cart.id)}/checkout`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ addressId, idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ addressId, idempotencyKey: createClientIdempotencyKey() }),
     });
     const { checkout } = await readJson<{ checkout: CheckoutSnapshot }>(checkoutResponse);
     const confirmationResponse = await fetch(
@@ -517,8 +524,12 @@ export function ProductionCreateExperience() {
       onContinueFromStyle={persistStyle}
       onGenerateDesign={generateDesign}
       onAddToCart={addToCart}
+      onAccountAccess={() => {
+        window.location.assign('/sign-in?returnTo=/account');
+      }}
       onCartQuantityChange={updateCartQuantity}
       onCartRemove={removeCart}
+      onCreateAnotherDesign={createAnotherDesign}
       onCheckoutCompleted={completeCheckout}
       {...(initialCart ? { initialCart } : {})}
       onReferenceRemoved={removeReference}
@@ -527,23 +538,30 @@ export function ProductionCreateExperience() {
   );
 }
 
-function cartPersistenceResult(cart: CartSnapshot): CartPersistenceResult {
-  const item = cart.item;
+function cartPersistenceResult(
+  cart: CartSnapshot,
+  projectId?: string,
+  itemId?: string,
+): CartPersistenceResult {
+  const item = itemId
+    ? cart.items.find((candidate) => candidate.id === itemId)
+    : [...cart.items].reverse().find((candidate) => candidate.projectId === projectId);
   if (!item) throw new Error('The cart item is unavailable.');
+  if (!item.designPreviewAssetId) {
+    throw new Error('The saved design preview is unavailable. Please add the design again.');
+  }
   return {
     id: item.id,
     quantity: item.quantity,
     unitPriceCents: item.unitPriceCents,
-    previewUrl: referencePreviewUrl(item.projectId, item.previewAssetId),
+    previewUrl: referencePreviewUrl(item.projectId, item.designPreviewAssetId),
   };
 }
 
 function cartItemFromSnapshot(
-  cart: CartSnapshot,
+  item: CartLineSnapshot,
   creation: NonNullable<CreateExperienceProps['initialCreation']>,
 ): CartItem {
-  const item = cart.item;
-  if (!item) throw new Error('The cart item is unavailable.');
   return {
     id: item.id,
     prompt: creation.prompt,
@@ -552,10 +570,24 @@ function cartItemFromSnapshot(
     color: item.colorCode as ColorId,
     size: item.size.toLowerCase() as SizeId,
     generationVersion: 0,
-    generatedPreviewUrl: referencePreviewUrl(item.projectId, item.previewAssetId),
+    ...(item.designPreviewAssetId
+      ? { generatedPreviewUrl: referencePreviewUrl(item.projectId, item.designPreviewAssetId) }
+      : {}),
     transform: { x: 50, y: 50, scale: 1, rotation: 0, flipped: false },
     quantity: item.quantity,
     unitPriceCents: item.unitPriceCents,
+  };
+}
+
+function emptyCreation(): NonNullable<CreateExperienceProps['initialCreation']> {
+  return {
+    step: 'idea',
+    prompt: '',
+    reference: null,
+    style: null,
+    tone: 'auto',
+    color: 'black',
+    size: null,
   };
 }
 

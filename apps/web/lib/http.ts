@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import {
   CommerceAccessError,
   CommerceValidationError,
+  AccountValidationError,
   GenerationAccessError,
   GenerationCreditError,
   InvalidEmailCodeError,
@@ -39,6 +40,9 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 404 });
   }
   if (error instanceof CommerceValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof AccountValidationError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof ProjectConflictError) {

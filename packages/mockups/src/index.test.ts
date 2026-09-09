@@ -17,8 +17,17 @@ describe('profiled Sharp garment mockup renderer', () => {
       colorCode: 'black',
     });
     const navy = developmentProfileFor({ productModelId: 'essential-dtg-tee', colorCode: 'navy' });
+    const orchid = developmentProfileFor({
+      productModelId: 'essential-dtg-tee',
+      colorCode: 'orchid',
+    });
     expect(black).toMatchObject({ qualification: 'DEVELOPMENT / UNQUALIFIED', colorCode: 'black' });
     expect(navy?.id).not.toBe(black?.id);
+    expect(orchid).toMatchObject({
+      colorCode: 'orchid',
+      blankAsset: 'development-essential-tee-white-v1.png',
+      tintColor: '#cbb3cc',
+    });
     expect(mockupPixelPlacement(1365, 2048, black!.placement)).toEqual({
       left: 377,
       top: 584,
@@ -39,8 +48,14 @@ describe('profiled Sharp garment mockup renderer', () => {
     const first = await renderer.render({ profile: black, artwork });
     const repeated = await renderer.render({ profile: black, artwork });
     const navyProof = await renderer.render({ profile: navy, artwork });
+    const orchid = developmentProfileFor({
+      productModelId: 'essential-dtg-tee',
+      colorCode: 'orchid',
+    })!;
+    const orchidProof = await renderer.render({ profile: orchid, artwork });
     expect(first.pixelHash).toBe(repeated.pixelHash);
     expect(first.png.byteLength).toBeGreaterThan(50_000);
     expect(first.pixelHash).not.toBe(navyProof.pixelHash);
+    expect(orchidProof.pixelHash).not.toBe(first.pixelHash);
   }, 10_000);
 });

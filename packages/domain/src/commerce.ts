@@ -18,6 +18,10 @@ export interface CommerceConfiguration {
   freeShippingThresholdCents: number;
   quantityDiscounts: Array<{ minimumQuantity: number; basisPoints: number }>;
   quoteTtlMinutes: number;
+  /** Restrict local fake checkout quotes to development-only provider records. */
+  developmentProviderOnly?: boolean;
+  /** Optional adapter-owned provider IDs eligible for quoting in a constrained environment. */
+  eligibleProviderExternalIds?: string[];
 }
 
 export const developmentCommerceConfiguration: CommerceConfiguration = {
@@ -50,13 +54,23 @@ export interface CartView {
   revision: number;
   status: string;
   currency: 'USD';
-  item: {
+  /** All immutable cart lines, in the order they were added. */
+  items: CartLineView[];
+  /** @deprecated Use `items`. Kept temporarily for API compatibility. */
+  item: CartLineView | null;
+  /** True only when every cart line has an approved, current proof. */
+  proofApproved: boolean;
+}
+
+export interface CartLineView {
     id: string;
     projectId: string;
     projectVersionId: string;
     prepressRunId: string;
     mockupId: string;
     previewAssetId: string;
+    /** Artwork-only preview, fixed at the point the line enters the cart. */
+    designPreviewAssetId: string | null;
     productModelId: string;
     productName: string;
     variantId: string;
@@ -65,8 +79,6 @@ export interface CartView {
     size: string;
     quantity: number;
     unitPriceCents: number;
-  } | null;
-  proofApproved: boolean;
 }
 
 export interface CheckoutView {
@@ -130,6 +142,7 @@ interface ItemRow {
   prepress_run_id: string;
   mockup_id: string;
   preview_asset_id: string;
+  design_preview_asset_id: string | null;
   product_model_id: string;
   product_name: string;
   product_variant_id: string;
@@ -194,29 +207,40 @@ export class CommerceService {
       input.size,
     );
     const mockup = await this.mockupFor(source);
-    const cartId = randomUUID();
+    const designPreviewAssetId = await this.designPreviewAssetId(source.prepress_run_id);
+    let cartId = '';
     await withTransaction(this.pool, async (client) => {
-      await client.query(
-        `INSERT INTO app.carts (id, owner_type, owner_session_id, owner_user_id, status, currency, expires_at)
-         VALUES ($1, $2, $3, $4, 'READY', 'USD', now() + interval '7 days')`,
-        [
-          cartId,
-          session.userId ? 'USER' : 'GUEST',
-          session.userId ? null : session.id,
-          session.userId,
-        ],
+      const activeCart = await client.query<{ id: string }>(
+        `SELECT c.id FROM app.carts c
+         WHERE c.status = 'READY' AND ${cartOwnershipClause(1, 2)}
+         ORDER BY c.updated_at DESC LIMIT 1 FOR UPDATE`,
+        [session.id, session.userId],
       );
+      cartId = activeCart.rows[0]?.id ?? randomUUID();
+      if (!activeCart.rows[0]) {
+        await client.query(
+          `INSERT INTO app.carts (id, owner_type, owner_session_id, owner_user_id, status, currency, expires_at)
+           VALUES ($1, $2, $3, $4, 'READY', 'USD', now() + interval '7 days')`,
+          [
+            cartId,
+            session.userId ? 'USER' : 'GUEST',
+            session.userId ? null : session.id,
+            session.userId,
+          ],
+        );
+      }
       await client.query(
         `INSERT INTO app.cart_items (
-           cart_id, project_id, project_version_id, prepress_run_id, mockup_id, product_model_id,
+           cart_id, project_id, project_version_id, prepress_run_id, mockup_id, design_preview_asset_id, product_model_id,
            product_variant_id, color_code, size, quantity, product_snapshot
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
         [
           cartId,
           source.project_id,
           source.project_version_id,
           source.prepress_run_id,
           mockup.id,
+          designPreviewAssetId,
           source.product_model_id,
           variant.id,
           variant.color_code,
@@ -246,6 +270,11 @@ export class CommerceService {
           presetVersion: source.style_preset_version,
         }),
       });
+      await client.query(
+        `UPDATE app.carts SET revision = revision + 1, updated_at = now(), expires_at = now() + interval '7 days'
+         WHERE id = $1`,
+        [cartId],
+      );
     });
     return this.getCart(session, cartId);
   }
@@ -254,96 +283,86 @@ export class CommerceService {
     const cart = await this.cart(session, cartId);
     const result = await this.pool.query<ItemRow>(
       `SELECT i.id, i.project_id, i.project_version_id, i.prepress_run_id, i.mockup_id, m.preview_asset_id,
+              i.design_preview_asset_id,
               i.product_model_id, p.display_name AS product_name, i.product_variant_id, i.color_code,
               v.color_name, i.size, i.quantity, v.price_cents AS unit_price_cents, i.product_snapshot
        FROM app.cart_items i JOIN app.mockups m ON m.id = i.mockup_id
        JOIN app.product_models p ON p.id = i.product_model_id
        JOIN app.product_variants v ON v.id = i.product_variant_id
-       WHERE i.cart_id = $1 ORDER BY i.created_at LIMIT 1`,
+       WHERE i.cart_id = $1 ORDER BY i.created_at`,
       [cartId],
     );
-    let item = result.rows[0];
-    if (item) {
+    const cartItems = [...result.rows];
+    for (let index = 0; index < cartItems.length; index += 1) {
+      const cartItem = requireRow(cartItems[index], 'Cart has no items.');
       const current = await this.pool.query<{
         active_version_id: string;
         selected_color_code: string;
       }>(
         `SELECT p.active_version_id, p.selected_color_code FROM app.projects p
          WHERE p.id = $1 AND ${projectOwnershipClause(2, 3)}`,
-        [item.project_id, session.id, session.userId],
+        [cartItem.project_id, session.id, session.userId],
       );
       const state = current.rows[0];
       if (
         !state ||
-        state.active_version_id !== item.project_version_id ||
-        state.selected_color_code !== item.color_code
+        state.active_version_id !== cartItem.project_version_id ||
+        state.selected_color_code !== cartItem.color_code
       ) {
         await this.pool.query(
-          `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(), invalidation_reason = 'The design or product selection changed.' WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
-          [item.id],
+          `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
+           invalidation_reason = 'The design or product selection changed.'
+           WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
+          [cartItem.id],
         );
-      } else {
-        const source = await this.projectForCart(session, item.project_id);
-        const currentMockup = await this.mockupFor(source);
-        if (currentMockup.id !== item.mockup_id) {
-          await this.pool.query(
-            `UPDATE app.cart_items SET mockup_id = $2, updated_at = now() WHERE id = $1`,
-            [item.id, currentMockup.id],
-          );
-          await this.pool.query(
-            `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
-             invalidation_reason = 'The product proof profile changed.'
-             WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
-            [item.id],
-          );
-          item = {
-            ...item,
-            mockup_id: currentMockup.id,
-            preview_asset_id: currentMockup.preview_asset_id,
-          };
-        }
+        continue;
+      }
+      const source = await this.projectForCart(session, cartItem.project_id);
+      const currentMockup = await this.mockupFor(source);
+      if (currentMockup.id !== cartItem.mockup_id) {
+        await this.pool.query(
+          `UPDATE app.cart_items SET mockup_id = $2, updated_at = now() WHERE id = $1`,
+          [cartItem.id, currentMockup.id],
+        );
+        await this.pool.query(
+          `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
+           invalidation_reason = 'The product proof profile changed.'
+           WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
+          [cartItem.id],
+        );
+        cartItems[index] = {
+          ...cartItem,
+          mockup_id: currentMockup.id,
+          preview_asset_id: currentMockup.preview_asset_id,
+        };
       }
     }
-    const approved = item
-      ? await this.pool.query<{ id: string }>(
-          `SELECT pa.id FROM app.proof_approvals pa
-           WHERE pa.cart_item_id = $1 AND pa.approval_state = 'APPROVED'
-             AND pa.project_version_id = $2 AND pa.prepress_run_id = $3 AND pa.mockup_id = $4
-           ORDER BY pa.approved_at DESC LIMIT 1`,
-          [item.id, item.project_version_id, item.prepress_run_id, item.mockup_id],
-        )
-      : { rows: [] as { id: string }[] };
+    const items = cartItems.map(toCartLineView);
+    const approved = await this.pool.query<{ cart_item_id: string }>(
+      `SELECT pa.cart_item_id FROM app.proof_approvals pa
+       JOIN app.cart_items i ON i.id = pa.cart_item_id
+       WHERE i.cart_id = $1 AND pa.approval_state = 'APPROVED'
+         AND pa.project_version_id = i.project_version_id
+         AND pa.prepress_run_id = i.prepress_run_id
+         AND pa.mockup_id = i.mockup_id`,
+      [cartId],
+    );
+    const approvedItemIds = new Set(approved.rows.map((row) => row.cart_item_id));
     return {
       id: cart.id,
       revision: cart.revision,
       status: cart.status,
       currency: cart.currency,
-      item: item
-        ? {
-            id: item.id,
-            projectId: item.project_id,
-            projectVersionId: item.project_version_id,
-            prepressRunId: item.prepress_run_id,
-            mockupId: item.mockup_id,
-            previewAssetId: item.preview_asset_id,
-            productModelId: item.product_model_id,
-            productName: item.product_name,
-            variantId: item.product_variant_id,
-            colorCode: item.color_code,
-            colorName: item.color_name,
-            size: item.size,
-            quantity: item.quantity,
-            unitPriceCents: item.unit_price_cents,
-          }
-        : null,
-      proofApproved: Boolean(approved.rows[0]),
+      items,
+      item: items[0] ?? null,
+      proofApproved: items.length > 0 && items.every((item) => approvedItemIds.has(item.id)),
     };
   }
 
   async updateCartQuantity(
     session: ActiveSession,
     cartId: string,
-    input: { quantity: number; expectedRevision: number },
+    input: { itemId?: string; quantity: number; expectedRevision: number },
   ): Promise<CartView> {
     validateQuantity(input.quantity);
     await withTransaction(this.pool, async (client) => {
@@ -361,10 +380,11 @@ export class CommerceService {
       if (cart.revision !== input.expectedRevision) {
         throw new CommerceValidationError('Your cart changed. Refresh it and try again.');
       }
+      const targetItemId = input.itemId ?? (await this.firstCartItemId(client, cartId));
       const updatedItem = await client.query<{ id: string }>(
-        `UPDATE app.cart_items SET quantity = $2, updated_at = now()
-         WHERE cart_id = $1 RETURNING id`,
-        [cartId, input.quantity],
+        `UPDATE app.cart_items SET quantity = $3, updated_at = now()
+         WHERE cart_id = $1 AND id = $2 RETURNING id`,
+        [cartId, targetItemId, input.quantity],
       );
       requireRow(updatedItem.rows[0], 'Cart has no items.');
       await client.query(
@@ -378,8 +398,9 @@ export class CommerceService {
   async removeCartItem(
     session: ActiveSession,
     cartId: string,
-    expectedRevision: number,
+    input: number | { itemId?: string; expectedRevision: number },
   ): Promise<CartView> {
+    const removal = typeof input === 'number' ? { expectedRevision: input } : input;
     await withTransaction(this.pool, async (client) => {
       const cartResult = await client.query<CartRow>(
         `SELECT c.id, c.revision, c.status, c.currency
@@ -392,35 +413,45 @@ export class CommerceService {
       if (cart.status !== 'READY') {
         throw new CommerceValidationError('This cart can no longer be changed.');
       }
-      if (cart.revision !== expectedRevision) {
+      if (cart.revision !== removal.expectedRevision) {
         throw new CommerceValidationError('Your cart changed. Refresh it and try again.');
       }
-      await client.query('DELETE FROM app.cart_items WHERE cart_id = $1', [cartId]);
+      const targetItemId = removal.itemId ?? (await this.firstCartItemId(client, cartId));
+      const deleted = await client.query<{ id: string }>(
+        'DELETE FROM app.cart_items WHERE cart_id = $1 AND id = $2 RETURNING id',
+        [cartId, targetItemId],
+      );
+      requireRow(deleted.rows[0], 'Cart item not found.');
+      const remaining = await client.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM app.cart_items WHERE cart_id = $1',
+        [cartId],
+      );
       await client.query(
         `UPDATE app.carts
-         SET status = 'ABANDONED', revision = revision + 1, updated_at = now()
+         SET status = $2, revision = revision + 1, updated_at = now()
          WHERE id = $1`,
-        [cartId],
+        [cartId, Number(remaining.rows[0]?.count ?? '0') === 0 ? 'ABANDONED' : 'READY'],
       );
     });
     return this.getCart(session, cartId);
   }
 
   async approveProof(session: ActiveSession, cartId: string): Promise<void> {
-    const item = await this.itemForCart(session, cartId);
-    await this.assertImmutableItemState(session, item);
-    await this.pool.query(
+    const items = await this.itemsForCart(session, cartId);
+    for (const item of items) {
+      await this.assertImmutableItemState(session, item);
+      await this.pool.query(
       `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
        invalidation_reason = 'Superseded by a new approval.'
        WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
-      [item.id],
-    );
-    await this.pool.query(
+        [item.id],
+      );
+      await this.pool.query(
       `INSERT INTO app.proof_approvals (
          cart_item_id, project_id, project_version_id, prepress_run_id, mockup_id, product_model_id, color_code,
          approval_state, state_hash, approved_by_session_id, approved_by_user_id
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED', $8, $9, $10)`,
-      [
+        [
         item.id,
         item.project_id,
         item.project_version_id,
@@ -431,22 +462,23 @@ export class CommerceService {
         proofStateHash(item),
         session.id,
         session.userId,
-      ],
-    );
+        ],
+      );
+      await this.pool.query(
+        `INSERT INTO app.analytics_events (event_name, project_id, dimensions) VALUES ('proof_approved', $1, $2::jsonb)`,
+        [
+          item.project_id,
+          JSON.stringify({
+            productId: item.product_model_id,
+            colorCode: item.color_code,
+            ...styleDimensions(item.product_snapshot),
+          }),
+        ],
+      );
+    }
     await this.pool.query(
       `UPDATE app.carts SET revision = revision + 1, updated_at = now() WHERE id = $1`,
       [cartId],
-    );
-    await this.pool.query(
-      `INSERT INTO app.analytics_events (event_name, project_id, dimensions) VALUES ('proof_approved', $1, $2::jsonb)`,
-      [
-        item.project_id,
-        JSON.stringify({
-          productId: item.product_model_id,
-          colorCode: item.color_code,
-          ...styleDimensions(item.product_snapshot),
-        }),
-      ],
     );
   }
 
@@ -498,12 +530,18 @@ export class CommerceService {
       [cartId, session.id, session.userId],
     );
     if (active.rows[0]) return this.getCheckout(session, active.rows[0].id);
-    const item = await this.itemForCart(session, cartId);
-    await this.assertImmutableItemState(session, item);
-    await this.assertProof(item);
+    const items = await this.itemsForCart(session, cartId);
+    const primaryItem = requireRow(items[0], 'Cart has no items.');
+    for (const item of items) {
+      await this.assertImmutableItemState(session, item);
+      await this.assertProof(item);
+    }
     const address = await this.address(session, cartId, addressId);
-    const quote = await this.provisionalQuote(item, address.country_code);
-    const pricing = this.price(item.unit_price_cents, item.quantity, quote.shippingCents);
+    // The local adapter quotes a provider/product combination. The current catalog uses
+    // one provider-ready product, so this remains a single shipment until live provider
+    // shipping rates are connected.
+    const quote = await this.provisionalQuote(primaryItem, address.country_code);
+    const pricing = this.priceCart(items, quote.shippingCents);
     const tax = await this.taxes.calculate({
       subtotalCents: pricing.subtotalCents,
       customerShippingCents: pricing.customerShippingCents,
@@ -570,12 +608,13 @@ export class CommerceService {
     await this.pool.query(
       `INSERT INTO app.analytics_events (event_name, project_id, dimensions) VALUES ('checkout_started', $1, $2::jsonb)`,
       [
-        item.project_id,
+        primaryItem.project_id,
         JSON.stringify({
-          productId: item.product_model_id,
-          colorCode: item.color_code,
-          size: item.size,
-          ...styleDimensions(item.product_snapshot),
+          productId: primaryItem.product_model_id,
+          colorCode: primaryItem.color_code,
+          size: primaryItem.size,
+          itemCount: items.length,
+          ...styleDimensions(primaryItem.product_snapshot),
         }),
       ],
     );
@@ -887,6 +926,26 @@ export class CommerceService {
     };
   }
 
+  private async designPreviewAssetId(prepressRunId: string): Promise<string> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT preview.id
+       FROM app.prepress_runs run
+       JOIN app.asset_lineage render_source
+         ON render_source.derived_asset_id = run.production_master_asset_id
+        AND render_source.relationship = 'PRODUCTION_RENDER_SOURCE'
+       JOIN app.assets source ON source.id = render_source.source_asset_id
+       JOIN app.assets preview
+         ON preview.generation_id = source.generation_id
+        AND preview.asset_type = 'PREVIEW'
+        AND preview.status = 'ACTIVE'
+       WHERE run.id = $1
+       ORDER BY preview.created_at DESC
+       LIMIT 1`,
+      [prepressRunId],
+    );
+    return requireRow(result.rows[0], 'The artwork preview is unavailable.').id;
+  }
+
   private async cart(session: ActiveSession, cartId: string): Promise<CartRow> {
     const result = await this.pool.query<CartRow>(
       `SELECT c.id, c.revision, c.status, c.currency FROM app.carts c WHERE c.id = $1 AND ${cartOwnershipClause(2, 3)}`,
@@ -895,16 +954,28 @@ export class CommerceService {
     return requireRow(result.rows[0], 'Cart not found.');
   }
 
-  private async itemForCart(session: ActiveSession, cartId: string): Promise<ItemRow> {
+  private async itemsForCart(session: ActiveSession, cartId: string): Promise<ItemRow[]> {
     await this.cart(session, cartId);
     const result = await this.pool.query<ItemRow>(
-      `SELECT i.id, i.project_id, i.project_version_id, i.prepress_run_id, i.mockup_id, m.preview_asset_id, i.product_model_id,
+      `SELECT i.id, i.project_id, i.project_version_id, i.prepress_run_id, i.mockup_id, m.preview_asset_id,
+              i.design_preview_asset_id,
+              i.product_model_id,
               pm.display_name AS product_name, i.product_variant_id, i.color_code, v.color_name, i.size, i.quantity, v.price_cents AS unit_price_cents, i.product_snapshot
-       FROM app.cart_items i JOIN app.mockups m ON m.id = i.mockup_id JOIN app.product_models pm ON pm.id = i.product_model_id JOIN app.product_variants v ON v.id = i.product_variant_id
-       WHERE i.cart_id = $1 ORDER BY i.created_at LIMIT 1`,
+       FROM app.cart_items i JOIN app.mockups m ON m.id = i.mockup_id
+       JOIN app.product_models pm ON pm.id = i.product_model_id JOIN app.product_variants v ON v.id = i.product_variant_id
+       WHERE i.cart_id = $1 ORDER BY i.created_at`,
       [cartId],
     );
-    return requireRow(result.rows[0], 'Cart has no items.');
+    if (!result.rows.length) throw new CommerceValidationError('Cart has no items.');
+    return result.rows;
+  }
+
+  private async firstCartItemId(client: SqlClient, cartId: string): Promise<string> {
+    const result = await client.query<{ id: string }>(
+      'SELECT id FROM app.cart_items WHERE cart_id = $1 ORDER BY created_at LIMIT 1',
+      [cartId],
+    );
+    return requireRow(result.rows[0], 'Cart has no items.').id;
   }
 
   private async assertImmutableItemState(session: ActiveSession, item: ItemRow): Promise<void> {
@@ -997,10 +1068,24 @@ export class CommerceService {
       external_variant_id: string;
     }>(
       `SELECT p.external_id AS external_provider_id, pm.external_blueprint_id, vm.external_variant_id
-       FROM app.fulfillment_product_mappings pm JOIN app.fulfillment_variant_mappings vm ON vm.product_variant_id = $1
+       FROM app.fulfillment_product_mappings pm
+       JOIN app.fulfillment_variant_mappings vm ON vm.product_variant_id = $1 AND vm.adapter_type = pm.adapter_type
        JOIN app.print_providers p ON p.adapter_type = pm.adapter_type AND p.status = 'ENABLED'
-       WHERE pm.product_model_id = $2 ORDER BY p.id LIMIT 1`,
-      [item.product_variant_id, item.product_model_id],
+       JOIN app.provider_qualifications pq ON pq.provider_id = p.id AND pq.product_model_id = pm.product_model_id
+       WHERE pm.product_model_id = $2
+         AND pq.active = true
+         AND pq.shipping_enabled = true
+         AND pq.destination_countries ? $3
+         AND ($4::boolean = false OR p.development_only = true)
+         AND ($5::text[] IS NULL OR p.external_id = ANY($5::text[]))
+       ORDER BY p.id LIMIT 1`,
+      [
+        item.product_variant_id,
+        item.product_model_id,
+        destinationCountry,
+        this.configuration.developmentProviderOnly ?? false,
+        this.configuration.eligibleProviderExternalIds ?? null,
+      ],
     );
     const mapping = requireRow(result.rows[0], 'A provisional shipping estimate is not available.');
     return this.fulfillment.quoteShipping({
@@ -1040,6 +1125,36 @@ export class CommerceService {
     };
   }
 
+  private priceCart(items: ItemRow[], providerShippingCents: number): PricingSnapshot {
+    const primaryItem = requireRow(items[0], 'Cart has no items.');
+    const quantity = items.reduce((total, item) => total + item.quantity, 0);
+    const gross = items.reduce(
+      (total, item) => total + item.unit_price_cents * item.quantity,
+      0,
+    );
+    const discountRule = [...this.configuration.quantityDiscounts]
+      .sort((a, b) => b.minimumQuantity - a.minimumQuantity)
+      .find((rule) => quantity >= rule.minimumQuantity);
+    const discountCents = discountRule
+      ? Math.round((gross * discountRule.basisPoints) / 10_000)
+      : 0;
+    const subtotalCents = gross - discountCents;
+    const freeShippingApplied = subtotalCents >= this.configuration.freeShippingThresholdCents;
+    const customerShippingCents = freeShippingApplied ? 0 : providerShippingCents;
+    return {
+      unitRetailCents: primaryItem.unit_price_cents,
+      quantity,
+      discountCents,
+      subtotalCents,
+      customerShippingCents,
+      freeShippingApplied,
+      taxCents: 0,
+      totalCents: subtotalCents + customerShippingCents,
+      currency,
+      pricingVersion: this.configuration.pricingVersion,
+    };
+  }
+
   private paymentProvider(): 'FAKE' | 'STRIPE' {
     return this.payments.constructor.name === 'StripePaymentService' ? 'STRIPE' : 'FAKE';
   }
@@ -1060,6 +1175,27 @@ function validateQuantity(quantity: number): void {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99)
     throw new CommerceValidationError('Choose a quantity from 1 to 99.');
 }
+
+function toCartLineView(item: ItemRow): CartLineView {
+  return {
+    id: item.id,
+    projectId: item.project_id,
+    projectVersionId: item.project_version_id,
+    prepressRunId: item.prepress_run_id,
+    mockupId: item.mockup_id,
+    previewAssetId: item.preview_asset_id,
+    designPreviewAssetId: item.design_preview_asset_id,
+    productModelId: item.product_model_id,
+    productName: item.product_name,
+    variantId: item.product_variant_id,
+    colorCode: item.color_code,
+    colorName: item.color_name,
+    size: item.size,
+    quantity: item.quantity,
+    unitPriceCents: item.unit_price_cents,
+  };
+}
+
 function validateAddress(address: ShippingAddressInput): void {
   if (
     !address.recipientName.trim() ||

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Queue, Worker, type ConnectionOptions } from 'bullmq';
 
@@ -111,7 +111,9 @@ export class BullMqJobQueue implements BackgroundJobQueue {
     const queue = this.getQueue(input.queue);
     const job = await queue.add(input.name, input.payload, {
       attempts: input.options?.attempts ?? 3,
-      ...(input.options?.idempotencyKey ? { jobId: input.options.idempotencyKey } : {}),
+      ...(input.options?.idempotencyKey
+        ? { jobId: durableJobId(input.options.idempotencyKey) }
+        : {}),
       removeOnComplete: true,
       removeOnFail: false,
     });
@@ -163,6 +165,10 @@ export class BullMqJobQueue implements BackgroundJobQueue {
     this.queues.set(name, queue);
     return queue;
   }
+}
+
+function durableJobId(idempotencyKey: string): string {
+  return `idempotency-${createHash('sha256').update(idempotencyKey).digest('hex')}`;
 }
 
 /** A short-lived Redis probe for readiness checks; it creates no job or queue state. */

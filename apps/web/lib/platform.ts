@@ -4,6 +4,7 @@ import { operationalCapability, type ServerEnvironment } from '@let-it-be/config
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
+  AccountService,
   CatalogSyncService,
   CommerceService,
   createFulfillmentAdapter,
@@ -23,6 +24,7 @@ import {
   StripePaymentService,
   StripeTaxService,
   type ActiveSession,
+  developmentCommerceConfiguration,
 } from '@let-it-be/domain';
 
 import { generationRuntime } from './generation-runtime';
@@ -59,6 +61,7 @@ export function services() {
     projects: new ProjectService(pool, {}, lifecycle),
     assets: new AssetService(pool),
     fulfillmentAdmin: new FulfillmentAdminService(pool),
+    account: new AccountService(pool),
     pool,
   };
 }
@@ -110,7 +113,13 @@ export async function commerceRuntime() {
       : new FakeTaxService(environment.DEVELOPMENT_TAX_RATE_BASIS_POINTS),
     fulfillment,
     new MockupService(pool, storage),
-    undefined,
+    {
+      ...developmentCommerceConfiguration,
+      developmentProviderOnly: environment.FULFILLMENT_ADAPTER === 'fake',
+      ...(environment.FULFILLMENT_ADAPTER === 'fake'
+        ? { eligibleProviderExternalIds: ['fake-harbor', 'fake-summit'] }
+        : {}),
+    },
     lifecycleRuntime(pool, environment),
   );
 }

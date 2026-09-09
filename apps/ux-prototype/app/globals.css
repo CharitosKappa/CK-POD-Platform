@@ -1428,6 +1428,7 @@ input:focus-visible {
   padding-bottom: 14px;
 }
 .cart-item-art {
+  position: relative;
   display: grid;
   width: 80px;
   height: 88px;
@@ -1439,12 +1440,16 @@ input:focus-visible {
 .cart-item-art .generated-artwork {
   position: static;
   width: 100%;
+  height: 100%;
   min-height: 100%;
   border: 0;
   border-radius: 0;
-  padding: 8px 5px;
+  padding: 0;
   box-shadow: none;
   transform: none;
+}
+.cart-item-art .generated-preview-image {
+  object-fit: cover;
 }
 .cart-item-art .generated-artwork > span {
   font-size: 16px;
@@ -2654,24 +2659,24 @@ input:focus-visible {
   text-align: center;
 }
 .result-garment-stage {
-  --result-garment-scale: 1.16;
-  --result-artwork-width: 104px;
-  --result-artwork-min-height: 92px;
+  --result-garment-scale: 1;
+  --result-artwork-width: 118px;
+  --result-artwork-min-height: 104px;
   width: calc(100% + 32px);
-  height: min(88vw, 342px);
-  min-height: 300px;
+  height: min(94vw, 372px);
+  min-height: 328px;
   margin-inline: -16px;
 }
 .result-garment-zoom {
   position: absolute;
-  top: 65%;
+  top: 50%;
   left: 50%;
-  width: min(100%, 390px);
+  width: min(100%, 360px);
   aspect-ratio: 1;
   transform: translate(-50%, -50%) scale(var(--result-garment-scale));
   transform-origin: center;
 }
-.result-garment-zoom > img {
+.result-garment-image {
   position: relative;
   z-index: 0;
   width: 100%;
@@ -4701,7 +4706,28 @@ input:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .editor-actions {
-  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 20px 0 0;
+  justify-self: center;
+}
+.editor-actions .create-button {
+  min-width: 0;
+  justify-content: center;
+  gap: 8px;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+.editor-actions .create-button.is-back-action {
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  box-shadow: none;
 }
 @keyframes scan-garment {
   from {

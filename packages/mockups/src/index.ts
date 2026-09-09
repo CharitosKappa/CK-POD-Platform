@@ -15,6 +15,8 @@ export interface GarmentMockupProfile {
   developmentOnly: boolean;
   qualification: 'DEVELOPMENT / UNQUALIFIED' | 'QUALIFIED';
   blankAsset: string;
+  /** A development-only tint applied over the transparent white garment fixture. */
+  tintColor?: string;
   placement: { x: number; y: number; width: number; height: number; rotation: number };
   mask: { cornerRadius: number; inset: number };
   integration: { artworkOpacity: number; shadingOpacity: number; highlightOpacity: number };
@@ -30,15 +32,33 @@ export interface RenderedMockup {
   rendererVersion: typeof mockupRendererVersion;
 }
 
+const developmentColorSwatches = [
+  { code: 'white', tint: '#ffffff' }, { code: 'ivory', tint: '#fff7e7' },
+  { code: 'pepper', tint: '#5f605b' }, { code: 'black', tint: '#000000' },
+  { code: 'mustard', tint: '#d0ae6e' }, { code: 'yam', tint: '#c9814f' },
+  { code: 'grey', tint: '#7a7f79' }, { code: 'moss', tint: '#747f66' },
+  { code: 'light-green', tint: '#738874' }, { code: 'chambray', tint: '#d9edf5' },
+  { code: 'flo-blue', tint: '#7682c2' }, { code: 'graphite', tint: '#373231' },
+  { code: 'violet', tint: '#a88fd7' }, { code: 'orchid', tint: '#cbb3cc' },
+  { code: 'blossom', tint: '#f8d1e2' }, { code: 'crunchberry', tint: '#eb7ca2' },
+  { code: 'berry', tint: '#775568' }, { code: 'watermelon', tint: '#da807b' },
+  { code: 'bay', tint: '#c3cfc1' }, { code: 'blue-jean', tint: '#788ca1' },
+  { code: 'crimson', tint: '#b66a74' }, { code: 'butter', tint: '#f5e1a4' },
+  { code: 'chalky-mint', tint: '#a7d9d4' }, { code: 'blue-spruce', tint: '#536758' },
+  { code: 'brick', tint: '#915c5c' }, { code: 'espresso', tint: '#846b5b' },
+  { code: 'island-reef', tint: '#a2d8c2' }, { code: 'lagoon-blue', tint: '#89e4ed' },
+  { code: 'sapphire', tint: '#03b2d3' }, { code: 'navy', tint: '#263040' },
+  { code: 'neon-pink', tint: '#f57caf' }, { code: 'chili', tint: '#853f44' },
+  { code: 'red', tint: '#a80d27' },
+] as const;
+
 /**
  * Development-only profile registry. Each product/color is intentionally explicit,
  * so qualified licensed photography can replace any one profile without changing
  * commerce or proof logic.
  */
 export const developmentGarmentMockupProfiles: readonly GarmentMockupProfile[] = [
-  profile('black'),
-  profile('white'),
-  profile('navy'),
+  ...developmentColorSwatches.map(({ code }) => profile(code)),
 ];
 
 export function developmentProfileFor(input: {
@@ -59,7 +79,10 @@ export class SharpGarmentMockupRenderer {
     profile: GarmentMockupProfile;
     artwork: Uint8Array;
   }): Promise<RenderedMockup> {
-    const blank = await readFile(assetPath(input.profile.blankAsset));
+    const blank = await colorizedBlank(
+      await readFile(assetPath(input.profile.blankAsset)),
+      input.profile,
+    );
     const source = sharp(blank, { animated: false });
     const metadata = await source.metadata();
     const width = metadata.width;
@@ -126,7 +149,9 @@ export class SharpGarmentMockupRenderer {
   }
 }
 
-function profile(colorCode: 'black' | 'white' | 'navy'): GarmentMockupProfile {
+function profile(colorCode: (typeof developmentColorSwatches)[number]['code']): GarmentMockupProfile {
+  const dedicatedAsset = ['black', 'white', 'navy'].includes(colorCode);
+  const tint = developmentColorSwatches.find((candidate) => candidate.code === colorCode)!.tint;
   return {
     id: `development-essential-tee-${colorCode}-front-v1`,
     version: 'v1',
@@ -134,7 +159,10 @@ function profile(colorCode: 'black' | 'white' | 'navy'): GarmentMockupProfile {
     colorCode,
     developmentOnly: true,
     qualification: 'DEVELOPMENT / UNQUALIFIED',
-    blankAsset: `development-essential-tee-${colorCode}-v1.png`,
+    blankAsset: dedicatedAsset
+      ? `development-essential-tee-${colorCode}-v1.png`
+      : 'development-essential-tee-white-v1.png',
+    ...(dedicatedAsset ? {} : { tintColor: tint }),
     placement: { x: 0.276, y: 0.285, width: 0.448, height: 0.34, rotation: 0 },
     mask: { cornerRadius: 0.035, inset: 0.015 },
     integration: { artworkOpacity: 0.97, shadingOpacity: 0.2, highlightOpacity: 0.06 },
@@ -143,6 +171,30 @@ function profile(colorCode: 'black' | 'white' | 'navy'): GarmentMockupProfile {
       note: 'Front-facing flat-lay development photography does not require a perspective warp.',
     },
   };
+}
+
+async function colorizedBlank(blank: Buffer, profile: GarmentMockupProfile): Promise<Buffer> {
+  if (!profile.tintColor) return blank;
+  const source = sharp(blank, { animated: false }).ensureAlpha();
+  const metadata = await source.metadata();
+  if (!metadata.width || !metadata.height)
+    throw new Error('Garment mockup asset dimensions are unavailable.');
+  const alpha = await source.clone().extractChannel('alpha').raw().toBuffer();
+  const tint = await sharp({
+    create: {
+      width: metadata.width,
+      height: metadata.height,
+      channels: 3,
+      background: profile.tintColor,
+    },
+  })
+    .joinChannel(alpha, { raw: { width: metadata.width, height: metadata.height, channels: 1 } })
+    .png()
+    .toBuffer();
+  return sharp(blank, { animated: false })
+    .composite([{ input: tint, blend: 'multiply' }])
+    .png()
+    .toBuffer();
 }
 
 function assetPath(asset: string): string {

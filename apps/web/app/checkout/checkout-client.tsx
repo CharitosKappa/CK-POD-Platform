@@ -3,6 +3,8 @@
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { createClientIdempotencyKey } from '../../lib/client-id';
+
 interface Cart {
   id: string;
   proofApproved: boolean;
@@ -130,7 +132,7 @@ export function CheckoutClient() {
     try {
       const result = await request<{ checkout: Checkout }>(`/api/carts/${cart.id}/checkout`, {
         method: 'POST',
-        body: JSON.stringify({ addressId, idempotencyKey: crypto.randomUUID() }),
+        body: JSON.stringify({ addressId, idempotencyKey: createClientIdempotencyKey() }),
       });
       setCheckout(result.checkout);
     } catch (reason) {

@@ -146,8 +146,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       quantity: 1,
     });
     expect(created.item?.unitPriceCents).toBeGreaterThan(0);
+    if (!created.item) throw new Error('Expected the cart item to be created.');
+    const cartItemId = created.item.id;
 
     const updated = await commerce.updateCartQuantity(ready.guest, created.id, {
+      itemId: cartItemId,
       expectedRevision: created.revision,
       quantity: 4,
     });
@@ -155,12 +158,16 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(updated.item?.quantity).toBe(4);
     await expect(
       commerce.updateCartQuantity(ready.guest, created.id, {
+        itemId: cartItemId,
         expectedRevision: created.revision,
         quantity: 2,
       }),
     ).rejects.toBeInstanceOf(CommerceValidationError);
 
-    const removed = await commerce.removeCartItem(ready.guest, created.id, updated.revision);
+    const removed = await commerce.removeCartItem(ready.guest, created.id, {
+      itemId: cartItemId,
+      expectedRevision: updated.revision,
+    });
     expect(removed).toMatchObject({ status: 'ABANDONED', item: null });
   });
 
@@ -176,7 +183,9 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       size: 'L',
       quantity: 1,
     });
-    expect(first.item?.mockupId).toBe(repeated.item?.mockupId);
+    expect(repeated.id).toBe(first.id);
+    expect(repeated.items).toHaveLength(2);
+    expect(first.item?.mockupId).toBe(repeated.items[1]?.mockupId);
     const profile = await pool.query<{ color_code: string; garment_profile_id: string }>(
       `SELECT color_code, garment_profile_id FROM app.mockups WHERE id = $1`,
       [first.item?.mockupId],
