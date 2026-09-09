@@ -3251,6 +3251,27 @@ input:focus-visible {
 .checkout-sms-consent.is-disabled {
   opacity: 0.62;
 }
+.checkout-billing-address-toggle {
+  margin: 2px 0 1px;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.checkout-billing-address {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  margin: 4px 0 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  padding: 13px;
+}
+.checkout-billing-address legend {
+  padding: 0 5px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
 .checkout-terms-group {
   display: grid;
   gap: 7px;

@@ -153,8 +153,8 @@ async function protectedFinancialFixture(pool: SqlPool, userId: string, email: s
   );
   const checkout = await pool.query<{ id: string }>(
     `INSERT INTO app.checkout_attempts (cart_id, shipping_address_id, status, idempotency_key, amount_cents,
-      pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at)
-     VALUES ($1, $2, 'PAID', $3, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'FAKE', now() + interval '1 hour')
+      billing_address_snapshot, pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at)
+     VALUES ($1, $2, 'PAID', $3, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'FAKE', now() + interval '1 hour')
      RETURNING id`,
     [cart.rows[0]?.id, address.rows[0]?.id, `privacy-checkout-${randomBytes(6).toString('hex')}`],
   );
@@ -165,8 +165,8 @@ async function protectedFinancialFixture(pool: SqlPool, userId: string, email: s
   );
   const order = await pool.query<{ id: string }>(
     `INSERT INTO app.orders (order_number, cart_id, checkout_attempt_id, owner_type, owner_user_id, customer_email,
-      shipping_address_snapshot, pricing_snapshot, financial_snapshot, status)
-     VALUES ($1, $2, $3, 'USER', $4, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'PAID') RETURNING id`,
+      shipping_address_snapshot, billing_address_snapshot, pricing_snapshot, financial_snapshot, status)
+     VALUES ($1, $2, $3, 'USER', $4, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'PAID') RETURNING id`,
     [
       `LIB-PRIVACY-${randomBytes(5).toString('hex')}`,
       cart.rows[0]?.id,

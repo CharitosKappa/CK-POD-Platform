@@ -3,12 +3,24 @@ export type PaymentAdapter = 'FAKE' | 'STRIPE';
 
 export type PaymentOutcome = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
+/** A validated postal identity used for billing and payment-provider AVS boundaries. */
+export interface BillingAddress {
+  recipientName: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  stateCode: string;
+  postalCode: string;
+  countryCode: string;
+}
+
 export interface PaymentIntentRequest {
   checkoutAttemptId: string;
   amountCents: number;
   currency: 'USD';
   idempotencyKey: string;
   customerEmail: string;
+  billingAddress: BillingAddress;
 }
 
 export interface PaymentIntentResult {

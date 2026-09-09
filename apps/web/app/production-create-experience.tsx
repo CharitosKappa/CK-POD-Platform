@@ -488,7 +488,22 @@ export function ProductionCreateExperience() {
     const checkoutResponse = await fetch(`/api/carts/${encodeURIComponent(cart.id)}/checkout`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ addressId, idempotencyKey: createClientIdempotencyKey() }),
+      body: JSON.stringify({
+        shippingAddressId: addressId,
+        billingAddress: input.billingMatchesShipping
+          ? null
+          : {
+              recipientName:
+                `${input.billing.firstName.trim()} ${input.billing.lastName.trim()}`.trim(),
+              line1: input.billing.address,
+              line2: input.billing.apartment,
+              city: input.billing.city,
+              stateCode: input.billing.state,
+              postalCode: input.billing.zip,
+              countryCode: 'US',
+            },
+        idempotencyKey: createClientIdempotencyKey(),
+      }),
     });
     const { checkout } = await readJson<{ checkout: CheckoutSnapshot }>(checkoutResponse);
     const confirmationResponse = await fetch(

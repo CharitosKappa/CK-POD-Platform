@@ -4,7 +4,12 @@ import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
 import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
-import type { PaymentService, TaxService, VerifiedPaymentEvent } from './commerce-contracts';
+import type {
+  BillingAddress,
+  PaymentService,
+  TaxService,
+  VerifiedPaymentEvent,
+} from './commerce-contracts';
 import type { MockupService } from './mockups';
 import type { LifecycleOrchestrator } from './operations-analytics';
 
@@ -48,6 +53,23 @@ export interface ShippingAddressInput {
   postalCode: string;
   countryCode: string;
   saveToAccount?: boolean;
+}
+
+export interface BillingAddressInput {
+  recipientName: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  stateCode: string;
+  postalCode: string;
+  countryCode: string;
+}
+
+export interface CheckoutStartInput {
+  shippingAddressId: string;
+  /** `null` explicitly means that billing is identical to the delivery address. */
+  billingAddress: BillingAddressInput | null;
+  idempotencyKey: string;
 }
 
 export interface CartView {
@@ -185,6 +207,17 @@ interface MockupRow {
   id: string;
   preview_asset_id: string;
   state_hash: string;
+}
+
+interface ShippingAddressRow {
+  recipient_name: string;
+  email: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state_code: string;
+  postal_code: string;
+  country_code: string;
 }
 
 export class CommerceService {
@@ -514,15 +547,14 @@ export class CommerceService {
   async startCheckout(
     session: ActiveSession,
     cartId: string,
-    addressId: string,
-    idempotencyKey: string,
+    input: CheckoutStartInput,
   ): Promise<CheckoutView> {
-    if (!idempotencyKey || idempotencyKey.length < 12)
+    if (!input.idempotencyKey || input.idempotencyKey.length < 12)
       throw new CommerceValidationError('A checkout idempotency key is required.');
     const existing = await this.pool.query<{ id: string }>(
       `SELECT ca.id FROM app.checkout_attempts ca JOIN app.carts c ON c.id = ca.cart_id
        WHERE ca.idempotency_key = $1 AND ${cartOwnershipClause(2, 3)}`,
-      [idempotencyKey, session.id, session.userId],
+      [input.idempotencyKey, session.id, session.userId],
     );
     if (existing.rows[0]) return this.getCheckout(session, existing.rows[0].id);
     const active = await this.pool.query<{ id: string }>(
@@ -538,19 +570,22 @@ export class CommerceService {
       await this.assertImmutableItemState(session, item);
       await this.assertProof(item);
     }
-    const address = await this.address(session, cartId, addressId);
+    const shippingAddress = await this.shippingAddress(session, cartId, input.shippingAddressId);
+    const billingAddress = input.billingAddress
+      ? normalizedBillingAddress(input.billingAddress)
+      : billingAddressFromShipping(shippingAddress);
     // The local adapter quotes a provider/product combination. The current catalog uses
     // one provider-ready product, so this remains a single shipment until live provider
     // shipping rates are connected.
-    const quote = await this.provisionalQuote(primaryItem, address.country_code);
+    const quote = await this.provisionalQuote(primaryItem, shippingAddress.country_code);
     const pricing = this.priceCart(items, quote.shippingCents);
     const tax = await this.taxes.calculate({
       subtotalCents: pricing.subtotalCents,
       customerShippingCents: pricing.customerShippingCents,
       address: {
-        countryCode: address.country_code,
-        stateCode: address.state_code,
-        postalCode: address.postal_code,
+        countryCode: shippingAddress.country_code,
+        stateCode: shippingAddress.state_code,
+        postalCode: shippingAddress.postal_code,
       },
     });
     const taxSnapshot: TaxSnapshot = {
@@ -576,14 +611,15 @@ export class CommerceService {
     const inserted = await this.pool.query<{ id: string }>(
       `INSERT INTO app.checkout_attempts (
          id, cart_id, shipping_address_id, status, idempotency_key, currency, amount_cents,
-         pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at
-       ) VALUES ($1, $2, $3, 'PAYMENT_PENDING', $4, 'USD', $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10) RETURNING id`,
+         billing_address_snapshot, pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at
+       ) VALUES ($1, $2, $3, 'PAYMENT_PENDING', $4, 'USD', $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11) RETURNING id`,
       [
         attemptId,
         cartId,
-        addressId,
-        idempotencyKey,
+        input.shippingAddressId,
+        input.idempotencyKey,
         pricingWithTax.totalCents,
+        JSON.stringify(billingAddress),
         JSON.stringify(pricingWithTax),
         JSON.stringify(toShippingSnapshot(quote, pricingWithTax.customerShippingCents, expiry)),
         JSON.stringify(taxSnapshot),
@@ -596,8 +632,9 @@ export class CommerceService {
       checkoutAttemptId: attemptId,
       amountCents: pricingWithTax.totalCents,
       currency,
-      idempotencyKey,
-      customerEmail: address.email,
+      idempotencyKey: input.idempotencyKey,
+      customerEmail: shippingAddress.email,
+      billingAddress,
     });
     await this.pool.query(
       `UPDATE app.checkout_attempts SET provider_payment_id = $2, provider_client_secret = $3, updated_at = now() WHERE id = $1`,
@@ -836,11 +873,14 @@ export class CommerceService {
     const created = await client.query<{ order_number: string }>(
       `INSERT INTO app.orders (
          order_number, cart_id, checkout_attempt_id, owner_type, owner_session_id, owner_user_id, customer_email,
-         shipping_address_snapshot, status, pricing_snapshot, financial_snapshot
+         shipping_address_snapshot, billing_address_snapshot, status, pricing_snapshot, financial_snapshot
        ) SELECT $1, c.id, $2, c.owner_type, c.owner_session_id, c.owner_user_id, a.email,
                 jsonb_build_object('recipientName', a.recipient_name, 'line1', a.line1, 'line2', a.line2, 'city', a.city, 'stateCode', a.state_code, 'postalCode', a.postal_code, 'countryCode', a.country_code),
-                'PAID', $3::jsonb, $4::jsonb
-         FROM app.carts c JOIN app.shipping_addresses a ON a.id = $5 WHERE c.id = $6 RETURNING order_number`,
+                checkout_attempt.billing_address_snapshot, 'PAID', $3::jsonb, $4::jsonb
+         FROM app.carts c
+         JOIN app.shipping_addresses a ON a.id = $5
+         JOIN app.checkout_attempts checkout_attempt ON checkout_attempt.id = $2 AND checkout_attempt.cart_id = c.id
+         WHERE c.id = $6 RETURNING order_number`,
       [
         orderNumber(),
         checkout.id,
@@ -1063,19 +1103,15 @@ export class CommerceService {
       );
   }
 
-  private async address(
+  private async shippingAddress(
     session: ActiveSession,
     cartId: string,
     addressId: string,
-  ): Promise<{ email: string; country_code: string; state_code: string; postal_code: string }> {
+  ): Promise<ShippingAddressRow> {
     await this.cart(session, cartId);
-    const result = await this.pool.query<{
-      email: string;
-      country_code: string;
-      state_code: string;
-      postal_code: string;
-    }>(
-      `SELECT email, country_code, state_code, postal_code FROM app.shipping_addresses WHERE id = $1 AND cart_id = $2`,
+    const result = await this.pool.query<ShippingAddressRow>(
+      `SELECT recipient_name, email, line1, line2, city, state_code, postal_code, country_code
+       FROM app.shipping_addresses WHERE id = $1 AND cart_id = $2`,
       [addressId, cartId],
     );
     return requireRow(result.rows[0], 'Shipping address not found.');
@@ -1220,17 +1256,46 @@ function toCartLineView(item: ItemRow): CartLineView {
 }
 
 function validateAddress(address: ShippingAddressInput): void {
-  if (
-    !address.recipientName.trim() ||
-    !/^\S+@\S+\.\S+$/.test(address.email) ||
-    !address.line1.trim() ||
-    !address.city.trim() ||
-    !/^[A-Za-z]{2}$/.test(address.stateCode) ||
-    !/^\d{5}(?:-\d{4})?$/.test(address.postalCode) ||
-    address.countryCode.trim().toUpperCase() !== 'US'
-  ) {
+  if (!/^\S+@\S+\.\S+$/.test(address.email) || !isValidPostalAddress(address)) {
     throw new CommerceValidationError('Enter a complete US shipping address and a valid email.');
   }
+}
+
+function normalizedBillingAddress(address: BillingAddressInput): BillingAddress {
+  if (!isValidPostalAddress(address))
+    throw new CommerceValidationError('Enter a complete US billing address.');
+  return {
+    recipientName: address.recipientName.trim(),
+    line1: address.line1.trim(),
+    line2: address.line2?.trim() || null,
+    city: address.city.trim(),
+    stateCode: address.stateCode.trim().toUpperCase(),
+    postalCode: address.postalCode.trim(),
+    countryCode: address.countryCode.trim().toUpperCase(),
+  };
+}
+
+function billingAddressFromShipping(address: ShippingAddressRow): BillingAddress {
+  return {
+    recipientName: address.recipient_name,
+    line1: address.line1,
+    line2: address.line2,
+    city: address.city,
+    stateCode: address.state_code,
+    postalCode: address.postal_code,
+    countryCode: address.country_code,
+  };
+}
+
+function isValidPostalAddress(address: BillingAddressInput): boolean {
+  return (
+    Boolean(address.recipientName.trim()) &&
+    Boolean(address.line1.trim()) &&
+    Boolean(address.city.trim()) &&
+    /^[A-Za-z]{2}$/.test(address.stateCode.trim()) &&
+    /^\d{5}(?:-\d{4})?$/.test(address.postalCode.trim()) &&
+    address.countryCode.trim().toUpperCase() === 'US'
+  );
 }
 function requireCheckoutReady(status: string): void {
   if (!['PASSED', 'REVIEW_REQUIRED'].includes(status))

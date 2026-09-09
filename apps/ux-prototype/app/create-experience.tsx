@@ -727,6 +727,16 @@ export interface CheckoutCompletionInput {
   zip: string;
   mobile: string;
   saveAddress: boolean;
+  billingMatchesShipping: boolean;
+  billing: {
+    firstName: string;
+    lastName: string;
+    address: string;
+    apartment: string;
+    city: string;
+    state: string;
+    zip: string;
+  };
 }
 
 export interface CheckoutCompletionResult {
@@ -2204,6 +2214,7 @@ function CheckoutStep({
   const [newsletterSubscribed, setNewsletterSubscribed] = useState(false);
   const [smsSubscribed, setSmsSubscribed] = useState(false);
   const [saveAddress, setSaveAddress] = useState(false);
+  const [billingMatchesShipping, setBillingMatchesShipping] = useState(true);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsError, setTermsError] = useState('');
   const [checkoutError, setCheckoutError] = useState('');
@@ -2222,6 +2233,15 @@ function CheckoutStep({
     card: '4242 4242 4242 4242',
     expiry: '12 / 30',
     securityCode: '123',
+  });
+  const [billing, setBilling] = useState({
+    firstName: '',
+    lastName: '',
+    address: '',
+    apartment: '',
+    city: '',
+    state: '',
+    zip: '',
   });
   const cartItems = orderedCart ?? cart;
   const shipping = {
@@ -2244,6 +2264,9 @@ function CheckoutStep({
   const updateDetail = (field: keyof typeof details, value: string) => {
     setDetails((current) => ({ ...current, [field]: value }));
   };
+  const updateBilling = (field: keyof typeof billing, value: string) => {
+    setBilling((current) => ({ ...current, [field]: value }));
+  };
   const completeCheckout = () => {
     if (!termsAccepted) {
       setTermsError('Accept the terms to continue.');
@@ -2258,7 +2281,7 @@ function CheckoutStep({
     }
     setCheckoutError('');
     setSubmittingOrder(true);
-    void onCheckoutCompleted({ ...details, saveAddress })
+    void onCheckoutCompleted({ ...details, saveAddress, billingMatchesShipping, billing })
       .then((result) => {
         window.scrollTo({ top: 0 });
         setCompletedOrder(result);
@@ -2711,6 +2734,123 @@ function CheckoutStep({
           aria-labelledby="checkout-payment-heading"
         >
           <h2 id="checkout-payment-heading">Payment</h2>
+          <label className="checkout-consent checkout-billing-address-toggle">
+            <input
+              checked={billingMatchesShipping}
+              onChange={(event) => setBillingMatchesShipping(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Billing address is the same as delivery address.</span>
+          </label>
+          {!billingMatchesShipping ? (
+            <fieldset className="checkout-billing-address" aria-label="Billing address">
+              <legend>Billing address</legend>
+              <div className="checkout-grid-two">
+                <div>
+                  <label className="checkout-label" htmlFor="checkout-billing-first-name">
+                    First name
+                  </label>
+                  <input
+                    autoCapitalize="words"
+                    autoComplete="billing given-name"
+                    id="checkout-billing-first-name"
+                    onChange={(event) => updateBilling('firstName', event.target.value)}
+                    placeholder="Jane"
+                    required
+                    value={billing.firstName}
+                  />
+                </div>
+                <div>
+                  <label className="checkout-label" htmlFor="checkout-billing-last-name">
+                    Last name
+                  </label>
+                  <input
+                    autoCapitalize="words"
+                    autoComplete="billing family-name"
+                    id="checkout-billing-last-name"
+                    onChange={(event) => updateBilling('lastName', event.target.value)}
+                    placeholder="Doe"
+                    required
+                    value={billing.lastName}
+                  />
+                </div>
+              </div>
+              <label className="checkout-label" htmlFor="checkout-billing-address">
+                Address
+              </label>
+              <input
+                autoCapitalize="words"
+                autoComplete="billing street-address"
+                id="checkout-billing-address"
+                onChange={(event) => updateBilling('address', event.target.value)}
+                placeholder="123 Main Street"
+                required
+                value={billing.address}
+              />
+              <label className="checkout-label" htmlFor="checkout-billing-apartment">
+                Apartment, suite, etc. <span>Optional</span>
+              </label>
+              <input
+                autoCapitalize="characters"
+                autoComplete="billing address-line2"
+                id="checkout-billing-apartment"
+                onChange={(event) => updateBilling('apartment', event.target.value)}
+                placeholder="Apt 4B"
+                value={billing.apartment}
+              />
+              <div className="checkout-grid-two checkout-city-row">
+                <div>
+                  <label className="checkout-label" htmlFor="checkout-billing-city">
+                    City
+                  </label>
+                  <input
+                    autoCapitalize="words"
+                    autoComplete="billing address-level2"
+                    id="checkout-billing-city"
+                    onChange={(event) => updateBilling('city', event.target.value)}
+                    placeholder="Austin"
+                    required
+                    value={billing.city}
+                  />
+                </div>
+                <div>
+                  <label className="checkout-label" htmlFor="checkout-billing-state">
+                    State
+                  </label>
+                  <select
+                    autoComplete="billing address-level1"
+                    id="checkout-billing-state"
+                    onChange={(event) => updateBilling('state', event.target.value)}
+                    required
+                    value={billing.state}
+                  >
+                    <option value="">Select</option>
+                    {US_STATES.map(([code, label]) => (
+                      <option key={code} value={code}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <label className="checkout-label" htmlFor="checkout-billing-zip">
+                ZIP code
+              </label>
+              <input
+                autoComplete="billing postal-code"
+                id="checkout-billing-zip"
+                inputMode="numeric"
+                maxLength={10}
+                onChange={(event) =>
+                  updateBilling('zip', event.target.value.replace(/[^0-9-]/g, '').slice(0, 10))
+                }
+                pattern="[0-9]{5}(-[0-9]{4})?"
+                placeholder="12345"
+                required
+                value={billing.zip}
+              />
+            </fieldset>
+          ) : null}
           <div className="checkout-payment-method">
             <span aria-hidden="true">▰</span>
             <div>

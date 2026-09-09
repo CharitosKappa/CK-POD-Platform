@@ -13,6 +13,15 @@ describe('platform payment and tax adapters', () => {
       currency: 'USD',
       idempotencyKey: 'checkout-idempotency-1',
       customerEmail: 'person@example.test',
+      billingAddress: {
+        recipientName: 'Person Example',
+        line1: '1 Example Street',
+        line2: null,
+        city: 'San Francisco',
+        stateCode: 'CA',
+        postalCode: '94107',
+        countryCode: 'US',
+      },
     });
     expect(intent).toMatchObject({ provider: 'FAKE', status: 'PENDING' });
     for (const [eventName, outcome] of [

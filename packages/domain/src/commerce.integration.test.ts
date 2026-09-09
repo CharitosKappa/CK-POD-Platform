@@ -246,12 +246,19 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       commerce.saveShippingAddress(ready.guest, cart.id, { ...address(), postalCode: 'bad' }),
     ).rejects.toBeInstanceOf(CommerceValidationError);
     const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
-    const checkout = await commerce.startCheckout(
-      ready.guest,
-      cart.id,
-      addressId,
-      `checkout-${randomBytes(8).toString('hex')}`,
-    );
+    const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId: addressId,
+      billingAddress: {
+        recipientName: 'Jordan Billing',
+        line1: '99 Billing Avenue',
+        line2: 'Suite 12',
+        city: 'Miami',
+        stateCode: 'FL',
+        postalCode: '33130',
+        countryCode: 'US',
+      },
+      idempotencyKey: `checkout-${randomBytes(8).toString('hex')}`,
+    });
     expect(checkout.pricing).toMatchObject({
       unitRetailCents: 3999,
       quantity: 3,
@@ -268,6 +275,16 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       customerShippingCents: 0,
     });
     expect(checkout.tax).toMatchObject({ provider: 'FAKE', taxableSubtotalCents: 10797 });
+    const billing = await pool.query<{ billing_address_snapshot: unknown }>(
+      `SELECT billing_address_snapshot FROM app.checkout_attempts WHERE id = $1`,
+      [checkout.id],
+    );
+    expect(billing.rows[0]?.billing_address_snapshot).toMatchObject({
+      recipientName: 'Jordan Billing',
+      city: 'Miami',
+      stateCode: 'FL',
+      postalCode: '33130',
+    });
   });
 
   it('supports safe guest checkout, verified idempotent payment events, and canonical PAID order state only', async () => {
@@ -279,18 +296,27 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     });
     await commerce.approveProof(ready.guest, cart.id);
     const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
-    const checkout = await commerce.startCheckout(
-      ready.guest,
-      cart.id,
-      addressId,
-      `checkout-${randomBytes(8).toString('hex')}`,
-    );
+    const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId: addressId,
+      billingAddress: null,
+      idempotencyKey: `checkout-${randomBytes(8).toString('hex')}`,
+    });
     const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
     const repeated = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
     expect(paid).toMatchObject({ duplicate: false, orderNumber: expect.stringMatching(/^LIB-/) });
     expect(repeated).toEqual({ duplicate: true, orderNumber: paid.orderNumber });
     const order = await commerce.getOrder(ready.guest, paid.orderNumber as string);
     expect(order).toMatchObject({ status: 'PAID' });
+    const addressSnapshots = await pool.query<{
+      shipping_address_snapshot: Record<string, unknown>;
+      billing_address_snapshot: Record<string, unknown>;
+    }>(
+      `SELECT shipping_address_snapshot, billing_address_snapshot FROM app.orders WHERE order_number = $1`,
+      [paid.orderNumber],
+    );
+    expect(addressSnapshots.rows[0]?.billing_address_snapshot).toEqual(
+      addressSnapshots.rows[0]?.shipping_address_snapshot,
+    );
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
     await expect(
@@ -313,6 +339,36 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       [orderId],
     );
     expect((await integrityViolationCounts(pool)).delivered_without_shipment).toBe(0);
+  });
+
+  it('rejects incomplete billing details before a checkout attempt is created', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    await commerce.approveProof(ready.guest, cart.id);
+    const shippingAddressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
+    await expect(
+      commerce.startCheckout(ready.guest, cart.id, {
+        shippingAddressId,
+        billingAddress: {
+          recipientName: 'Incomplete Billing',
+          line1: '7 Main Street',
+          city: '',
+          stateCode: 'CA',
+          postalCode: '94107',
+          countryCode: 'US',
+        },
+        idempotencyKey: `invalid-billing-${randomBytes(8).toString('hex')}`,
+      }),
+    ).rejects.toBeInstanceOf(CommerceValidationError);
+    const attempts = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.checkout_attempts WHERE cart_id = $1`,
+      [cart.id],
+    );
+    expect(attempts.rows[0]?.count).toBe('0');
   });
 
   it('preserves guest cart and order ownership when the guest becomes an account', async () => {
@@ -339,12 +395,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     });
     await commerce.approveProof(ready.guest, cart.id);
     const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
-    const checkout = await commerce.startCheckout(
-      ready.guest,
-      cart.id,
-      addressId,
-      `cx-${randomBytes(8).toString('hex')}`,
-    );
+    const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId: addressId,
+      billingAddress: null,
+      idempotencyKey: `cx-${randomBytes(8).toString('hex')}`,
+    });
     const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
     const orderNumber = paid.orderNumber as string;
     const operator = await identity.register(
@@ -490,12 +545,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     });
     await commerce.approveProof(ready.guest, cart.id);
     const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
-    const checkout = await commerce.startCheckout(
-      ready.guest,
-      cart.id,
-      addressId,
-      `operations-${randomBytes(8).toString('hex')}`,
-    );
+    const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId: addressId,
+      billingAddress: null,
+      idempotencyKey: `operations-${randomBytes(8).toString('hex')}`,
+    });
     const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
     const orderNumber = paid.orderNumber as string;
 

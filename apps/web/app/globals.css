@@ -1464,6 +1464,12 @@ select:focus-visible {
   grid-column: 1 / -1;
   justify-self: start;
 }
+.checkout-step .checkout-billing-address {
+  margin-top: 0.85rem;
+  border: 1px solid #dce5df;
+  border-radius: 0.75rem;
+  padding: 0.85rem;
+}
 .checkout-review {
   display: grid;
   grid-template-columns: minmax(13rem, 0.75fr) 1fr;

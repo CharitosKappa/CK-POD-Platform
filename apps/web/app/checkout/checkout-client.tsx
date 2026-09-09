@@ -41,12 +41,30 @@ interface Checkout {
   };
 }
 
+interface BillingAddressDraft {
+  recipientName: string;
+  line1: string;
+  line2: string;
+  city: string;
+  stateCode: string;
+  postalCode: string;
+}
+
 export function CheckoutClient() {
   const projectId = useSearchParams().get('project');
   const [size, setSize] = useState('M');
   const [quantity, setQuantity] = useState(1);
   const [cart, setCart] = useState<Cart>();
   const [addressId, setAddressId] = useState<string>();
+  const [billingMatchesShipping, setBillingMatchesShipping] = useState(true);
+  const [billingAddress, setBillingAddress] = useState<BillingAddressDraft>({
+    recipientName: '',
+    line1: '',
+    line2: '',
+    city: '',
+    stateCode: '',
+    postalCode: '',
+  });
   const [checkout, setCheckout] = useState<Checkout>();
   const [orderNumber, setOrderNumber] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -127,12 +145,20 @@ export function CheckoutClient() {
   };
   const startCheckout = async () => {
     if (!cart || !addressId) return;
+    if (!billingMatchesShipping && !completeBillingAddress(billingAddress)) {
+      setError('Enter a complete US billing address.');
+      return;
+    }
     setBusy(true);
     setError(undefined);
     try {
       const result = await request<{ checkout: Checkout }>(`/api/carts/${cart.id}/checkout`, {
         method: 'POST',
-        body: JSON.stringify({ addressId, idempotencyKey: createClientIdempotencyKey() }),
+        body: JSON.stringify({
+          shippingAddressId: addressId,
+          billingAddress: billingMatchesShipping ? null : { ...billingAddress, countryCode: 'US' },
+          idempotencyKey: createClientIdempotencyKey(),
+        }),
       });
       setCheckout(result.checkout);
     } catch (reason) {
@@ -140,6 +166,12 @@ export function CheckoutClient() {
     } finally {
       setBusy(false);
     }
+  };
+  const changeBillingAddress = <Field extends keyof BillingAddressDraft>(
+    field: Field,
+    value: BillingAddressDraft[Field],
+  ) => {
+    setBillingAddress((current) => ({ ...current, [field]: value }));
   };
   const pay = async () => {
     if (!checkout) return;
@@ -316,6 +348,84 @@ export function CheckoutClient() {
               <section className="checkout-step">
                 <h2>4. Delivery and payment</h2>
                 <p>We’ll calculate your final shipping, tax, and total securely before payment.</p>
+                <label className="proof-acknowledgement">
+                  <input
+                    checked={billingMatchesShipping}
+                    onChange={(event) => setBillingMatchesShipping(event.target.checked)}
+                    type="checkbox"
+                  />
+                  Billing address is the same as delivery address.
+                </label>
+                {!billingMatchesShipping ? (
+                  <div
+                    className="checkout-address checkout-billing-address"
+                    aria-label="Billing address"
+                  >
+                    <label>
+                      Name
+                      <input
+                        autoComplete="billing name"
+                        onChange={(event) =>
+                          changeBillingAddress('recipientName', event.target.value)
+                        }
+                        required
+                        value={billingAddress.recipientName}
+                      />
+                    </label>
+                    <label>
+                      Address
+                      <input
+                        autoComplete="billing street-address"
+                        onChange={(event) => changeBillingAddress('line1', event.target.value)}
+                        required
+                        value={billingAddress.line1}
+                      />
+                    </label>
+                    <label>
+                      Apartment, suite, etc. (optional)
+                      <input
+                        autoComplete="billing address-line2"
+                        onChange={(event) => changeBillingAddress('line2', event.target.value)}
+                        value={billingAddress.line2}
+                      />
+                    </label>
+                    <label>
+                      City
+                      <input
+                        autoComplete="billing address-level2"
+                        onChange={(event) => changeBillingAddress('city', event.target.value)}
+                        required
+                        value={billingAddress.city}
+                      />
+                    </label>
+                    <label>
+                      State
+                      <select
+                        autoComplete="billing address-level1"
+                        onChange={(event) => changeBillingAddress('stateCode', event.target.value)}
+                        required
+                        value={billingAddress.stateCode}
+                      >
+                        <option value="" disabled>
+                          Select state
+                        </option>
+                        {usaStates.map((state) => (
+                          <option key={state}>{state}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      ZIP code
+                      <input
+                        autoComplete="billing postal-code"
+                        inputMode="numeric"
+                        onChange={(event) => changeBillingAddress('postalCode', event.target.value)}
+                        required
+                        value={billingAddress.postalCode}
+                      />
+                    </label>
+                  </div>
+                ) : null}
                 <button
                   className="continue"
                   type="button"
@@ -397,6 +507,15 @@ function CheckoutSummary({ checkout }: { checkout: Checkout }) {
 }
 function money(cents: number) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+}
+function completeBillingAddress(address: BillingAddressDraft): boolean {
+  return (
+    Boolean(address.recipientName.trim()) &&
+    Boolean(address.line1.trim()) &&
+    Boolean(address.city.trim()) &&
+    /^[A-Za-z]{2}$/.test(address.stateCode.trim()) &&
+    /^\d{5}(?:-\d{4})?$/.test(address.postalCode.trim())
+  );
 }
 function deliveryCopy(shipping: Checkout['shipping']) {
   return shipping.estimatedDeliveryMinDays && shipping.estimatedDeliveryMaxDays

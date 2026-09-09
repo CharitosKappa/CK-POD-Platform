@@ -190,6 +190,13 @@
       "when": 1789304000000,
       "tag": "0026_checkout_address_book_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789305000000,
+      "tag": "0028_checkout_billing_address_snapshot",
+      "breakpoints": true
     }
   ]
 }
