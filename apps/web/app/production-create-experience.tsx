@@ -7,6 +7,8 @@ import {
   type ColorId,
   type CartItem,
   type CartPersistenceResult,
+  type CheckoutCompletionInput,
+  type CheckoutCompletionResult,
   type CreateExperienceProps,
   type EditorTransform,
   type GenerationLifecyclePhase,
@@ -69,6 +71,16 @@ interface CartSnapshot {
     quantity: number;
     unitPriceCents: number;
   } | null;
+}
+
+interface CheckoutSnapshot {
+  id: string;
+  pricing: {
+    subtotalCents: number;
+    customerShippingCents: number;
+    taxCents: number;
+    totalCents: number;
+  };
 }
 
 interface PrepressSnapshot {
@@ -420,6 +432,66 @@ export function ProductionCreateExperience() {
     window.localStorage.removeItem(activeCartKey);
   }
 
+  async function completeCheckout(
+    input: CheckoutCompletionInput,
+  ): Promise<CheckoutCompletionResult> {
+    const cart = cartRef.current;
+    if (!cart) throw new Error('Your cart could not be found.');
+
+    await readJson<{ approved: boolean }>(
+      await fetch(`/api/carts/${encodeURIComponent(cart.id)}/proof`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    const recipientName = `${input.firstName.trim()} ${input.lastName.trim()}`.trim();
+    const addressResponse = await fetch(`/api/carts/${encodeURIComponent(cart.id)}/address`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        recipientName,
+        email: input.email,
+        line1: input.address,
+        line2: input.apartment,
+        city: input.city,
+        stateCode: input.state,
+        postalCode: input.zip,
+        countryCode: 'US',
+        ...(input.mobile ? { phone: input.mobile } : {}),
+      }),
+    });
+    const { addressId } = await readJson<{ addressId: string }>(addressResponse);
+    const checkoutResponse = await fetch(`/api/carts/${encodeURIComponent(cart.id)}/checkout`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ addressId, idempotencyKey: crypto.randomUUID() }),
+    });
+    const { checkout } = await readJson<{ checkout: CheckoutSnapshot }>(checkoutResponse);
+    const confirmationResponse = await fetch(
+      `/api/checkout/${encodeURIComponent(checkout.id)}/fake-confirm`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ outcome: 'SUCCEEDED' }),
+      },
+    );
+    const confirmation = await readJson<{ orderNumber: string | null }>(confirmationResponse);
+    if (!confirmation.orderNumber) throw new Error('Your order is still being confirmed.');
+
+    cartRef.current = null;
+    window.localStorage.removeItem(activeCartKey);
+    return {
+      orderNumber: confirmation.orderNumber,
+      pricing: {
+        subtotalCents: checkout.pricing.subtotalCents,
+        shippingCents: checkout.pricing.customerShippingCents,
+        taxCents: checkout.pricing.taxCents,
+        totalCents: checkout.pricing.totalCents,
+      },
+    };
+  }
+
   if (resumeState === 'loading') return null;
   if (resumeState === 'failed') {
     return (
@@ -447,6 +519,7 @@ export function ProductionCreateExperience() {
       onAddToCart={addToCart}
       onCartQuantityChange={updateCartQuantity}
       onCartRemove={removeCart}
+      onCheckoutCompleted={completeCheckout}
       {...(initialCart ? { initialCart } : {})}
       onReferenceRemoved={removeReference}
       onReferenceSelected={persistReference}

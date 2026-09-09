@@ -686,6 +686,7 @@ export interface CreateExperienceProps {
   onCartRemove?: (itemId: string) => Promise<void>;
   onReferenceRemoved?: (assetId: string) => Promise<void>;
   onReferenceSelected?: (file: File) => Promise<ReferenceImageState>;
+  onCheckoutCompleted?: (input: CheckoutCompletionInput) => Promise<CheckoutCompletionResult>;
 }
 
 export type GenerationLifecyclePhase = 'queued' | 'processing' | 'validating';
@@ -710,6 +711,28 @@ export interface ReferenceImageState {
   url: string;
 }
 
+export interface CheckoutCompletionInput {
+  email: string;
+  firstName: string;
+  lastName: string;
+  address: string;
+  apartment: string;
+  city: string;
+  state: string;
+  zip: string;
+  mobile: string;
+}
+
+export interface CheckoutCompletionResult {
+  orderNumber: string;
+  pricing: {
+    subtotalCents: number;
+    shippingCents: number;
+    taxCents: number;
+    totalCents: number;
+  };
+}
+
 export function CreateExperience({
   creditBalance,
   initialCart,
@@ -720,6 +743,7 @@ export function CreateExperience({
   onContinueFromIdea,
   onContinueFromProduct,
   onContinueFromStyle,
+  onCheckoutCompleted,
   onGenerateDesign,
   onReferenceRemoved,
   onReferenceSelected,
@@ -1770,6 +1794,7 @@ export function CreateExperience({
           <CheckoutStep
             cart={cart}
             createAnother={resetDesign}
+            {...(onCheckoutCompleted ? { onCheckoutCompleted } : {})}
             onComplete={() => {
               setCart([]);
               setCartAdded(false);
@@ -2135,10 +2160,12 @@ function CartSummaryLine({ item }: { item: CartItem }) {
 function CheckoutStep({
   cart,
   createAnother,
+  onCheckoutCompleted,
   onComplete,
 }: {
   cart: CartItem[];
   createAnother: () => void;
+  onCheckoutCompleted?: (input: CheckoutCompletionInput) => Promise<CheckoutCompletionResult>;
   onComplete: () => void;
 }) {
   const [shippingMethod, setShippingMethod] = useState<'economy' | 'standard' | 'priority'>(
@@ -2156,6 +2183,9 @@ function CheckoutStep({
   const [smsSubscribed, setSmsSubscribed] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsError, setTermsError] = useState('');
+  const [checkoutError, setCheckoutError] = useState('');
+  const [submittingOrder, setSubmittingOrder] = useState(false);
+  const [completedOrder, setCompletedOrder] = useState<CheckoutCompletionResult | null>(null);
   const [details, setDetails] = useState({
     email: 'alex.morgan@example.com',
     firstName: 'Alex',
@@ -2190,6 +2220,37 @@ function CheckoutStep({
   const referralLink = 'https://letitbe.co/r/ALEXMORGAN';
   const updateDetail = (field: keyof typeof details, value: string) => {
     setDetails((current) => ({ ...current, [field]: value }));
+  };
+  const completeCheckout = () => {
+    if (!termsAccepted) {
+      setTermsError('Accept the terms to continue.');
+      return;
+    }
+    if (!onCheckoutCompleted) {
+      window.scrollTo({ top: 0 });
+      setOrderedCart(cart);
+      onComplete();
+      setComplete(true);
+      return;
+    }
+    setCheckoutError('');
+    setSubmittingOrder(true);
+    void onCheckoutCompleted(details)
+      .then((result) => {
+        window.scrollTo({ top: 0 });
+        setCompletedOrder(result);
+        setOrderedCart(cart);
+        onComplete();
+        setComplete(true);
+      })
+      .catch((error: unknown) =>
+        setCheckoutError(
+          error instanceof Error
+            ? error.message
+            : 'We couldn’t complete your order. Please try again.',
+        ),
+      )
+      .finally(() => setSubmittingOrder(false));
   };
   const moveToNextField = (
     event: KeyboardEvent<HTMLInputElement | HTMLSelectElement>,
@@ -2241,7 +2302,7 @@ function CheckoutStep({
         </p>
         <section className="checkout-confirmation-reference" aria-label="Order reference">
           <span>Order reference</span>
-          <strong>#LIB-1042</strong>
+          <strong>{completedOrder?.orderNumber ?? '#LIB-1042'}</strong>
         </section>
         <section
           className="checkout-cart-summary checkout-thank-you-summary"
@@ -2253,9 +2314,11 @@ function CheckoutStep({
           <div className="checkout-cart-summary-total">
             <span>Total</span>
             <strong>
-              {estimatedTotal === null
-                ? `${USD_FORMATTER.format(subtotalCents / 100)} + shipping`
-                : USD_FORMATTER.format(estimatedTotal / 100)}
+              {completedOrder
+                ? USD_FORMATTER.format(completedOrder.pricing.totalCents / 100)
+                : estimatedTotal === null
+                  ? `${USD_FORMATTER.format(subtotalCents / 100)} + shipping`
+                  : USD_FORMATTER.format(estimatedTotal / 100)}
             </strong>
           </div>
           <p className="checkout-cart-summary-note">Includes product, shipping, and taxes.</p>
@@ -2358,10 +2421,7 @@ function CheckoutStep({
         className="checkout-form"
         onSubmit={(event) => {
           event.preventDefault();
-          window.scrollTo({ top: 0 });
-          setOrderedCart(cart);
-          onComplete();
-          setComplete(true);
+          completeCheckout();
         }}
       >
         <section
@@ -2775,9 +2835,19 @@ function CheckoutStep({
               </InlineFeedback>
             ) : null}
           </div>
-          <button className="create-button checkout-submit" type="submit">
-            Place order <Icon>→</Icon>
+          <button
+            aria-busy={submittingOrder}
+            className="create-button checkout-submit"
+            disabled={submittingOrder}
+            type="submit"
+          >
+            {submittingOrder ? 'Completing order…' : 'Place order'} <Icon>→</Icon>
           </button>
+          {checkoutError ? (
+            <InlineFeedback role="alert" tone="error">
+              {checkoutError}
+            </InlineFeedback>
+          ) : null}
         </div>
       </form>
     </div>
