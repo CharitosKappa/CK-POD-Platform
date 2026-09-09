@@ -47,6 +47,7 @@ export interface ShippingAddressInput {
   stateCode: string;
   postalCode: string;
   countryCode: string;
+  saveToAccount?: boolean;
 }
 
 export interface CartView {
@@ -491,8 +492,8 @@ export class CommerceService {
     validateAddress(input);
     const result = await this.pool.query<{ id: string }>(
       `INSERT INTO app.shipping_addresses (
-         cart_id, recipient_name, email, phone, line1, line2, city, state_code, postal_code, country_code
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+         cart_id, recipient_name, email, phone, line1, line2, city, state_code, postal_code, country_code, save_to_account
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
       [
         cartId,
         input.recipientName.trim(),
@@ -504,6 +505,7 @@ export class CommerceService {
         input.stateCode.trim().toUpperCase(),
         input.postalCode.trim(),
         input.countryCode.trim().toUpperCase(),
+        input.saveToAccount === true,
       ],
     );
     return requireRow(result.rows[0], 'Could not save your shipping address.').id;
@@ -860,6 +862,23 @@ export class CommerceService {
       created.rows[0],
       'Could not create paid order.',
     ).order_number;
+    await client.query(
+      `INSERT INTO app.saved_addresses (
+         user_id, recipient_name, line1, line2, city, state_code, postal_code, country_code, phone, is_default
+       ) SELECT c.owner_user_id, a.recipient_name, a.line1, a.line2, a.city, a.state_code,
+                a.postal_code, a.country_code, a.phone,
+                NOT EXISTS (SELECT 1 FROM app.saved_addresses current WHERE current.user_id = c.owner_user_id)
+         FROM app.carts c JOIN app.shipping_addresses a ON a.id = $1
+         WHERE c.id = $2 AND c.owner_type = 'USER' AND c.owner_user_id IS NOT NULL
+           AND a.save_to_account = true
+           AND NOT EXISTS (
+             SELECT 1 FROM app.saved_addresses existing
+             WHERE existing.user_id = c.owner_user_id
+               AND existing.line1 = a.line1 AND existing.city = a.city
+               AND existing.state_code = a.state_code AND existing.postal_code = a.postal_code
+           )`,
+      [checkout.shipping_address_id, checkout.cart_id],
+    );
     await client.query(
       `INSERT INTO app.order_items (order_id, cart_item_id, project_id, project_version_id, prepress_run_id, mockup_id, product_model_id, product_variant_id, quantity, item_snapshot)
        SELECT o.id, i.id, i.project_id, i.project_version_id, i.prepress_run_id, i.mockup_id, i.product_model_id, i.product_variant_id, i.quantity, i.product_snapshot

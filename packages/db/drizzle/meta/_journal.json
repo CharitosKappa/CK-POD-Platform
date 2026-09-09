@@ -183,6 +183,13 @@
       "when": 1789303000000,
       "tag": "0025_account_profiles_and_addresses",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789304000000,
+      "tag": "0026_checkout_address_book_consent",
+      "breakpoints": true
     }
   ]
 }

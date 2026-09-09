@@ -466,6 +466,7 @@ export function ProductionCreateExperience() {
         postalCode: input.zip,
         countryCode: 'US',
         ...(input.mobile ? { phone: input.mobile } : {}),
+        ...(input.saveAddress ? { saveToAccount: true } : {}),
       }),
     });
     const { addressId } = await readJson<{ addressId: string }>(addressResponse);

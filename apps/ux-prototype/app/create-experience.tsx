@@ -725,6 +725,7 @@ export interface CheckoutCompletionInput {
   state: string;
   zip: string;
   mobile: string;
+  saveAddress: boolean;
 }
 
 export interface CheckoutCompletionResult {
@@ -2197,6 +2198,7 @@ function CheckoutStep({
   } | null>(null);
   const [newsletterSubscribed, setNewsletterSubscribed] = useState(false);
   const [smsSubscribed, setSmsSubscribed] = useState(false);
+  const [saveAddress, setSaveAddress] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsError, setTermsError] = useState('');
   const [checkoutError, setCheckoutError] = useState('');
@@ -2251,7 +2253,7 @@ function CheckoutStep({
     }
     setCheckoutError('');
     setSubmittingOrder(true);
-    void onCheckoutCompleted(details)
+    void onCheckoutCompleted({ ...details, saveAddress })
       .then((result) => {
         window.scrollTo({ top: 0 });
         setCompletedOrder(result);
@@ -2653,6 +2655,14 @@ function CheckoutStep({
               </small>
             </label>
           </div>
+          <label className="checkout-consent checkout-save-address">
+            <input
+              checked={saveAddress}
+              onChange={(event) => setSaveAddress(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Save this delivery address to my account.</span>
+          </label>
         </section>
         <section
           className="checkout-section-divider checkout-section-tone is-light"
