@@ -21,15 +21,15 @@ Refunds, reprints, provider-catalog administration, customer-support notes, and 
 
 ### Desktop
 
-`/ops/reviews` becomes an operations workspace. A selectable order queue sits on the left; the selected order fills the detail pane on the right. The queue remains visible while an operator acts on the detail, so moving through work does not require returning to a separate list page.
+The operations area uses a persistent admin sidebar. The main window changes route by route, rather than splitting the orders list and an order detail into two columns. `/ops/orders` is a compact, filterable operational list. Selecting an order opens its own route, `/ops/orders/:orderNumber`, as a full main-window order page while the sidebar remains fixed.
 
 ### Mobile
 
-The same route starts with the compact queue. Selecting an order opens its detail as a full-width drill-in state with a back control. Controls stay comfortably touch-sized, and the relevant next action remains visible near the bottom without covering the content.
+The same routes use a compact admin header in place of the full sidebar. Selecting an order opens its full-width order page with a back-to-orders control. Controls stay comfortably touch-sized, and the relevant next action remains visible near the bottom without covering the content.
 
 ### Queue
 
-The queue has fixed filters:
+The Orders page has saved operational views and compact filters:
 
 - Needs review;
 - Ready;
@@ -37,7 +37,7 @@ The queue has fixed filters:
 - Partially shipped;
 - On hold.
 
-Each row/card shows the order number, current status, product/quantity, customer email, and age. Empty, loading, and failed states use the existing shared feedback styles.
+Each row/card shows the order number, current status, product/quantity, customer email, and age. On desktop it is a dense table; on mobile it collapses to compact rows. Empty, loading, and failed states use the existing shared feedback styles.
 
 ### Order detail
 
@@ -65,7 +65,7 @@ Every mutation disables its own control while pending, preserves unrelated contr
 
 ## Data and boundaries
 
-The workspace reads the existing review queue endpoint and the existing group endpoint. It does not receive private asset storage keys, provider tokens, payment information, or new customer data. Authorization remains server enforced through the existing operations session checks.
+The Orders page reads the existing review queue endpoint and the order page reads the existing group endpoint. A small internal read model may be added only if the existing queue response does not contain enough safe order-summary data for the order page. It does not receive private asset storage keys, provider tokens, payment information, or new customer data. Authorization remains server enforced through the existing operations session checks.
 
 ## Validation
 
