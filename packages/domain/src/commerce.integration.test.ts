@@ -652,7 +652,9 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(
       (
         await pool.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM app.external_fulfillment_orders WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+          `SELECT count(*)::text AS count FROM app.order_fulfillment_groups
+           WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+             AND external_order_id IS NOT NULL`,
           [orderNumber],
         )
       ).rows[0]?.count,
@@ -709,7 +711,8 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(operations.listFulfillmentGroups(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
     );
-    await expect(operations.listFulfillmentGroups(account, orderNumber)).resolves.toMatchObject([
+    const fulfillmentGroups = await operations.listFulfillmentGroups(account, orderNumber);
+    expect(fulfillmentGroups).toMatchObject([
       {
         adapterType: 'PRINTIFY',
         status: 'PENDING',
@@ -717,6 +720,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         externalOrderId: null,
       },
     ]);
+    const fulfillmentGroupId = fulfillmentGroups[0]!.id;
     await expect(operations.startPrepressReview(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
     );
@@ -736,18 +740,33 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'READY_FOR_PRODUCTION',
     );
+    // The current order-wide routing workflow precedes group routing. For this
+    // group-action test, bind the group to the qualification already approved
+    // by that workflow; the next slice will make this selection per group.
+    await pool.query(
+      `UPDATE app.order_fulfillment_groups
+       SET qualification_id = (
+         SELECT selected_qualification_id FROM app.order_final_routing
+         WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+         ORDER BY created_at DESC LIMIT 1
+       )
+       WHERE id = $2`,
+      [orderNumber, fulfillmentGroupId],
+    );
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
-    await expect(operations.submitProduction(ready.guest, orderNumber)).rejects.toBeInstanceOf(
-      OrderOperationsAccessError,
-    );
+    await expect(
+      operations.submitFulfillmentGroup(ready.guest, { orderNumber, fulfillmentGroupId }),
+    ).rejects.toBeInstanceOf(OrderOperationsAccessError);
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
     const productionKillSwitch = new OrderOperationsService(pool, storage, fulfillment, {
       fulfillmentAdapter: 'printify',
       realProductionSubmissionEnabled: false,
     });
-    await expect(productionKillSwitch.submitProduction(account, orderNumber)).rejects.toThrow(
+    await expect(
+      productionKillSwitch.submitFulfillmentGroup(account, { orderNumber, fulfillmentGroupId }),
+    ).rejects.toThrow(
       'Real production submission is disabled by environment safety configuration.',
     );
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
@@ -759,9 +778,9 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await pool.query(`UPDATE app.orders SET status = 'ROUTING' WHERE order_number = $1`, [
       orderNumber,
     ]);
-    await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
-      OrderTransitionError,
-    );
+    await expect(
+      operations.submitFulfillmentGroup(account, { orderNumber, fulfillmentGroupId }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
     await pool.query(
@@ -770,42 +789,50 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     );
 
     fulfillment.failNextCreate = true;
-    await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
-      FulfillmentIntegrationError,
-    );
+    await expect(
+      operations.submitFulfillmentGroup(account, { orderNumber, fulfillmentGroupId }),
+    ).rejects.toBeInstanceOf(FulfillmentIntegrationError);
     await pool.query(
       `UPDATE app.order_fulfillment_actions
        SET status = 'PROCESSING', updated_at = now() - interval '6 minutes'
-       WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
-         AND action = 'CREATE_EXTERNAL_ORDER'`,
-      [orderNumber],
+        WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+          AND fulfillment_group_id = $2
+          AND action = 'CREATE_EXTERNAL_ORDER'`,
+      [orderNumber, fulfillmentGroupId],
     );
     const gate = fulfillment.pauseNextSubmission();
-    const pendingFirst = operations.submitProduction(account, orderNumber);
+    const pendingFirst = operations.submitFulfillmentGroup(account, {
+      orderNumber,
+      fulfillmentGroupId,
+    });
     await gate.started;
-    await expect(operations.submitProduction(account, orderNumber)).rejects.toBeInstanceOf(
-      OrderTransitionError,
-    );
+    await expect(
+      operations.submitFulfillmentGroup(account, { orderNumber, fulfillmentGroupId }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
     await expect(
       operations.hold(account, orderNumber, 'OPERATIONAL_HOLD', 'Concurrent hold fixture.'),
     ).rejects.toBeInstanceOf(OrderTransitionError);
     gate.release();
     const first = await pendingFirst;
-    const second = await operations.submitProduction(account, orderNumber);
+    const second = await operations.submitFulfillmentGroup(account, {
+      orderNumber,
+      fulfillmentGroupId,
+    });
     expect(first.duplicate).toBe(false);
     expect(second).toEqual({ externalOrderId: first.externalOrderId, duplicate: true });
     expect(fulfillment.createCalls).toBe(2);
     expect(fulfillment.submitCalls).toBe(1);
     const externalOrders = await pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM app.external_fulfillment_orders e
-       JOIN app.orders o ON o.id = e.order_id WHERE o.order_number = $1`,
+      `SELECT count(*)::text AS count FROM app.order_fulfillment_groups fulfillment_group
+        JOIN app.orders o ON o.id = fulfillment_group.order_id
+        WHERE o.order_number = $1 AND fulfillment_group.external_order_id IS NOT NULL`,
       [orderNumber],
     );
     expect(externalOrders.rows[0]?.count).toBe('1');
     const reclaimedActions = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM app.order_operational_audits a
        JOIN app.orders o ON o.id = a.order_id
-       WHERE o.order_number = $1 AND a.action = 'fulfillment_action_reclaimed'`,
+        WHERE o.order_number = $1 AND a.action = 'fulfillment_action_reclaimed'`,
       [orderNumber],
     );
     expect(reclaimedActions.rows[0]?.count).toBe('1');
@@ -862,7 +889,9 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(
       (
         await pool.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM app.external_fulfillment_orders WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
+          `SELECT count(*)::text AS count FROM app.order_fulfillment_groups
+           WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+             AND external_order_id IS NOT NULL`,
           [orderNumber],
         )
       ).rows[0]?.count,

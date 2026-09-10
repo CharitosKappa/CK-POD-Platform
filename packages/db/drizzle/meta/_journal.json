@@ -204,6 +204,13 @@
       "when": 1789306000000,
       "tag": "0029_multi_provider_fulfillment_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1789307000000,
+      "tag": "0030_group_scoped_fulfillment_actions",
+      "breakpoints": true
     }
   ]
 }

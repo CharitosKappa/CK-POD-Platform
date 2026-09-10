@@ -22,6 +22,7 @@ export async function POST(
       reasonCode?: string;
       notes?: string;
       qualificationId?: string;
+      fulfillmentGroupId?: string;
     };
     if (body.reasonCode && !isOperationalReasonCode(body.reasonCode)) {
       return NextResponse.json({ error: 'Unsupported operational reason code.' }, { status: 400 });
@@ -53,6 +54,21 @@ export async function POST(
       createLogger({ service: 'web', minimumLevel: parseLogLevel(process.env.LOG_LEVEL) }).info(
         'operations.order_action_completed',
         { requestId: request.headers.get('x-request-id'), orderNumber, action: body.action },
+      );
+      return NextResponse.json({ ok: true, result });
+    } else if (body.action === 'SUBMIT_FULFILLMENT_GROUP' && body.fulfillmentGroupId) {
+      const result = await operations.submitFulfillmentGroup(session, {
+        orderNumber,
+        fulfillmentGroupId: body.fulfillmentGroupId,
+      });
+      createLogger({ service: 'web', minimumLevel: parseLogLevel(process.env.LOG_LEVEL) }).info(
+        'operations.fulfillment_group_action_completed',
+        {
+          requestId: request.headers.get('x-request-id'),
+          orderNumber,
+          action: body.action,
+          fulfillmentGroupId: body.fulfillmentGroupId,
+        },
       );
       return NextResponse.json({ ok: true, result });
     } else return NextResponse.json({ error: 'Unsupported operations action.' }, { status: 400 });

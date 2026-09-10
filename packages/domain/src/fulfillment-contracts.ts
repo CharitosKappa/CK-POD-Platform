@@ -91,8 +91,16 @@ export interface NormalizedShippingQuote {
 
 export interface FulfillmentOrderRequest {
   idempotencyKey: string;
-  externalProductId: string;
-  items: Array<{ externalVariantId: string; quantity: number; artworkReference: string }>;
+  /** The Printify provider chosen for this compatible fulfillment group. */
+  externalProviderId?: string;
+  /** Retained temporarily for existing single-order callers during migration. */
+  externalProductId?: string;
+  items: Array<{
+    externalBlueprintId?: string;
+    externalVariantId: string;
+    quantity: number;
+    artworkReference: string;
+  }>;
 }
 
 export interface FulfillmentOrderResult {

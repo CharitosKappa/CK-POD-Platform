@@ -145,7 +145,18 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
       {
         method: 'POST',
         headers: { 'idempotency-key': input.idempotencyKey },
-        body: JSON.stringify({ external_id: input.idempotencyKey, line_items: input.items }),
+        body: JSON.stringify({
+          external_id: input.idempotencyKey,
+          line_items: input.items.map((item) => ({
+            blueprint_id: Number(item.externalBlueprintId ?? input.externalProductId),
+            ...(input.externalProviderId
+              ? { print_provider_id: Number(input.externalProviderId) }
+              : {}),
+            variant_id: Number(item.externalVariantId),
+            quantity: item.quantity,
+            artwork_reference: item.artworkReference,
+          })),
+        }),
       },
     );
     return {

@@ -574,6 +574,96 @@ export class OrderOperationsService {
     }
   }
 
+  /**
+   * Creates and submits one Printify order for exactly one compatible
+   * fulfillment group. Other groups on the platform order remain unaffected.
+   */
+  async submitFulfillmentGroup(
+    session: ActiveSession,
+    input: { orderNumber: string; fulfillmentGroupId: string },
+  ): Promise<{ externalOrderId: string; duplicate: boolean }> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    if (
+      this.configuration.fulfillmentAdapter === 'printify' &&
+      !this.configuration.realProductionSubmissionEnabled
+    ) {
+      throw new OrderTransitionError(
+        'Real production submission is disabled by environment safety configuration.',
+      );
+    }
+    const readiness = await this.readinessSnapshot(input.orderNumber, { allowSubmitted: true });
+    if (readiness.blockers.length) {
+      throw new OrderTransitionError('This order is not ready for production.');
+    }
+    let group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
+    for (const item of group.items.filter((candidate) => !candidate.derivativeAssetId)) {
+      const derivative = await this.derivatives.create({
+        prepressRunId: item.prepressRunId,
+        qualificationId: group.qualificationId,
+      });
+      if (derivative.status !== 'READY' || !derivative.derivativeAssetId) {
+        throw new OrderTransitionError(
+          'A provider derivative requires operational review before this group can be submitted.',
+        );
+      }
+    }
+    group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
+    if (group.items.some((item) => !item.derivativeAssetId)) {
+      throw new OrderTransitionError(
+        'Provider derivatives are not ready for this fulfillment group.',
+      );
+    }
+    const external = await this.createExternalOrderForGroup(session, group);
+    const action = await this.beginGroupAction(
+      input.orderNumber,
+      input.fulfillmentGroupId,
+      'SUBMIT_TO_PRODUCTION',
+      session,
+    );
+    if (action.status === 'SUCCEEDED') {
+      return { externalOrderId: external.externalOrderId, duplicate: true };
+    }
+    try {
+      await this.fulfillment.submitProduction({
+        idempotencyKey: action.idempotencyKey,
+        externalOrderId: external.externalOrderId,
+      });
+      await withTransaction(this.pool, async (client) => {
+        await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
+        const order = await lockOrder(client, input.orderNumber);
+        await client.query(
+          `UPDATE app.order_fulfillment_groups
+           SET status = 'SUBMITTED', updated_at = now()
+           WHERE id = $1 AND order_id = $2`,
+          [input.fulfillmentGroupId, order.id],
+        );
+        if (order.status === 'READY_FOR_PRODUCTION') {
+          await this.transitionLocked(
+            client,
+            order,
+            'SUBMITTED_TO_PRINTIFY',
+            session,
+            'PRINTIFY_ERROR',
+          );
+        }
+        await this.audit(client, order.id, 'fulfillment_group_submitted', session, null, {
+          fulfillmentGroupId: input.fulfillmentGroupId,
+          externalOrderId: external.externalOrderId,
+        });
+      });
+      return { externalOrderId: external.externalOrderId, duplicate: false };
+    } catch (error) {
+      await this.failAction(action.id, normalizeFulfillmentError(error));
+      await this.pool.query(
+        `UPDATE app.order_fulfillment_groups
+         SET status = 'FAILED', updated_at = now()
+         WHERE id = $1 AND status IN ('PENDING', 'READY_FOR_PRODUCTION')`,
+        [input.fulfillmentGroupId],
+      );
+      throw error;
+    }
+  }
+
   async reconcileStatus(input: {
     externalOrderId: string;
     rawStatus: string;
@@ -581,14 +671,32 @@ export class OrderOperationsService {
     externalEventId?: string | null;
   }): Promise<void> {
     await withTransaction(this.pool, async (client) => {
-      const external = await client.query<{ order_id: string }>(
-        `SELECT order_id FROM app.external_fulfillment_orders WHERE external_order_id = $1 FOR UPDATE`,
+      const grouped = await client.query<{
+        order_id: string;
+        fulfillment_group_id: string | null;
+      }>(
+        `SELECT fulfillment_group.order_id, fulfillment_group.id AS fulfillment_group_id
+         FROM app.order_fulfillment_groups fulfillment_group
+          WHERE fulfillment_group.external_order_id = $1 FOR UPDATE`,
         [input.externalOrderId],
       );
-      const reference = external.rows[0];
+      const legacy = grouped.rows[0]
+        ? null
+        : await client.query<{ order_id: string; fulfillment_group_id: null }>(
+            `SELECT order_id, NULL::uuid AS fulfillment_group_id
+             FROM app.external_fulfillment_orders WHERE external_order_id = $1 FOR UPDATE`,
+            [input.externalOrderId],
+          );
+      const reference = grouped.rows[0] ?? legacy?.rows[0];
       if (!reference) return;
       const order = await lockOrderById(client, reference.order_id);
       const target = normalizeExternalStatus(input.rawStatus);
+      if (reference.fulfillment_group_id && target) {
+        await client.query(
+          `UPDATE app.order_fulfillment_groups SET status = $2, updated_at = now() WHERE id = $1`,
+          [reference.fulfillment_group_id, fulfillmentGroupStatus(target)],
+        );
+      }
       let disposition: 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'UNKNOWN' = target
         ? 'CONFLICT'
         : 'UNKNOWN';
@@ -614,7 +722,10 @@ export class OrderOperationsService {
           input.rawStatus,
           target,
           disposition,
-          JSON.stringify({ currentStatus: order.status }),
+          JSON.stringify({
+            currentStatus: order.status,
+            fulfillmentGroupId: reference.fulfillment_group_id,
+          }),
         ],
       );
       await this.audit(
@@ -623,7 +734,12 @@ export class OrderOperationsService {
         'fulfillment_status_reconciled',
         null,
         null,
-        { rawStatus: input.rawStatus, target, disposition },
+        {
+          rawStatus: input.rawStatus,
+          target,
+          disposition,
+          fulfillmentGroupId: reference.fulfillment_group_id,
+        },
         input.source,
       );
     });
@@ -807,6 +923,207 @@ export class OrderOperationsService {
     }
   }
 
+  private async createExternalOrderForGroup(
+    session: ActiveSession,
+    group: FulfillmentGroupSubmissionContext,
+  ): Promise<{ externalOrderId: string }> {
+    if (group.externalOrderId) return { externalOrderId: group.externalOrderId };
+    const action = await this.beginGroupAction(
+      group.orderNumber,
+      group.id,
+      'CREATE_EXTERNAL_ORDER',
+      session,
+    );
+    if (action.status === 'SUCCEEDED' && action.externalOrderId) {
+      return { externalOrderId: action.externalOrderId };
+    }
+    try {
+      const result = await this.fulfillment.createOrder({
+        idempotencyKey: action.idempotencyKey,
+        externalProviderId: group.externalProviderId,
+        items: group.items.map((item) => ({
+          externalBlueprintId: item.externalBlueprintId,
+          externalVariantId: item.externalVariantId,
+          quantity: item.quantity,
+          artworkReference: `asset:${item.derivativeAssetId}`,
+        })),
+      });
+      await withTransaction(this.pool, async (client) => {
+        await this.finishAction(client, action.id, 'SUCCEEDED', result.externalOrderId);
+        await client.query(
+          `UPDATE app.order_fulfillment_groups
+           SET external_order_id = $2, status = 'READY_FOR_PRODUCTION', updated_at = now()
+           WHERE id = $1 AND external_order_id IS NULL`,
+          [group.id, result.externalOrderId],
+        );
+        await this.audit(client, group.orderId, 'fulfillment_group_order_created', session, null, {
+          fulfillmentGroupId: group.id,
+          externalOrderId: result.externalOrderId,
+          itemCount: group.items.length,
+        });
+      });
+      return { externalOrderId: result.externalOrderId };
+    } catch (error) {
+      await this.failAction(action.id, normalizeFulfillmentError(error));
+      throw error;
+    }
+  }
+
+  private async groupSubmissionContext(
+    orderNumber: string,
+    fulfillmentGroupId: string,
+  ): Promise<FulfillmentGroupSubmissionContext> {
+    const result = await this.pool.query<GroupSubmissionRow>(
+      `SELECT fulfillment_group.id AS fulfillment_group_id, fulfillment_group.order_id,
+              orders.order_number, fulfillment_group.status AS fulfillment_group_status,
+              fulfillment_group.external_order_id, qualification.id AS qualification_id,
+              provider.external_id AS external_provider_id,
+              order_item.prepress_run_id,
+              checkout_item.item_snapshot->>'externalBlueprintId' AS external_blueprint_id,
+              checkout_item.item_snapshot->>'externalVariantId' AS external_variant_id,
+              order_item.quantity,
+              derivative.derivative_asset_id
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.orders orders ON orders.id = fulfillment_group.order_id
+       JOIN app.provider_qualifications qualification ON qualification.id = fulfillment_group.qualification_id
+       JOIN app.print_providers provider ON provider.id = fulfillment_group.provider_id
+       JOIN app.order_fulfillment_group_items group_item
+         ON group_item.fulfillment_group_id = fulfillment_group.id
+       JOIN app.order_items order_item ON order_item.id = group_item.order_item_id
+       JOIN app.checkout_fulfillment_group_items checkout_item
+         ON checkout_item.cart_item_id = order_item.cart_item_id
+        AND checkout_item.fulfillment_group_id = fulfillment_group.checkout_fulfillment_group_id
+       LEFT JOIN LATERAL (
+         SELECT derivative_asset_id
+         FROM app.provider_derivatives
+         WHERE prepress_run_id = order_item.prepress_run_id
+           AND qualification_id = fulfillment_group.qualification_id
+           AND status = 'READY'
+         ORDER BY completed_at DESC NULLS LAST, created_at DESC
+         LIMIT 1
+       ) derivative ON true
+       WHERE fulfillment_group.id = $1 AND orders.order_number = $2
+       ORDER BY order_item.created_at`,
+      [fulfillmentGroupId, orderNumber],
+    );
+    const first = required(result.rows[0], 'Fulfillment group not found for this order.');
+    const invalid = result.rows.some(
+      (row) => !row.external_blueprint_id || !row.external_variant_id,
+    );
+    if (invalid) {
+      throw new OrderTransitionError(
+        'The fulfillment group is missing a provider product mapping.',
+      );
+    }
+    return {
+      id: first.fulfillment_group_id,
+      orderId: first.order_id,
+      orderNumber: first.order_number,
+      status: first.fulfillment_group_status,
+      externalOrderId: first.external_order_id,
+      qualificationId: first.qualification_id,
+      externalProviderId: first.external_provider_id,
+      items: result.rows.map((row) => ({
+        prepressRunId: row.prepress_run_id,
+        externalBlueprintId: row.external_blueprint_id as string,
+        externalVariantId: row.external_variant_id as string,
+        quantity: row.quantity,
+        derivativeAssetId: row.derivative_asset_id,
+      })),
+    };
+  }
+
+  private async beginGroupAction(
+    orderNumber: string,
+    fulfillmentGroupId: string,
+    action: 'CREATE_EXTERNAL_ORDER' | 'SUBMIT_TO_PRODUCTION',
+    session: ActiveSession,
+  ) {
+    return withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, orderNumber);
+      if (!['READY_FOR_PRODUCTION', 'SUBMITTED_TO_PRINTIFY'].includes(order.status)) {
+        throw new OrderTransitionError(
+          'Group fulfillment actions require an order that is ready for production.',
+        );
+      }
+      const group = await client.query<{ id: string; external_order_id: string | null }>(
+        `SELECT id, external_order_id FROM app.order_fulfillment_groups
+         WHERE id = $1 AND order_id = $2 FOR UPDATE`,
+        [fulfillmentGroupId, order.id],
+      );
+      if (!group.rows[0])
+        throw new OrderTransitionError('Fulfillment group not found for this order.');
+      const idempotencyKey = `fulfillment-group:${fulfillmentGroupId}:${action}:v1`;
+      const existing = await client.query<{
+        id: string;
+        status: string;
+        external_order_id: string | null;
+        idempotency_key: string;
+        updated_at: Date;
+      }>(
+        `SELECT id, status, external_order_id, idempotency_key, updated_at
+         FROM app.order_fulfillment_actions
+         WHERE fulfillment_group_id = $1 AND action = $2 FOR UPDATE`,
+        [fulfillmentGroupId, action],
+      );
+      const row = existing.rows[0];
+      if (row?.status === 'PROCESSING') {
+        if (Date.now() - row.updated_at.getTime() < this.fulfillmentActionLeaseMs) {
+          throw new OrderTransitionError('This fulfillment group action is already in progress.');
+        }
+        await client.query(
+          `UPDATE app.order_fulfillment_actions
+           SET attempt_count = attempt_count + 1, updated_at = now() WHERE id = $1`,
+          [row.id],
+        );
+        await this.audit(client, order.id, 'fulfillment_action_reclaimed', session, null, {
+          action,
+          fulfillmentGroupId,
+          idempotencyKey: row.idempotency_key,
+        });
+        return {
+          id: row.id,
+          idempotencyKey: row.idempotency_key,
+          status: 'RETRYING',
+          externalOrderId: row.external_order_id,
+        };
+      }
+      if (row?.status === 'SUCCEEDED') {
+        return {
+          id: row.id,
+          idempotencyKey: row.idempotency_key,
+          status: 'SUCCEEDED',
+          externalOrderId: row.external_order_id,
+        };
+      }
+      if (row) {
+        await client.query(
+          `UPDATE app.order_fulfillment_actions
+           SET status = 'PROCESSING', attempt_count = attempt_count + 1, updated_at = now() WHERE id = $1`,
+          [row.id],
+        );
+        return {
+          id: row.id,
+          idempotencyKey: row.idempotency_key,
+          status: row.status,
+          externalOrderId: row.external_order_id,
+        };
+      }
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO app.order_fulfillment_actions (
+           order_id, fulfillment_group_id, action, idempotency_key, status, attempt_count, requested_by_user_id
+         ) VALUES ($1, $2, $3, $4, 'PROCESSING', 1, $5) RETURNING id`,
+        [order.id, fulfillmentGroupId, action, idempotencyKey, session.userId],
+      );
+      return {
+        id: required(inserted.rows[0], 'Could not begin fulfillment group action.').id,
+        idempotencyKey,
+        status: 'PROCESSING',
+        externalOrderId: group.rows[0].external_order_id,
+      };
+    });
+  }
+
   /**
    * The pre-group submit path is deliberately kept for compatibility with
    * existing operations. It must never collapse multiple fulfillment groups
@@ -933,7 +1250,7 @@ export class OrderOperationsService {
 
   private async readinessSnapshot(
     orderNumber: string,
-    options: { allowRouting?: boolean } = {},
+    options: { allowRouting?: boolean; allowSubmitted?: boolean } = {},
   ): Promise<ReadinessSnapshot> {
     const result = await this.pool.query<ReadinessRow>(
       `SELECT o.id, o.status, oi.project_id AS "projectId", oi.project_version_id AS "projectVersionId",
@@ -970,7 +1287,8 @@ export class OrderOperationsService {
     const blockers: string[] = [];
     if (
       row.status !== 'READY_FOR_PRODUCTION' &&
-      !(options.allowRouting && row.status === 'ROUTING')
+      !(options.allowRouting && row.status === 'ROUTING') &&
+      !(options.allowSubmitted && row.status === 'SUBMITTED_TO_PRINTIFY')
     )
       blockers.push('ORDER_STAGE');
     if (row.approved_proofs !== 1) blockers.push('PROOF_APPROVAL');
@@ -1166,6 +1484,36 @@ interface ReadinessSnapshot extends ReadinessRow {
   externalProductId: string;
   externalVariantId: string;
 }
+interface GroupSubmissionRow {
+  fulfillment_group_id: string;
+  order_id: string;
+  order_number: string;
+  fulfillment_group_status: string;
+  external_order_id: string | null;
+  qualification_id: string;
+  external_provider_id: string;
+  prepress_run_id: string;
+  external_blueprint_id: string | null;
+  external_variant_id: string | null;
+  quantity: number;
+  derivative_asset_id: string | null;
+}
+interface FulfillmentGroupSubmissionContext {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  status: string;
+  externalOrderId: string | null;
+  qualificationId: string;
+  externalProviderId: string;
+  items: Array<{
+    prepressRunId: string;
+    externalBlueprintId: string;
+    externalVariantId: string;
+    quantity: number;
+    derivativeAssetId: string | null;
+  }>;
+}
 
 async function lockOrder(client: SqlClient, orderNumber: string): Promise<LockedOrder> {
   const result = await client.query<LockedOrder>(
@@ -1225,6 +1573,16 @@ function normalizeExternalStatus(value: string): CanonicalOrderState | null {
   if (['cancelled', 'canceled'].includes(status)) return 'CANCELLED';
   if (status === 'failed') return 'FAILED';
   return null;
+}
+function fulfillmentGroupStatus(
+  target: CanonicalOrderState,
+): 'SUBMITTED' | 'IN_PRODUCTION' | 'SHIPPED' | 'DELIVERED' | 'FAILED' | 'CANCELLED' {
+  if (target === 'SUBMITTED_TO_PRINTIFY') return 'SUBMITTED';
+  if (target === 'IN_PRODUCTION') return 'IN_PRODUCTION';
+  if (target === 'SHIPPED') return 'SHIPPED';
+  if (target === 'DELIVERED') return 'DELIVERED';
+  if (target === 'FAILED') return 'FAILED';
+  return 'CANCELLED';
 }
 function canTransition(from: CanonicalOrderState, to: CanonicalOrderState): boolean {
   const valid: Partial<Record<CanonicalOrderState, CanonicalOrderState[]>> = {
