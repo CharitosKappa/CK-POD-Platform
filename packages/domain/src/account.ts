@@ -150,7 +150,9 @@ export class AccountService {
             input.expectedRevision,
           ],
         );
-        return mapAddress(requireRow(updated.rows[0], 'Your address changed. Refresh it and try again.'));
+        return mapAddress(
+          requireRow(updated.rows[0], 'Your address changed. Refresh it and try again.'),
+        );
       }
       const hasAddress = await client.query<{ id: string }>(
         'SELECT id FROM app.saved_addresses WHERE user_id = $1 LIMIT 1',
@@ -191,7 +193,8 @@ export class AccountService {
        WHERE id = $1 AND user_id = $2 AND revision = $3 RETURNING id`,
       [input.id, userId, input.expectedRevision],
     );
-    if (!deleted.rows[0]) throw new AccountValidationError('Your address changed. Refresh it and try again.');
+    if (!deleted.rows[0])
+      throw new AccountValidationError('Your address changed. Refresh it and try again.');
   }
 
   async designs(session: ActiveSession, limit = 24): Promise<AccountDesign[]> {
@@ -226,7 +229,9 @@ export class AccountService {
     }));
   }
 
-  async credits(session: ActiveSession): Promise<{ balance: number; entries: CreditLedgerEntry[] }> {
+  async credits(
+    session: ActiveSession,
+  ): Promise<{ balance: number; entries: CreditLedgerEntry[] }> {
     const userId = requireUser(session);
     const account = await this.pool.query<{ id: string; current_balance: number }>(
       `SELECT id, current_balance FROM app.credit_accounts
@@ -328,23 +333,39 @@ function validateAddress(input: AddressInput): Required<AddressInput> {
   const stateCode = input.stateCode.trim().toUpperCase();
   const postalCode = input.postalCode.trim();
   const countryCode = input.countryCode.trim().toUpperCase();
-  if (!line1 || !city || !/^[A-Z]{2}$/.test(stateCode) || !/^\d{5}(?:-\d{4})?$/.test(postalCode) || countryCode !== 'US') {
+  const line2 = input.line2?.trim() || null;
+  const phone = input.phone?.trim() || null;
+  if (
+    !line1 ||
+    line1.length > 120 ||
+    (line2 && line2.length > 120) ||
+    !city ||
+    city.length > 80 ||
+    !/^[A-Z]{2}$/.test(stateCode) ||
+    !/^\d{5}(?:-\d{4})?$/.test(postalCode) ||
+    countryCode !== 'US' ||
+    (phone !== null && !/^[+0-9().\-\s]{7,25}$/.test(phone))
+  ) {
     throw new AccountValidationError('Enter a complete US delivery address.');
   }
   return {
     recipientName,
     line1,
-    line2: input.line2?.trim() || null,
+    line2,
     city,
     stateCode,
     postalCode,
     countryCode,
-    phone: input.phone?.trim() || null,
+    phone,
     isDefault: Boolean(input.isDefault),
   };
 }
 
-async function clearDefaultAddress(client: SqlClient, userId: string, exceptId?: string): Promise<void> {
+async function clearDefaultAddress(
+  client: SqlClient,
+  userId: string,
+  exceptId?: string,
+): Promise<void> {
   await client.query(
     `UPDATE app.saved_addresses SET is_default = false, updated_at = now()
      WHERE user_id = $1 AND is_default = true ${exceptId ? 'AND id <> $2' : ''}`,

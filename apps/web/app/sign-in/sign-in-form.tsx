@@ -136,9 +136,11 @@ export function SignInForm({ returnTo }: { returnTo: string }) {
               enterKeyHint="next"
               id="signin-email"
               inputMode="email"
+              name="email"
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
               ref={emailRef}
+              spellCheck={false}
               type="email"
               value={email}
             />
@@ -206,6 +208,7 @@ export function SignInForm({ returnTo }: { returnTo: string }) {
                 onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
                 pattern="[0-9]*"
                 ref={codeRef}
+                spellCheck={false}
                 type="text"
                 value={code}
               />

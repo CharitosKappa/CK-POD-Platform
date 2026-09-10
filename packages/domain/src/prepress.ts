@@ -312,6 +312,21 @@ export class PrepressService {
     }
   }
 
+  /**
+   * Replays a bounded set of durable pending runs after a worker or queue
+   * restart. The conditional claim in `process` prevents duplicate renders.
+   */
+  async recoverPending(limit = 100): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT id FROM app.prepress_runs
+       WHERE status = 'PENDING'
+       ORDER BY created_at ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
   private async enqueue(run: RunRow): Promise<void> {
     const job = await this.queue.enqueue<PrepressJobPayload>({
       queue: prepressQueueName,

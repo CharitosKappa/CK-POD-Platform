@@ -124,19 +124,40 @@ integrationSuite('prepress and production rendering integration', () => {
     expect((await harness.prepress.latest(guest, project.id))?.status).toBe('REVIEW_REQUIRED');
     await harness.close();
   });
+
+  it('replays a pending prepress run after a queue restart', async () => {
+    const harness = await createHarness(pool, { startConsumer: false });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const source = await insertSource(pool, project.id, harness.storage, 'durable-prepress');
+    await projects.autosave(guest, project.id, artworkDocument(source.id), project.revision);
+
+    const requested = await harness.prepress.request(guest, project.id);
+    expect(await harness.prepress.recoverPending()).toEqual([requested.id]);
+    await harness.prepress.process(requested.id);
+
+    expect(await harness.prepress.latest(guest, project.id)).toMatchObject({
+      id: requested.id,
+      status: 'REVIEW_REQUIRED',
+    });
+    await harness.close();
+  });
 });
 
-async function createHarness(pool: SqlPool) {
+async function createHarness(pool: SqlPool, input: { startConsumer?: boolean } = {}) {
   const queue = new InMemoryJobQueue();
   const storage = new MemoryObjectStorage();
   const prepress = new PrepressService(pool, queue, storage);
-  const consumer = await startPrepressConsumer(queue, (runId) => prepress.process(runId));
+  const consumer =
+    input.startConsumer === false
+      ? null
+      : await startPrepressConsumer(queue, (runId) => prepress.process(runId));
   return {
     queue,
     storage,
     prepress,
     close: async () => {
-      await consumer.close();
+      await consumer?.close();
       await queue.close();
     },
   };

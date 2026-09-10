@@ -12,7 +12,8 @@ export async function POST(
   context: { params: Promise<{ checkoutId: string }> },
 ): Promise<NextResponse> {
   try {
-    if (serverEnvironment().PAYMENT_ADAPTER !== 'fake')
+    const environment = serverEnvironment();
+    if (environment.PAYMENT_ADAPTER !== 'fake' || !['local', 'test'].includes(environment.APP_ENV))
       return NextResponse.json({ error: 'Not found.' }, { status: 404 });
     const { checkoutId } = await context.params;
     const body = (await request.json()) as {

@@ -7,6 +7,7 @@ import { generationRuntime } from '../../../../../lib/generation-runtime';
 import { handleRouteError } from '../../../../../lib/http';
 import { databasePool, requireSession } from '../../../../../lib/platform';
 import { serverEnvironment } from '../../../../../lib/runtime-environment';
+import { enforceRateLimit } from '../../../../../lib/security';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,17 @@ export async function POST(
   context: { params: Promise<{ projectId: string }> },
 ): Promise<NextResponse> {
   try {
+    const contentLength = Number(request.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxUploadBytes + 1_048_576) {
+      return NextResponse.json({ error: 'Choose an image smaller than 15 MB.' }, { status: 413 });
+    }
+    const session = await requireSession();
+    await enforceRateLimit(request, {
+      action: 'reference-upload',
+      subject: session.userId ?? session.id,
+      maxRequests: 8,
+      windowMs: 10 * 60_000,
+    });
     let form: FormData;
     try {
       form = await request.formData();
@@ -69,7 +81,7 @@ export async function POST(
       databasePool(),
       runtime.storage,
       serverEnvironment().AI_MAX_REFERENCE_ASSETS,
-    ).replace(await requireSession(), projectId, {
+    ).replace(session, projectId, {
       expectedRevision,
       body: normalized.data,
       contentType: 'image/png',

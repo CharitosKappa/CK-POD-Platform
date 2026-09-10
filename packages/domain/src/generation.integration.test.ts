@@ -312,6 +312,30 @@ integrationSuite('AI generation orchestration integration', () => {
     await harness.close();
   });
 
+  it('replays queued generation work after a queue restart without duplicate credits', async () => {
+    const harness = await createHarness({ startConsumer: false });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'A durable recovery-safe mountain badge.',
+    });
+
+    expect(await harness.generations.recoverQueued()).toEqual([created.id]);
+    await harness.worker.process(created.id);
+
+    expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
+      status: 'SUCCEEDED',
+      creditStatus: 'CONSUMED',
+    });
+    const consumes = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM app.credit_ledger
+       WHERE generation_id = $1 AND entry_type = 'CONSUME'`,
+      [created.id],
+    );
+    expect(consumes.rows[0]?.count).toBe('1');
+    await harness.close();
+  });
+
   it('retries/falls back without double-consuming a credit and records every attempt', async () => {
     const fallback = new CapturingProvider('fallback-provider', 'fallback-v1');
     const harness = await createHarness({

@@ -660,8 +660,12 @@ function releaseReferenceUrl(reference: ReferenceImageState | null): void {
 
 export interface CreateExperienceProps {
   creditBalance?: number;
+  /** Hydrates the full-screen menu from the host application's authenticated session. */
+  signedInEmail?: string | null;
   /** Lets the production host route account access to its real passwordless flow. */
   onAccountAccess?: () => void;
+  /** Lets the production host end its real authenticated session. */
+  onSignOut?: () => Promise<void>;
   /** Clears the production draft when starting another independent design. */
   onCreateAnotherDesign?: () => void;
   initialCart?: CartItem[];
@@ -765,10 +769,12 @@ export function CreateExperience({
   onGenerateDesign,
   onReferenceRemoved,
   onReferenceSelected,
+  onSignOut,
+  signedInEmail: initialSignedInEmail = null,
 }: CreateExperienceProps) {
   const [step, setStep] = useState<
     'idea' | 'style' | 'product' | 'generate' | 'checkout' | 'editor'
-  >(initialCreation?.step === 'review' ? 'generate' : initialCreation?.step ?? 'idea');
+  >(initialCreation?.step === 'review' ? 'generate' : (initialCreation?.step ?? 'idea'));
   const [prompt, setPrompt] = useState(initialCreation?.prompt ?? '');
   const [reference, setReference] = useState<ReferenceImageState | null>(
     initialCreation?.reference ?? null,
@@ -826,7 +832,7 @@ export function CreateExperience({
   const [verificationCode, setVerificationCode] = useState('');
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
-  const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(initialSignedInEmail);
   const triggerRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const cartCloseRef = useRef<HTMLButtonElement | null>(null);
@@ -995,6 +1001,14 @@ export function CreateExperience({
     setAuthError('');
     setAuthNotice('');
     setVerificationCode('');
+  };
+
+  const signOutFromMenu = () => {
+    if (onSignOut) {
+      void onSignOut();
+      return;
+    }
+    setSignedInEmail(null);
   };
   const closeAccountPage = () => {
     setAccountPageOpen(false);
@@ -1860,7 +1874,7 @@ export function CreateExperience({
           openAccount={openAccountFromMenu}
           openCart={openCartFromMenu}
           signedInEmail={signedInEmail}
-          signOut={() => setSignedInEmail(null)}
+          signOut={signOutFromMenu}
           startNewDesign={startNewDesignFromMenu}
         />
       ) : null}
@@ -4058,10 +4072,7 @@ function CartDrawer({
                 const itemSize = SIZES.find((size) => size.id === item.size)!;
                 return (
                   <article className="cart-item" key={item.id}>
-                    <div
-                      aria-label="Saved design preview"
-                      className="cart-item-art"
-                    >
+                    <div aria-label="Saved design preview" className="cart-item-art">
                       <ArtworkPreview
                         generatedPreviewUrl={item.generatedPreviewUrl ?? null}
                         prompt={item.prompt}

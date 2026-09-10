@@ -50,10 +50,24 @@ if (environment.GENERATION_ENABLED) {
   logger.info('worker.generation_consumer_ready', { queue: 'ai-generation' });
   await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
   logger.info('worker.prepress_consumer_ready', { queue: 'prepress-render' });
-  const recovered = await runtime.generations.recoverStaleProcessing(15 * 60_000);
-  await Promise.all(recovered.map((generationId) => runtime.worker.process(generationId)));
-  if (recovered.length)
-    logger.warn('worker.stale_generations_recovered', { count: recovered.length });
+  const staleGenerations = await runtime.generations.recoverStaleProcessing(15 * 60_000);
+  const queuedGenerations = await runtime.generations.recoverQueued();
+  const recoveredGenerations = [...new Set([...staleGenerations, ...queuedGenerations])];
+  await Promise.all(
+    recoveredGenerations.map((generationId) => runtime.worker.process(generationId)),
+  );
+  if (recoveredGenerations.length)
+    logger.warn('worker.generations_recovered', {
+      count: recoveredGenerations.length,
+      staleCount: staleGenerations.length,
+    });
+
+  const pendingPrepress = await runtime.prepress.recoverPending();
+  await Promise.all(
+    pendingPrepress.map((prepressRunId) => runtime.prepress.process(prepressRunId)),
+  );
+  if (pendingPrepress.length)
+    logger.warn('worker.prepress_runs_recovered', { count: pendingPrepress.length });
 } else {
   logger.warn('worker.generation_consumers_disabled');
 }

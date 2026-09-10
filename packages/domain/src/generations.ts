@@ -292,6 +292,23 @@ export class GenerationService {
     return result.rows.map((row) => row.id);
   }
 
+  /**
+   * A queue can lose volatile jobs during a worker or broker restart. The
+   * database remains the durable source of truth, so replay a bounded batch of
+   * unclaimed work on startup. `claim` is atomic, making this safe alongside a
+   * still-delivered queue job.
+   */
+  async recoverQueued(limit = 100): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT id FROM app.generations
+       WHERE status = 'QUEUED'
+       ORDER BY created_at ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
   async reject(
     generationId: string,
     category: Extract<

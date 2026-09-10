@@ -29,7 +29,10 @@ function nextWithRequestId(requestId: string, requestHeaders: Headers): NextResp
 
 export function hasTrustedBrowserOrigin(headers: Headers): boolean {
   const origin = headers.get('origin');
-  const host = headers.get('x-forwarded-host') ?? headers.get('host');
+  // `X-Forwarded-Host` is client-controlled unless a deployment proxy is known
+  // to overwrite it. The request host is the only browser-origin boundary we
+  // can safely validate here; the reverse proxy must preserve the public Host.
+  const host = headers.get('host');
   if (!origin || !host) return false;
   try {
     return new URL(origin).host === host;

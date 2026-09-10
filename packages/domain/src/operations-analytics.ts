@@ -324,7 +324,7 @@ export class LifecycleOrchestrator {
       checkout_id: string;
       project_id: string;
     }>(
-      `SELECT a.email, c.id AS checkout_id, i.project_id FROM app.checkout_attempts c JOIN app.shipping_addresses a ON a.id = c.shipping_address_id JOIN app.cart_items i ON i.cart_id = c.cart_id WHERE c.status IN ('PENDING','FAILED') AND c.created_at < $1 AND NOT EXISTS (SELECT 1 FROM app.orders o WHERE o.checkout_attempt_id = c.id)`,
+      `SELECT a.email, c.id AS checkout_id, i.project_id FROM app.checkout_attempts c JOIN app.shipping_addresses a ON a.id = c.shipping_address_id JOIN app.cart_items i ON i.cart_id = c.cart_id WHERE c.status IN ('PAYMENT_PENDING','PAYMENT_FAILED') AND c.created_at < $1 AND NOT EXISTS (SELECT 1 FROM app.orders o WHERE o.checkout_attempt_id = c.id)`,
       [checkoutBefore],
     );
     for (const row of checkouts.rows)
@@ -337,7 +337,7 @@ export class LifecycleOrchestrator {
         payload: { projectId: row.project_id },
       });
     const carts = await this.pool.query<{ email: string; cart_id: string; project_id: string }>(
-      `SELECT u.email, c.id AS cart_id, i.project_id FROM app.carts c JOIN app.users u ON u.id = c.owner_user_id JOIN app.cart_items i ON i.cart_id = c.id WHERE c.status = 'ACTIVE' AND c.updated_at < $1 AND NOT EXISTS (SELECT 1 FROM app.checkout_attempts ca JOIN app.orders o ON o.checkout_attempt_id = ca.id WHERE ca.cart_id = c.id)`,
+      `SELECT u.email, c.id AS cart_id, i.project_id FROM app.carts c JOIN app.users u ON u.id = c.owner_user_id JOIN app.cart_items i ON i.cart_id = c.id WHERE c.status = 'READY' AND c.updated_at < $1 AND NOT EXISTS (SELECT 1 FROM app.checkout_attempts ca JOIN app.orders o ON o.checkout_attempt_id = ca.id WHERE ca.cart_id = c.id)`,
       [cartBefore],
     );
     for (const row of carts.rows)

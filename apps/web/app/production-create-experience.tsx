@@ -68,15 +68,15 @@ interface CartSnapshot {
 }
 
 interface CartLineSnapshot {
-    id: string;
-    projectId: string;
-    previewAssetId: string;
-    designPreviewAssetId: string | null;
-    colorCode: string;
-    colorName: string;
-    size: string;
-    quantity: number;
-    unitPriceCents: number;
+  id: string;
+  projectId: string;
+  previewAssetId: string;
+  designPreviewAssetId: string | null;
+  colorCode: string;
+  colorName: string;
+  size: string;
+  quantity: number;
+  unitPriceCents: number;
 }
 
 interface CheckoutSnapshot {
@@ -94,9 +94,66 @@ interface PrepressSnapshot {
     'PENDING' | 'RENDERING' | 'VALIDATING' | 'PASSED' | 'REVIEW_REQUIRED' | 'BLOCKED' | 'FAILED';
 }
 
+interface AuthSessionSnapshot {
+  account: { email: string } | null;
+}
+
 const activeCreationKey = 'let-it-be-active-creation-project';
 const activeGenerationKey = 'let-it-be-active-creation-generation';
 const activeCartKey = 'let-it-be-active-cart';
+const styleIds = new Set<StyleId>([
+  'vintage-retro',
+  'illustrated',
+  'streetwear-y2k',
+  'typography',
+  'minimal-modern',
+  'dark-alternative',
+]);
+const toneIds = new Set<ToneId>([
+  'funny',
+  'sarcastic',
+  'bold',
+  'cute',
+  'dark',
+  'heartfelt',
+  'auto',
+]);
+const colorIds = new Set<ColorId>([
+  'white',
+  'ivory',
+  'pepper',
+  'black',
+  'mustard',
+  'yam',
+  'grey',
+  'moss',
+  'light-green',
+  'chambray',
+  'flo-blue',
+  'graphite',
+  'violet',
+  'orchid',
+  'blossom',
+  'crunchberry',
+  'berry',
+  'watermelon',
+  'bay',
+  'blue-jean',
+  'crimson',
+  'butter',
+  'chalky-mint',
+  'blue-spruce',
+  'brick',
+  'espresso',
+  'island-reef',
+  'lagoon-blue',
+  'sapphire',
+  'navy',
+  'neon-pink',
+  'chili',
+  'red',
+]);
+const sizeIds = new Set<SizeId>(['s', 'm', 'l', 'xl', '2xl', '3xl', '4xl']);
 
 class ApiRequestError extends Error {
   public constructor(
@@ -123,16 +180,24 @@ export function ProductionCreateExperience() {
   >();
   const [creditBalance, setCreditBalance] = useState<number>();
   const [initialCart, setInitialCart] = useState<CartItem[]>();
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
   const [resumeState, setResumeState] = useState<'loading' | 'ready' | 'failed'>('loading');
 
   useEffect(() => {
     let active = true;
     const resume = async () => {
       try {
-        const creditResponse = await fetch('/api/credits', { cache: 'no-store' });
-        const creditAccount = await readJson<{ balance: number }>(creditResponse);
+        const [creditResponse, authResponse] = await Promise.all([
+          fetch('/api/credits', { cache: 'no-store' }),
+          fetch('/api/auth/session', { cache: 'no-store' }),
+        ]);
+        const [creditAccount, auth] = await Promise.all([
+          readJson<{ balance: number }>(creditResponse),
+          readJson<AuthSessionSnapshot>(authResponse),
+        ]);
         if (!active) return;
         setCreditBalance(creditAccount.balance);
+        setSignedInEmail(auth.account?.email ?? null);
 
         let creation = emptyCreation();
         const projectId = window.localStorage.getItem(activeCreationKey);
@@ -158,10 +223,10 @@ export function ProductionCreateExperience() {
                   url: referencePreviewUrl(project.id, referenceId),
                 }
               : null,
-            style: draft.prototypeStyleId as StyleId | null,
-            tone: draft.prototypeToneId as ToneId,
-            color: (project.selectedColorCode ?? 'black') as ColorId,
-            size: draft.selectedSize as SizeId | null,
+            style: normalizeStyle(draft.prototypeStyleId),
+            tone: normalizeTone(draft.prototypeToneId),
+            color: normalizeColor(project.selectedColorCode),
+            size: normalizeSize(draft.selectedSize),
           };
           const resumedGeneration = readResumedGeneration(projectId);
           if (resumedGeneration) {
@@ -422,7 +487,10 @@ export function ProductionCreateExperience() {
     return cartPersistenceResult(cart, project.id);
   }
 
-  async function updateCartQuantity(itemId: string, quantity: number): Promise<CartPersistenceResult> {
+  async function updateCartQuantity(
+    itemId: string,
+    quantity: number,
+  ): Promise<CartPersistenceResult> {
     const cart = cartRef.current;
     if (!cart) throw new Error('Your cart could not be found.');
     const response = await fetch(`/api/carts/${encodeURIComponent(cart.id)}`, {
@@ -556,13 +624,18 @@ export function ProductionCreateExperience() {
       onGenerateDesign={generateDesign}
       onAddToCart={addToCart}
       onAccountAccess={() => {
-        window.location.assign('/sign-in?returnTo=/account');
+        window.location.assign(signedInEmail ? '/account' : '/sign-in?returnTo=/account');
+      }}
+      onSignOut={async () => {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.location.assign('/');
       }}
       onCartQuantityChange={updateCartQuantity}
       onCartRemove={removeCart}
       onCreateAnotherDesign={createAnotherDesign}
       onCheckoutCompleted={completeCheckout}
       {...(initialCart ? { initialCart } : {})}
+      signedInEmail={signedInEmail}
       onReferenceRemoved={removeReference}
       onReferenceSelected={persistReference}
     />
@@ -598,8 +671,8 @@ function cartItemFromSnapshot(
     prompt: creation.prompt,
     style: creation.style,
     tone: creation.tone,
-    color: item.colorCode as ColorId,
-    size: item.size.toLowerCase() as SizeId,
+    color: normalizeColor(item.colorCode),
+    size: normalizeSize(item.size.toLowerCase()) ?? 'm',
     generationVersion: 0,
     ...(item.designPreviewAssetId
       ? { generatedPreviewUrl: referencePreviewUrl(item.projectId, item.designPreviewAssetId) }
@@ -622,7 +695,9 @@ function emptyCreation(): NonNullable<CreateExperienceProps['initialCreation']> 
   };
 }
 
-function readResumedGeneration(projectId: string): { generationId: string; previewAssetId: string } | null {
+function readResumedGeneration(
+  projectId: string,
+): { generationId: string; previewAssetId: string } | null {
   const value = window.localStorage.getItem(activeGenerationKey);
   if (!value) return null;
   try {
@@ -644,6 +719,22 @@ function readResumedGeneration(projectId: string): { generationId: string; previ
   }
   window.localStorage.removeItem(activeGenerationKey);
   return null;
+}
+
+function normalizeStyle(value: string | null): StyleId | null {
+  return value && styleIds.has(value as StyleId) ? (value as StyleId) : null;
+}
+
+function normalizeTone(value: string | null): ToneId {
+  return value && toneIds.has(value as ToneId) ? (value as ToneId) : 'auto';
+}
+
+function normalizeColor(value: string | null): ColorId {
+  return value && colorIds.has(value as ColorId) ? (value as ColorId) : 'black';
+}
+
+function normalizeSize(value: string | null): SizeId | null {
+  return value && sizeIds.has(value as SizeId) ? (value as SizeId) : null;
 }
 
 function referencePreviewUrl(projectId: string, assetId: string): string {

@@ -6,6 +6,7 @@ import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
 import type {
   BillingAddress,
+  PaymentIntentResult,
   PaymentService,
   TaxService,
   VerifiedPaymentEvent,
@@ -86,22 +87,22 @@ export interface CartView {
 }
 
 export interface CartLineView {
-    id: string;
-    projectId: string;
-    projectVersionId: string;
-    prepressRunId: string;
-    mockupId: string;
-    previewAssetId: string;
-    /** Artwork-only preview, fixed at the point the line enters the cart. */
-    designPreviewAssetId: string | null;
-    productModelId: string;
-    productName: string;
-    variantId: string;
-    colorCode: string;
-    colorName: string;
-    size: string;
-    quantity: number;
-    unitPriceCents: number;
+  id: string;
+  projectId: string;
+  projectVersionId: string;
+  prepressRunId: string;
+  mockupId: string;
+  previewAssetId: string;
+  /** Artwork-only preview, fixed at the point the line enters the cart. */
+  designPreviewAssetId: string | null;
+  productModelId: string;
+  productName: string;
+  variantId: string;
+  colorCode: string;
+  colorName: string;
+  size: string;
+  quantity: number;
+  unitPriceCents: number;
 }
 
 export interface CheckoutView {
@@ -475,27 +476,27 @@ export class CommerceService {
     for (const item of items) {
       await this.assertImmutableItemState(session, item);
       await this.pool.query(
-      `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
+        `UPDATE app.proof_approvals SET approval_state = 'INVALIDATED', invalidated_at = now(),
        invalidation_reason = 'Superseded by a new approval.'
        WHERE cart_item_id = $1 AND approval_state = 'APPROVED'`,
         [item.id],
       );
       await this.pool.query(
-      `INSERT INTO app.proof_approvals (
+        `INSERT INTO app.proof_approvals (
          cart_item_id, project_id, project_version_id, prepress_run_id, mockup_id, product_model_id, color_code,
          approval_state, state_hash, approved_by_session_id, approved_by_user_id
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'APPROVED', $8, $9, $10)`,
         [
-        item.id,
-        item.project_id,
-        item.project_version_id,
-        item.prepress_run_id,
-        item.mockup_id,
-        item.product_model_id,
-        item.color_code,
-        proofStateHash(item),
-        session.id,
-        session.userId,
+          item.id,
+          item.project_id,
+          item.project_version_id,
+          item.prepress_run_id,
+          item.mockup_id,
+          item.product_model_id,
+          item.color_code,
+          proofStateHash(item),
+          session.id,
+          session.userId,
         ],
       );
       await this.pool.query(
@@ -551,6 +552,17 @@ export class CommerceService {
   ): Promise<CheckoutView> {
     if (!input.idempotencyKey || input.idempotencyKey.length < 12)
       throw new CommerceValidationError('A checkout idempotency key is required.');
+    await this.pool.query(
+      `UPDATE app.checkout_attempts attempt
+       SET status = 'EXPIRED', updated_at = now()
+       FROM app.carts c
+       WHERE attempt.cart_id = c.id
+         AND attempt.cart_id = $1
+         AND attempt.status IN ('READY', 'PAYMENT_PENDING')
+         AND attempt.price_expires_at <= now()
+         AND ${cartOwnershipClause(2, 3)}`,
+      [cartId, session.id, session.userId],
+    );
     const existing = await this.pool.query<{ id: string }>(
       `SELECT ca.id FROM app.checkout_attempts ca JOIN app.carts c ON c.id = ca.cart_id
        WHERE ca.idempotency_key = $1 AND ${cartOwnershipClause(2, 3)}`,
@@ -628,14 +640,25 @@ export class CommerceService {
       ],
     );
     if (!inserted.rows[0]) return this.getCheckout(session, attemptId);
-    const intent = await this.payments.createIntent({
-      checkoutAttemptId: attemptId,
-      amountCents: pricingWithTax.totalCents,
-      currency,
-      idempotencyKey: input.idempotencyKey,
-      customerEmail: shippingAddress.email,
-      billingAddress,
-    });
+    let intent: PaymentIntentResult;
+    try {
+      intent = await this.payments.createIntent({
+        checkoutAttemptId: attemptId,
+        amountCents: pricingWithTax.totalCents,
+        currency,
+        idempotencyKey: input.idempotencyKey,
+        customerEmail: shippingAddress.email,
+        billingAddress,
+      });
+    } catch (error) {
+      await this.pool.query(
+        `UPDATE app.checkout_attempts
+         SET status = 'PAYMENT_FAILED', updated_at = now()
+         WHERE id = $1 AND status = 'PAYMENT_PENDING' AND provider_payment_id IS NULL`,
+        [attemptId],
+      );
+      throw error;
+    }
     await this.pool.query(
       `UPDATE app.checkout_attempts SET provider_payment_id = $2, provider_client_secret = $3, updated_at = now() WHERE id = $1`,
       [attemptId, intent.providerPaymentId, intent.clientSecret],
@@ -832,15 +855,11 @@ export class CommerceService {
       [event.paymentId],
     );
     const checkout = requireRow(attempt.rows[0], 'Payment does not match a checkout attempt.');
-    if (checkout.price_expires_at <= new Date()) {
-      await client.query(
-        `UPDATE app.checkout_attempts SET status = 'EXPIRED', updated_at = now() WHERE id = $1`,
-        [checkout.id],
-      );
-      throw new CommerceValidationError(
-        'Your delivery estimate expired. Refresh checkout before payment.',
-      );
-    }
+    // A verified provider event is financial evidence. A quote can expire while a
+    // customer is completing a payment, but that must never discard a successful
+    // charge or its audit trail. Quote expiry is enforced before creating/reusing
+    // checkout intents; a late verified payment is finalized against its immutable
+    // checkout snapshot and can be handled operationally from the resulting order.
     if (event.amountCents !== checkout.amount_cents || event.currency !== checkout.currency) {
       throw new CommerceValidationError('Payment amount does not match the server checkout total.');
     }
@@ -1187,10 +1206,7 @@ export class CommerceService {
   private priceCart(items: ItemRow[], providerShippingCents: number): PricingSnapshot {
     const primaryItem = requireRow(items[0], 'Cart has no items.');
     const quantity = items.reduce((total, item) => total + item.quantity, 0);
-    const gross = items.reduce(
-      (total, item) => total + item.unit_price_cents * item.quantity,
-      0,
-    );
+    const gross = items.reduce((total, item) => total + item.unit_price_cents * item.quantity, 0);
     const discountRule = [...this.configuration.quantityDiscounts]
       .sort((a, b) => b.minimumQuantity - a.minimumQuantity)
       .find((rule) => quantity >= rule.minimumQuantity);
@@ -1256,7 +1272,12 @@ function toCartLineView(item: ItemRow): CartLineView {
 }
 
 function validateAddress(address: ShippingAddressInput): void {
-  if (!/^\S+@\S+\.\S+$/.test(address.email) || !isValidPostalAddress(address)) {
+  if (
+    address.email.trim().length > 254 ||
+    !/^\S+@\S+\.\S+$/.test(address.email) ||
+    !isValidPostalAddress(address) ||
+    (address.phone !== undefined && address.phone !== null && !isValidPhone(address.phone))
+  ) {
     throw new CommerceValidationError('Enter a complete US shipping address and a valid email.');
   }
 }
@@ -1288,14 +1309,25 @@ function billingAddressFromShipping(address: ShippingAddressRow): BillingAddress
 }
 
 function isValidPostalAddress(address: BillingAddressInput): boolean {
+  const line1 = address.line1.trim();
+  const line2 = address.line2?.trim() || null;
+  const city = address.city.trim();
   return (
     Boolean(address.recipientName.trim()) &&
-    Boolean(address.line1.trim()) &&
-    Boolean(address.city.trim()) &&
+    address.recipientName.trim().length <= 80 &&
+    Boolean(line1) &&
+    line1.length <= 120 &&
+    (!line2 || line2.length <= 120) &&
+    Boolean(city) &&
+    city.length <= 80 &&
     /^[A-Za-z]{2}$/.test(address.stateCode.trim()) &&
     /^\d{5}(?:-\d{4})?$/.test(address.postalCode.trim()) &&
     address.countryCode.trim().toUpperCase() === 'US'
   );
+}
+
+function isValidPhone(value: string): boolean {
+  return /^[+0-9().\-\s]{7,25}$/.test(value.trim());
 }
 function requireCheckoutReady(status: string): void {
   if (!['PASSED', 'REVIEW_REQUIRED'].includes(status))

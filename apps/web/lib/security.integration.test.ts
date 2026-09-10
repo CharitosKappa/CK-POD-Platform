@@ -54,7 +54,7 @@ integrationSuite('distributed API rate limiting', () => {
   });
 
   it('binds authenticated limits to the stable subject while keeping guests IP-scoped', () => {
-    expect(rateLimitKey('generation', 'session-a', '198.51.100.1')).not.toBe(
+    expect(rateLimitKey('generation', 'session-a', '198.51.100.1')).toBe(
       rateLimitKey('generation', 'session-a', '198.51.100.2'),
     );
     expect(rateLimitKey('generation', 'session-a', '198.51.100.1')).not.toBe(

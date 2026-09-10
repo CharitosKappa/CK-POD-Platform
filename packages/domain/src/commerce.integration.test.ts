@@ -341,6 +341,107 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect((await integrityViolationCounts(pool)).delivered_without_shipment).toBe(0);
   });
 
+  it('records a verified payment even when its delivery quote expires during payment completion', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    await commerce.approveProof(ready.guest, cart.id);
+    const shippingAddressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
+    const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId,
+      billingAddress: null,
+      idempotencyKey: `late-payment-${randomBytes(8).toString('hex')}`,
+    });
+    await pool.query(
+      `UPDATE app.checkout_attempts SET price_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [checkout.id],
+    );
+
+    const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
+
+    expect(paid.orderNumber).toMatch(/^LIB-/);
+    expect(await commerce.getOrder(ready.guest, paid.orderNumber as string)).toMatchObject({
+      status: 'PAID',
+    });
+  });
+
+  it('expires an abandoned checkout before starting a fresh checkout attempt', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    await commerce.approveProof(ready.guest, cart.id);
+    const shippingAddressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
+    const first = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId,
+      billingAddress: null,
+      idempotencyKey: `expired-checkout-${randomBytes(8).toString('hex')}`,
+    });
+    await pool.query(
+      `UPDATE app.checkout_attempts SET price_expires_at = now() - interval '1 minute' WHERE id = $1`,
+      [first.id],
+    );
+
+    const replacement = await commerce.startCheckout(ready.guest, cart.id, {
+      shippingAddressId,
+      billingAddress: null,
+      idempotencyKey: `replacement-checkout-${randomBytes(8).toString('hex')}`,
+    });
+
+    expect(replacement.id).not.toBe(first.id);
+    expect((await commerce.getCheckout(ready.guest, first.id)).status).toBe('EXPIRED');
+  });
+
+  it('releases a cart for a fresh checkout when payment-intent creation fails', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    await commerce.approveProof(ready.guest, cart.id);
+    const shippingAddressId = await commerce.saveShippingAddress(ready.guest, cart.id, address());
+    const failingCommerce = new CommerceService(
+      pool,
+      {
+        createIntent: async () => {
+          throw new Error('Payment setup is temporarily unavailable.');
+        },
+        verifyWebhook: async () => null,
+        refund: async () => ({ providerRefundId: 'unused' }),
+      },
+      new FakeTaxService(875),
+      fulfillment,
+      new MockupService(pool, storage),
+    );
+
+    await expect(
+      failingCommerce.startCheckout(ready.guest, cart.id, {
+        shippingAddressId,
+        billingAddress: null,
+        idempotencyKey: `failed-intent-${randomBytes(8).toString('hex')}`,
+      }),
+    ).rejects.toThrow('Payment setup is temporarily unavailable.');
+    const failed = await pool.query<{ status: string }>(
+      `SELECT status FROM app.checkout_attempts WHERE cart_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [cart.id],
+    );
+    expect(failed.rows[0]?.status).toBe('PAYMENT_FAILED');
+
+    await expect(
+      commerce.startCheckout(ready.guest, cart.id, {
+        shippingAddressId,
+        billingAddress: null,
+        idempotencyKey: `retry-intent-${randomBytes(8).toString('hex')}`,
+      }),
+    ).resolves.toMatchObject({ status: 'PAYMENT_PENDING' });
+  });
+
   it('rejects incomplete billing details before a checkout attempt is created', async () => {
     const ready = await readyProject(pool, identity, projects, storage);
     const cart = await commerce.createCart(ready.guest, {

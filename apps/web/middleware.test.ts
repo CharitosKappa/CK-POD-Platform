@@ -10,6 +10,15 @@ describe('browser mutation origin guard', () => {
       ),
     ).toBe(false);
     expect(hasTrustedBrowserOrigin(new Headers({ host: 'app.example' }))).toBe(false);
+    expect(
+      hasTrustedBrowserOrigin(
+        new Headers({
+          origin: 'https://attacker.example',
+          host: 'app.example',
+          'x-forwarded-host': 'attacker.example',
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('allows only the configured request host origin', () => {

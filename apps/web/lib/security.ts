@@ -25,9 +25,14 @@ export async function enforceRateLimit(
  * from evading a limit merely by presenting a different IP header.
  */
 export function rateLimitKey(action: string, subject?: string, clientIp = 'unknown'): string {
-  return createHash('sha256')
-    .update(`${action}:${subject ?? clientIp}:${clientIp}`)
-    .digest('hex');
+  return (
+    createHash('sha256')
+      // A stable authenticated session/user is stronger than a forwarding header
+      // that cannot be authenticated by this application. Anonymous actions stay
+      // IP-scoped and sensitive auth flows also carry an email-scoped limiter.
+      .update(`${action}:${subject ?? clientIp}`)
+      .digest('hex')
+  );
 }
 
 export function clientIpFromRequest(request: Request): string {
