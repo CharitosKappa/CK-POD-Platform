@@ -838,6 +838,21 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'SUBMITTED_TO_PRINTIFY',
     );
+    const siblingExternalOrderId = `fake-order-sibling-${randomBytes(5).toString('hex')}`;
+    await pool.query(
+      `INSERT INTO app.order_fulfillment_groups (
+         order_id, group_key, adapter_type, provider_id, qualification_id, shipping_snapshot,
+         status, external_order_id
+       )
+       SELECT order_id, $2, adapter_type, provider_id, qualification_id, shipping_snapshot,
+              'SUBMITTED', $3
+       FROM app.order_fulfillment_groups WHERE id = $1`,
+      [
+        fulfillmentGroupId,
+        `fixture-sibling-${randomBytes(5).toString('hex')}`,
+        siblingExternalOrderId,
+      ],
+    );
     const providerEventId = `ops-${randomBytes(5).toString('hex')}`;
     await operations.reconcileStatus({
       externalOrderId: first.externalOrderId,
@@ -856,15 +871,37 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       externalOrderId: first.externalOrderId,
       rawStatus: 'shipped',
       source: 'POLLING',
+      tracking: {
+        trackingNumber: `TRACK-${randomBytes(4).toString('hex')}`,
+        carrier: 'Fixture Carrier',
+      },
     });
-    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('SHIPPED');
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('PARTIALLY_SHIPPED');
     await operations.reconcileStatus({
       externalOrderId: first.externalOrderId,
       rawStatus: 'delivered',
       source: 'WEBHOOK',
       externalEventId: `ops-delivered-${randomBytes(5).toString('hex')}`,
     });
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('PARTIALLY_SHIPPED');
+    await operations.reconcileStatus({
+      externalOrderId: siblingExternalOrderId,
+      rawStatus: 'shipped',
+      source: 'POLLING',
+    });
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('SHIPPED');
+    await operations.reconcileStatus({
+      externalOrderId: siblingExternalOrderId,
+      rawStatus: 'delivered',
+      source: 'WEBHOOK',
+      externalEventId: `ops-sibling-delivered-${randomBytes(5).toString('hex')}`,
+    });
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('DELIVERED');
+    expect(
+      (await operations.listFulfillmentGroups(account, orderNumber)).find(
+        (group) => group.id === fulfillmentGroupId,
+      )?.shipments,
+    ).toMatchObject([{ carrier: 'Fixture Carrier', status: 'SHIPPED' }]);
     const item = await pool.query<{ id: string }>(
       `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
       [orderNumber],
@@ -894,7 +931,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
           [orderNumber],
         )
       ).rows[0]?.count,
-    ).toBe('1');
+    ).toBe('2');
   });
 
   it('hard prepress blockers cannot create a cart', async () => {

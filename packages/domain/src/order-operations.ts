@@ -26,6 +26,7 @@ export const canonicalOrderStates = [
   'READY_FOR_PRODUCTION',
   'SUBMITTED_TO_PRINTIFY',
   'IN_PRODUCTION',
+  'PARTIALLY_SHIPPED',
   'SHIPPED',
   'DELIVERED',
   'ON_HOLD',
@@ -117,6 +118,13 @@ export interface FulfillmentGroupOperationItem {
   status: string;
   externalOrderId: string | null;
   shippingSnapshot: Record<string, unknown>;
+  shipments: Array<{
+    trackingNumber: string | null;
+    trackingUrl: string | null;
+    carrier: string | null;
+    service: string | null;
+    status: string;
+  }>;
   itemCount: number;
   createdAt: Date;
 }
@@ -225,6 +233,7 @@ export class OrderOperationsService {
       status: string;
       external_order_id: string | null;
       shipping_snapshot: Record<string, unknown>;
+      shipments: FulfillmentGroupOperationItem['shipments'];
       item_count: number;
       created_at: Date;
     }>(
@@ -232,13 +241,27 @@ export class OrderOperationsService {
               fulfillment_group.provider_id, provider.display_name AS provider_name,
               fulfillment_group.status, fulfillment_group.external_order_id,
               fulfillment_group.shipping_snapshot,
-              COUNT(fulfillment_item.order_item_id)::int AS item_count,
+              COALESCE(
+                jsonb_agg(
+                  jsonb_build_object(
+                    'trackingNumber', shipment.tracking_number,
+                    'trackingUrl', shipment.tracking_url,
+                    'carrier', shipment.carrier,
+                    'service', shipment.service,
+                    'status', shipment.status
+                  ) ORDER BY shipment.created_at
+                ) FILTER (WHERE shipment.id IS NOT NULL),
+                '[]'::jsonb
+              ) AS shipments,
+              COUNT(DISTINCT fulfillment_item.order_item_id)::int AS item_count,
               fulfillment_group.created_at
        FROM app.order_fulfillment_groups fulfillment_group
        JOIN app.orders orders ON orders.id = fulfillment_group.order_id
        JOIN app.print_providers provider ON provider.id = fulfillment_group.provider_id
        LEFT JOIN app.order_fulfillment_group_items fulfillment_item
          ON fulfillment_item.fulfillment_group_id = fulfillment_group.id
+       LEFT JOIN app.order_shipments shipment
+         ON shipment.fulfillment_group_id = fulfillment_group.id
        WHERE orders.order_number = $1
        GROUP BY fulfillment_group.id, provider.display_name
        ORDER BY fulfillment_group.created_at, fulfillment_group.group_key`,
@@ -253,6 +276,7 @@ export class OrderOperationsService {
       status: row.status,
       externalOrderId: row.external_order_id,
       shippingSnapshot: row.shipping_snapshot,
+      shipments: row.shipments,
       itemCount: row.item_count,
       createdAt: row.created_at,
     }));
@@ -791,7 +815,14 @@ export class OrderOperationsService {
     rawStatus: string;
     source: 'WEBHOOK' | 'POLLING';
     externalEventId?: string | null;
+    tracking?: {
+      trackingNumber: string;
+      trackingUrl?: string | null;
+      carrier?: string | null;
+      service?: string | null;
+    } | null;
   }): Promise<void> {
+    let orderNotification: 'PARTIALLY_SHIPPED' | 'SHIPPED' | 'DELIVERED' | null = null;
     await withTransaction(this.pool, async (client) => {
       const grouped = await client.query<{
         order_id: string;
@@ -819,21 +850,50 @@ export class OrderOperationsService {
           [reference.fulfillment_group_id, fulfillmentGroupStatus(target)],
         );
       }
+      if (reference.fulfillment_group_id && input.tracking?.trackingNumber) {
+        await client.query(
+          `INSERT INTO app.order_shipments (
+             order_id, fulfillment_group_id, external_order_id, carrier, service,
+             tracking_number, tracking_url, shipped_at, status
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), 'SHIPPED')
+           ON CONFLICT (fulfillment_group_id, tracking_number) WHERE fulfillment_group_id IS NOT NULL AND tracking_number IS NOT NULL
+           DO UPDATE SET carrier = EXCLUDED.carrier, service = EXCLUDED.service,
+                         tracking_url = EXCLUDED.tracking_url, status = 'SHIPPED', updated_at = now()`,
+          [
+            order.id,
+            reference.fulfillment_group_id,
+            input.externalOrderId,
+            input.tracking.carrier ?? null,
+            input.tracking.service ?? null,
+            input.tracking.trackingNumber,
+            input.tracking.trackingUrl ?? null,
+          ],
+        );
+      }
+      const aggregateTarget = reference.fulfillment_group_id
+        ? await aggregateOrderFulfillmentStatus(client, order.id)
+        : target;
+      if (
+        aggregateTarget === 'PARTIALLY_SHIPPED' ||
+        aggregateTarget === 'SHIPPED' ||
+        aggregateTarget === 'DELIVERED'
+      )
+        orderNotification = aggregateTarget;
       let disposition: 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'UNKNOWN' = target
         ? 'CONFLICT'
         : 'UNKNOWN';
-      if (target && canTransition(order.status, target)) {
+      if (aggregateTarget && canTransition(order.status, aggregateTarget)) {
         await this.transitionLocked(
           client,
           order,
-          target,
+          aggregateTarget,
           null,
           'PRINTIFY_ERROR',
           `Provider status: ${input.rawStatus}`,
           input.source,
         );
         disposition = 'APPLIED';
-      } else if (target === order.status) disposition = 'DUPLICATE';
+      } else if (aggregateTarget === order.status) disposition = 'DUPLICATE';
       await client.query(
         `INSERT INTO app.order_fulfillment_status_events (order_id, external_event_id, source, raw_status, normalized_status, disposition, metadata)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) ON CONFLICT (order_id, external_event_id) DO NOTHING`,
@@ -842,7 +902,7 @@ export class OrderOperationsService {
           input.externalEventId ?? null,
           input.source,
           input.rawStatus,
-          target,
+          aggregateTarget,
           disposition,
           JSON.stringify({
             currentStatus: order.status,
@@ -858,26 +918,50 @@ export class OrderOperationsService {
         null,
         {
           rawStatus: input.rawStatus,
-          target,
+          aggregateTarget,
           disposition,
           fulfillmentGroupId: reference.fulfillment_group_id,
         },
         input.source,
       );
     });
-    const notification = normalizeExternalStatus(input.rawStatus);
-    if (this.lifecycle && (notification === 'SHIPPED' || notification === 'DELIVERED')) {
-      const order = await this.pool.query<{
+    if (this.lifecycle && orderNotification) {
+      const groupedOrder = await this.pool.query<{
         id: string;
         customer_email: string;
         project_id: string;
       }>(
-        `SELECT o.id, o.customer_email, i.project_id FROM app.external_fulfillment_orders e JOIN app.orders o ON o.id = e.order_id JOIN app.order_items i ON i.order_id = o.id WHERE e.external_order_id = $1`,
+        `SELECT o.id, o.customer_email, i.project_id
+         FROM app.order_fulfillment_groups fulfillment_group
+         JOIN app.orders o ON o.id = fulfillment_group.order_id
+         JOIN app.order_fulfillment_group_items fulfillment_item
+           ON fulfillment_item.fulfillment_group_id = fulfillment_group.id
+         JOIN app.order_items i ON i.id = fulfillment_item.order_item_id
+         WHERE fulfillment_group.external_order_id = $1
+         ORDER BY fulfillment_item.created_at
+         LIMIT 1`,
         [input.externalOrderId],
       );
-      const row = order.rows[0];
+      const legacyOrder = groupedOrder.rows[0]
+        ? null
+        : await this.pool.query<{
+            id: string;
+            customer_email: string;
+            project_id: string;
+          }>(
+            `SELECT o.id, o.customer_email, i.project_id
+             FROM app.external_fulfillment_orders external_order
+             JOIN app.orders o ON o.id = external_order.order_id
+             JOIN app.order_items i ON i.order_id = o.id
+             WHERE external_order.external_order_id = $1
+             ORDER BY i.created_at
+             LIMIT 1`,
+            [input.externalOrderId],
+          );
+      const row = groupedOrder.rows[0] ?? legacyOrder?.rows[0];
       if (row) {
-        const type = notification === 'SHIPPED' ? 'SHIPPING_CONFIRMATION' : 'DELIVERY_CONFIRMATION';
+        const type =
+          orderNotification === 'DELIVERED' ? 'DELIVERY_CONFIRMATION' : 'SHIPPING_CONFIRMATION';
         await this.lifecycle.trigger({
           type,
           classification: 'TRANSACTIONAL',
@@ -885,9 +969,9 @@ export class OrderOperationsService {
           orderId: row.id,
           projectId: row.project_id,
           idempotencyKey: `${type.toLowerCase()}:${row.id}`,
-          payload: { orderStatus: notification },
+          payload: { orderStatus: orderNotification },
         });
-        if (notification === 'DELIVERED')
+        if (orderNotification === 'DELIVERED')
           await this.lifecycle.trigger({
             type: 'REVIEW_REQUEST',
             classification: 'MARKETING',
@@ -895,7 +979,7 @@ export class OrderOperationsService {
             orderId: row.id,
             projectId: row.project_id,
             idempotencyKey: `review-request:${row.id}`,
-            payload: { orderStatus: notification },
+            payload: { orderStatus: orderNotification },
           });
       }
     }
@@ -923,16 +1007,23 @@ export class OrderOperationsService {
   async pollStatus(session: ActiveSession, orderNumber: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
     const result = await this.pool.query<{ external_order_id: string }>(
-      `SELECT e.external_order_id FROM app.external_fulfillment_orders e
-       JOIN app.orders o ON o.id = e.order_id WHERE o.order_number = $1`,
+      `SELECT external_order.external_order_id
+       FROM app.external_fulfillment_orders external_order
+       JOIN app.orders o ON o.id = external_order.order_id
+       WHERE o.order_number = $1
+       UNION ALL
+       SELECT fulfillment_group.external_order_id
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.orders o ON o.id = fulfillment_group.order_id
+       WHERE o.order_number = $1 AND fulfillment_group.external_order_id IS NOT NULL`,
       [orderNumber],
     );
-    const externalOrderId = required(
-      result.rows[0],
-      'No external fulfillment order exists.',
-    ).external_order_id;
-    const status = await this.fulfillment.getOrderStatus({ externalOrderId });
-    await this.reconcileStatus({ externalOrderId, rawStatus: status.state, source: 'POLLING' });
+    if (result.rows.length === 0)
+      throw new OrderOperationsAccessError('No external fulfillment order exists.');
+    for (const { external_order_id: externalOrderId } of result.rows) {
+      const status = await this.fulfillment.getOrderStatus({ externalOrderId });
+      await this.reconcileStatus({ externalOrderId, rawStatus: status.state, source: 'POLLING' });
+    }
   }
 
   private async persistRoutingDecision(
@@ -1741,6 +1832,40 @@ function resumeTarget(previous: CanonicalOrderState): CanonicalOrderState {
       ? 'ROUTING'
       : 'PREPRESS_REVIEW';
 }
+async function aggregateOrderFulfillmentStatus(
+  client: SqlClient,
+  orderId: string,
+): Promise<CanonicalOrderState | null> {
+  const result = await client.query<{
+    total: number;
+    submitted: number;
+    in_production: number;
+    shipped_or_delivered: number;
+    delivered: number;
+    failed: number;
+    cancelled: number;
+  }>(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status = 'SUBMITTED')::int AS submitted,
+            COUNT(*) FILTER (WHERE status = 'IN_PRODUCTION')::int AS in_production,
+            COUNT(*) FILTER (WHERE status IN ('SHIPPED', 'DELIVERED'))::int AS shipped_or_delivered,
+            COUNT(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered,
+            COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+            COUNT(*) FILTER (WHERE status = 'CANCELLED')::int AS cancelled
+     FROM app.order_fulfillment_groups WHERE order_id = $1`,
+    [orderId],
+  );
+  const summary = result.rows[0];
+  if (!summary || summary.total === 0) return null;
+  if (summary.delivered === summary.total) return 'DELIVERED';
+  if (summary.shipped_or_delivered === summary.total) return 'SHIPPED';
+  if (summary.shipped_or_delivered > 0) return 'PARTIALLY_SHIPPED';
+  if (summary.in_production > 0) return 'IN_PRODUCTION';
+  if (summary.submitted > 0) return 'SUBMITTED_TO_PRINTIFY';
+  if (summary.failed === summary.total) return 'FAILED';
+  if (summary.cancelled === summary.total) return 'CANCELLED';
+  return null;
+}
 function normalizeExternalStatus(value: string): CanonicalOrderState | null {
   const status = value.toLowerCase();
   if (['submitted', 'sent_to_production', 'sending_to_production'].includes(status))
@@ -1769,8 +1894,16 @@ function canTransition(from: CanonicalOrderState, to: CanonicalOrderState): bool
     COMPLIANCE_REVIEW: ['ROUTING', 'ON_HOLD', 'FAILED'],
     ROUTING: ['READY_FOR_PRODUCTION', 'ON_HOLD', 'FAILED'],
     READY_FOR_PRODUCTION: ['SUBMITTED_TO_PRINTIFY', 'ON_HOLD', 'CANCELLED'],
-    SUBMITTED_TO_PRINTIFY: ['IN_PRODUCTION', 'SHIPPED', 'FAILED', 'CANCELLED', 'ON_HOLD'],
+    SUBMITTED_TO_PRINTIFY: [
+      'IN_PRODUCTION',
+      'PARTIALLY_SHIPPED',
+      'SHIPPED',
+      'FAILED',
+      'CANCELLED',
+      'ON_HOLD',
+    ],
     IN_PRODUCTION: [
+      'PARTIALLY_SHIPPED',
       'SHIPPED',
       'DELIVERED',
       'FAILED',
@@ -1778,6 +1911,7 @@ function canTransition(from: CanonicalOrderState, to: CanonicalOrderState): bool
       'REFUND_REQUIRED',
       'ON_HOLD',
     ],
+    PARTIALLY_SHIPPED: ['SHIPPED', 'DELIVERED', 'REPRINT_REQUIRED', 'REFUND_REQUIRED'],
     SHIPPED: ['DELIVERED', 'REPRINT_REQUIRED', 'REFUND_REQUIRED'],
     ON_HOLD: ['PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING', 'CANCELLED', 'FAILED'],
     FAILED: ['ON_HOLD', 'REFUND_REQUIRED', 'REPRINT_REQUIRED'],
@@ -1792,6 +1926,7 @@ export function consumerOrderStatus(status: CanonicalOrderState): string {
   if (['ROUTING', 'READY_FOR_PRODUCTION', 'SUBMITTED_TO_PRINTIFY'].includes(status))
     return 'Preparing for production';
   if (status === 'IN_PRODUCTION') return 'In production';
+  if (status === 'PARTIALLY_SHIPPED') return 'Partially shipped';
   if (status === 'SHIPPED') return 'Shipped';
   if (status === 'DELIVERED') return 'Delivered';
   return 'Order update needed';
