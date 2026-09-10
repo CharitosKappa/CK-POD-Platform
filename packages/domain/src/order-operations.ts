@@ -105,6 +105,23 @@ export interface ReviewQueueItem {
 }
 
 /**
+ * A fulfillment group is the operational unit that will become one Printify
+ * order. Customer-facing order reads remain aggregated at this stage.
+ */
+export interface FulfillmentGroupOperationItem {
+  id: string;
+  groupKey: string;
+  adapterType: 'PRINTIFY';
+  providerId: string;
+  providerName: string;
+  status: string;
+  externalOrderId: string | null;
+  shippingSnapshot: Record<string, unknown>;
+  itemCount: number;
+  createdAt: Date;
+}
+
+/**
  * The only post-payment workflow authority. It owns canonical transitions,
  * immutable operations audit records, review decisions, final routing, and the
  * explicit external fulfillment boundary. Payment continues to create PAID
@@ -186,6 +203,58 @@ export class OrderOperationsService {
       policyOutcome: row.policy_outcome,
       policyFindingCodes: row.policy_finding_codes,
       policyRulesetId: row.policy_ruleset_id,
+    }));
+  }
+
+  /**
+   * Operations-only visibility into the units that will be submitted to
+   * Printify independently. It intentionally does not alter the existing
+   * customer order response.
+   */
+  async listFulfillmentGroups(
+    session: ActiveSession,
+    orderNumber: string,
+  ): Promise<FulfillmentGroupOperationItem[]> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const result = await this.pool.query<{
+      id: string;
+      group_key: string;
+      adapter_type: 'PRINTIFY';
+      provider_id: string;
+      provider_name: string;
+      status: string;
+      external_order_id: string | null;
+      shipping_snapshot: Record<string, unknown>;
+      item_count: number;
+      created_at: Date;
+    }>(
+      `SELECT fulfillment_group.id, fulfillment_group.group_key, fulfillment_group.adapter_type,
+              fulfillment_group.provider_id, provider.display_name AS provider_name,
+              fulfillment_group.status, fulfillment_group.external_order_id,
+              fulfillment_group.shipping_snapshot,
+              COUNT(fulfillment_item.order_item_id)::int AS item_count,
+              fulfillment_group.created_at
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.orders orders ON orders.id = fulfillment_group.order_id
+       JOIN app.print_providers provider ON provider.id = fulfillment_group.provider_id
+       LEFT JOIN app.order_fulfillment_group_items fulfillment_item
+         ON fulfillment_item.fulfillment_group_id = fulfillment_group.id
+       WHERE orders.order_number = $1
+       GROUP BY fulfillment_group.id, provider.display_name
+       ORDER BY fulfillment_group.created_at, fulfillment_group.group_key`,
+      [orderNumber],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      groupKey: row.group_key,
+      adapterType: row.adapter_type,
+      providerId: row.provider_id,
+      providerName: row.provider_name,
+      status: row.status,
+      externalOrderId: row.external_order_id,
+      shippingSnapshot: row.shipping_snapshot,
+      itemCount: row.item_count,
+      createdAt: row.created_at,
     }));
   }
 
@@ -458,6 +527,7 @@ export class OrderOperationsService {
         'Real production submission is disabled by environment safety configuration.',
       );
     }
+    await this.assertSingleFulfillmentGroup(orderNumber);
     const previous = await this.pool.query<{ external_order_id: string }>(
       `SELECT a.external_order_id FROM app.order_fulfillment_actions a
        JOIN app.orders o ON o.id = a.order_id
@@ -734,6 +804,26 @@ export class OrderOperationsService {
     } catch (error) {
       await this.failAction(action.id, normalizeFulfillmentError(error));
       throw error;
+    }
+  }
+
+  /**
+   * The pre-group submit path is deliberately kept for compatibility with
+   * existing operations. It must never collapse multiple fulfillment groups
+   * into a single Printify order while group-scoped submission is introduced.
+   */
+  private async assertSingleFulfillmentGroup(orderNumber: string): Promise<void> {
+    const result = await this.pool.query<{ group_count: number }>(
+      `SELECT COUNT(*)::int AS group_count
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.orders orders ON orders.id = fulfillment_group.order_id
+       WHERE orders.order_number = $1`,
+      [orderNumber],
+    );
+    if ((result.rows[0]?.group_count ?? 0) > 1) {
+      throw new OrderTransitionError(
+        'This order has multiple fulfillment groups and requires group-scoped production submission.',
+      );
     }
   }
 

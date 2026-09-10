@@ -706,6 +706,17 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       realProductionSubmissionEnabled: false,
     });
 
+    await expect(operations.listFulfillmentGroups(ready.guest, orderNumber)).rejects.toBeInstanceOf(
+      OrderOperationsAccessError,
+    );
+    await expect(operations.listFulfillmentGroups(account, orderNumber)).resolves.toMatchObject([
+      {
+        adapterType: 'PRINTIFY',
+        status: 'PENDING',
+        itemCount: 1,
+        externalOrderId: null,
+      },
+    ]);
     await expect(operations.startPrepressReview(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
     );
