@@ -274,6 +274,17 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       providerShippingCostCents: 550,
       customerShippingCents: 0,
     });
+    expect(checkout.shipping.groups).toHaveLength(1);
+    const checkoutGroups = await pool.query<{ group_count: number; item_count: number }>(
+      `SELECT COUNT(DISTINCT fulfillment_group.id)::int AS group_count,
+              COUNT(fulfillment_item.cart_item_id)::int AS item_count
+       FROM app.checkout_fulfillment_groups fulfillment_group
+       LEFT JOIN app.checkout_fulfillment_group_items fulfillment_item
+         ON fulfillment_item.fulfillment_group_id = fulfillment_group.id
+       WHERE fulfillment_group.checkout_attempt_id = $1`,
+      [checkout.id],
+    );
+    expect(checkoutGroups.rows[0]).toEqual({ group_count: 1, item_count: 1 });
     expect(checkout.tax).toMatchObject({ provider: 'FAKE', taxableSubtotalCents: 10797 });
     const billing = await pool.query<{ billing_address_snapshot: unknown }>(
       `SELECT billing_address_snapshot FROM app.checkout_attempts WHERE id = $1`,
@@ -307,6 +318,17 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(repeated).toEqual({ duplicate: true, orderNumber: paid.orderNumber });
     const order = await commerce.getOrder(ready.guest, paid.orderNumber as string);
     expect(order).toMatchObject({ status: 'PAID' });
+    const fulfillmentGroups = await pool.query<{ group_count: number; item_count: number }>(
+      `SELECT COUNT(DISTINCT fulfillment_group.id)::int AS group_count,
+              COUNT(fulfillment_item.order_item_id)::int AS item_count
+       FROM app.order_fulfillment_groups fulfillment_group
+       LEFT JOIN app.order_fulfillment_group_items fulfillment_item
+         ON fulfillment_item.fulfillment_group_id = fulfillment_group.id
+       JOIN app.orders orders ON orders.id = fulfillment_group.order_id
+       WHERE orders.order_number = $1`,
+      [paid.orderNumber],
+    );
+    expect(fulfillmentGroups.rows[0]).toEqual({ group_count: 1, item_count: 1 });
     const addressSnapshots = await pool.query<{
       shipping_address_snapshot: Record<string, unknown>;
       billing_address_snapshot: Record<string, unknown>;

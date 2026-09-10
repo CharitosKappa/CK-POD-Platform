@@ -139,6 +139,19 @@ export interface ShippingSnapshot {
   estimateKind: string;
   expiresAt: string;
   provisional: true;
+  groups: FulfillmentShippingGroupSnapshot[];
+}
+
+export interface FulfillmentShippingGroupSnapshot {
+  groupKey: string;
+  providerId: string;
+  qualificationId: string;
+  method: string;
+  shippingCents: number;
+  estimatedDeliveryMinDays: number | null;
+  estimatedDeliveryMaxDays: number | null;
+  estimateKind: NormalizedShippingQuote['estimateKind'];
+  expiresAt: string;
 }
 
 export interface TaxSnapshot {
@@ -219,6 +232,22 @@ interface ShippingAddressRow {
   state_code: string;
   postal_code: string;
   country_code: string;
+}
+
+interface FulfillmentPlanItem {
+  item: ItemRow;
+  externalBlueprintId: string;
+  externalVariantId: string;
+}
+
+interface FulfillmentGroupPlan {
+  groupKey: string;
+  adapterType: 'PRINTIFY';
+  providerId: string;
+  qualificationId: string;
+  externalProviderId: string;
+  items: FulfillmentPlanItem[];
+  quote: NormalizedShippingQuote;
 }
 
 export class CommerceService {
@@ -586,11 +615,12 @@ export class CommerceService {
     const billingAddress = input.billingAddress
       ? normalizedBillingAddress(input.billingAddress)
       : billingAddressFromShipping(shippingAddress);
-    // The local adapter quotes a provider/product combination. The current catalog uses
-    // one provider-ready product, so this remains a single shipment until live provider
-    // shipping rates are connected.
-    const quote = await this.provisionalQuote(primaryItem, shippingAddress.country_code);
-    const pricing = this.priceCart(items, quote.shippingCents);
+    const fulfillmentGroups = await this.provisionalGroups(items, shippingAddress.country_code);
+    const providerShippingCents = fulfillmentGroups.reduce(
+      (total, group) => total + group.quote.shippingCents,
+      0,
+    );
+    const pricing = this.priceCart(items, providerShippingCents);
     const tax = await this.taxes.calculate({
       subtotalCents: pricing.subtotalCents,
       customerShippingCents: pricing.customerShippingCents,
@@ -615,31 +645,58 @@ export class CommerceService {
       taxCents: tax.taxCents,
       totalCents: pricing.subtotalCents + pricing.customerShippingCents + tax.taxCents,
     };
-    const expiry =
-      quote.expiresAt && quote.expiresAt > new Date()
-        ? quote.expiresAt
-        : new Date(Date.now() + this.configuration.quoteTtlMinutes * 60_000);
+    const expiry = fulfillmentQuoteExpiry(fulfillmentGroups, this.configuration.quoteTtlMinutes);
     const attemptId = randomUUID();
-    const inserted = await this.pool.query<{ id: string }>(
-      `INSERT INTO app.checkout_attempts (
-         id, cart_id, shipping_address_id, status, idempotency_key, currency, amount_cents,
-         billing_address_snapshot, pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at
-       ) VALUES ($1, $2, $3, 'PAYMENT_PENDING', $4, 'USD', $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11) RETURNING id`,
-      [
-        attemptId,
-        cartId,
-        input.shippingAddressId,
-        input.idempotencyKey,
-        pricingWithTax.totalCents,
-        JSON.stringify(billingAddress),
-        JSON.stringify(pricingWithTax),
-        JSON.stringify(toShippingSnapshot(quote, pricingWithTax.customerShippingCents, expiry)),
-        JSON.stringify(taxSnapshot),
-        this.paymentProvider(),
-        expiry,
-      ],
-    );
-    if (!inserted.rows[0]) return this.getCheckout(session, attemptId);
+    const inserted = await withTransaction(this.pool, async (client) => {
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO app.checkout_attempts (
+           id, cart_id, shipping_address_id, status, idempotency_key, currency, amount_cents,
+           billing_address_snapshot, pricing_snapshot, shipping_snapshot, tax_snapshot, payment_provider, price_expires_at
+         ) VALUES ($1, $2, $3, 'PAYMENT_PENDING', $4, 'USD', $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11) RETURNING id`,
+        [
+          attemptId,
+          cartId,
+          input.shippingAddressId,
+          input.idempotencyKey,
+          pricingWithTax.totalCents,
+          JSON.stringify(billingAddress),
+          JSON.stringify(pricingWithTax),
+          JSON.stringify(
+            toShippingSnapshot(fulfillmentGroups, pricingWithTax.customerShippingCents, expiry),
+          ),
+          JSON.stringify(taxSnapshot),
+          this.paymentProvider(),
+          expiry,
+        ],
+      );
+      if (!result.rows[0]) return null;
+      for (const group of fulfillmentGroups) {
+        const persisted = await client.query<{ id: string }>(
+          `INSERT INTO app.checkout_fulfillment_groups (
+             checkout_attempt_id, group_key, adapter_type, provider_id, qualification_id, shipping_snapshot
+           ) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
+          [
+            attemptId,
+            group.groupKey,
+            group.adapterType,
+            group.providerId,
+            group.qualificationId,
+            JSON.stringify(groupShippingSnapshot(group, expiry)),
+          ],
+        );
+        const groupId = requireRow(persisted.rows[0], 'Could not save the fulfillment group.').id;
+        for (const plannedItem of group.items) {
+          await client.query(
+            `INSERT INTO app.checkout_fulfillment_group_items (
+               fulfillment_group_id, cart_item_id, item_snapshot
+             ) VALUES ($1, $2, $3::jsonb)`,
+            [groupId, plannedItem.item.id, JSON.stringify(fulfillmentItemSnapshot(plannedItem))],
+          );
+        }
+      }
+      return result.rows[0];
+    });
+    if (!inserted) return this.getCheckout(session, attemptId);
     let intent: PaymentIntentResult;
     try {
       intent = await this.payments.createIntent({
@@ -945,6 +1002,36 @@ export class CommerceService {
       [orderNumberValue],
     );
     await client.query(
+      `INSERT INTO app.order_fulfillment_groups (
+         order_id, checkout_fulfillment_group_id, group_key, adapter_type, provider_id, qualification_id, shipping_snapshot
+       )
+       SELECT o.id, checkout_group.id, checkout_group.group_key, checkout_group.adapter_type,
+              checkout_group.provider_id, checkout_group.qualification_id, checkout_group.shipping_snapshot
+       FROM app.orders o
+       JOIN app.checkout_fulfillment_groups checkout_group
+         ON checkout_group.checkout_attempt_id = $1
+       WHERE o.order_number = $2
+       ON CONFLICT (order_id, group_key) DO NOTHING`,
+      [checkout.id, orderNumberValue],
+    );
+    await client.query(
+      `INSERT INTO app.order_fulfillment_group_items (fulfillment_group_id, order_item_id)
+       SELECT fulfillment_group.id, order_item.id
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.checkout_fulfillment_groups checkout_group
+         ON checkout_group.id = fulfillment_group.checkout_fulfillment_group_id
+       JOIN app.checkout_fulfillment_group_items checkout_item
+         ON checkout_item.fulfillment_group_id = checkout_group.id
+       JOIN app.order_items order_item
+         ON order_item.order_id = fulfillment_group.order_id
+        AND order_item.cart_item_id = checkout_item.cart_item_id
+       WHERE fulfillment_group.order_id = (
+         SELECT id FROM app.orders WHERE order_number = $1
+       )
+       ON CONFLICT (order_item_id) DO NOTHING`,
+      [orderNumberValue],
+    );
+    await client.query(
       `INSERT INTO app.order_state_history (order_id, from_state, to_state, reason, actor_type)
       SELECT id, 'PAYMENT_PENDING', 'PAID', 'Verified payment webhook', 'SYSTEM' FROM app.orders WHERE order_number = $1`,
       [orderNumberValue],
@@ -1136,16 +1223,66 @@ export class CommerceService {
     return requireRow(result.rows[0], 'Shipping address not found.');
   }
 
-  private async provisionalQuote(
+  private async provisionalGroups(
+    items: ItemRow[],
+    destinationCountry: string,
+  ): Promise<FulfillmentGroupPlan[]> {
+    const resolved = await Promise.all(
+      items.map((item) => this.provisionalFulfillmentItem(item, destinationCountry)),
+    );
+    const groups = new Map<string, Omit<FulfillmentGroupPlan, 'quote'>>();
+    for (const plannedItem of resolved) {
+      const key = `${plannedItem.adapterType}:${plannedItem.providerId}:${destinationCountry}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.items.push(plannedItem.item);
+        continue;
+      }
+      groups.set(key, {
+        groupKey: key,
+        adapterType: plannedItem.adapterType,
+        providerId: plannedItem.providerId,
+        qualificationId: plannedItem.qualificationId,
+        externalProviderId: plannedItem.externalProviderId,
+        items: [plannedItem.item],
+      });
+    }
+    return Promise.all(
+      [...groups.values()].map(async (group) => ({
+        ...group,
+        quote: await this.fulfillment.quoteShipping({
+          externalProviderId: group.externalProviderId,
+          destinationCountry,
+          items: group.items.map((plannedItem) => ({
+            externalBlueprintId: plannedItem.externalBlueprintId,
+            externalVariantId: plannedItem.externalVariantId,
+            quantity: plannedItem.item.quantity,
+          })),
+        }),
+      })),
+    );
+  }
+
+  private async provisionalFulfillmentItem(
     item: ItemRow,
     destinationCountry: string,
-  ): Promise<NormalizedShippingQuote> {
+  ): Promise<{
+    adapterType: 'PRINTIFY';
+    providerId: string;
+    qualificationId: string;
+    externalProviderId: string;
+    item: FulfillmentPlanItem;
+  }> {
     const result = await this.pool.query<{
+      adapter_type: 'PRINTIFY';
+      provider_id: string;
+      qualification_id: string;
       external_provider_id: string;
       external_blueprint_id: string;
       external_variant_id: string;
     }>(
-      `SELECT p.external_id AS external_provider_id, pm.external_blueprint_id, vm.external_variant_id
+      `SELECT pm.adapter_type, p.id AS provider_id, pq.id AS qualification_id,
+              p.external_id AS external_provider_id, pm.external_blueprint_id, vm.external_variant_id
        FROM app.fulfillment_product_mappings pm
        JOIN app.fulfillment_variant_mappings vm ON vm.product_variant_id = $1 AND vm.adapter_type = pm.adapter_type
        JOIN app.print_providers p ON p.adapter_type = pm.adapter_type AND p.status = 'ENABLED'
@@ -1165,13 +1302,21 @@ export class CommerceService {
         this.configuration.eligibleProviderExternalIds ?? null,
       ],
     );
-    const mapping = requireRow(result.rows[0], 'A provisional shipping estimate is not available.');
-    return this.fulfillment.quoteShipping({
+    const mapping = requireRow(
+      result.rows[0],
+      `Shipping is unavailable for ${item.product_name} in ${destinationCountry}.`,
+    );
+    return {
+      adapterType: mapping.adapter_type,
+      providerId: mapping.provider_id,
+      qualificationId: mapping.qualification_id,
       externalProviderId: mapping.external_provider_id,
-      externalBlueprintId: mapping.external_blueprint_id,
-      externalVariantId: mapping.external_variant_id,
-      destinationCountry,
-    });
+      item: {
+        item,
+        externalBlueprintId: mapping.external_blueprint_id,
+        externalVariantId: mapping.external_variant_id,
+      },
+    };
   }
 
   private price(
@@ -1369,22 +1514,75 @@ function proofStateHash(value: {
     )
     .digest('hex');
 }
+function fulfillmentQuoteExpiry(groups: FulfillmentGroupPlan[], quoteTtlMinutes: number): Date {
+  const fallback = new Date(Date.now() + quoteTtlMinutes * 60_000);
+  const expiries = groups
+    .map((group) => group.quote.expiresAt)
+    .filter((value): value is Date => Boolean(value && value > new Date()));
+  return expiries.length
+    ? new Date(Math.min(...expiries.map((value) => value.getTime())))
+    : fallback;
+}
+
+function groupShippingSnapshot(
+  group: FulfillmentGroupPlan,
+  checkoutExpiry: Date,
+): FulfillmentShippingGroupSnapshot {
+  return {
+    groupKey: group.groupKey,
+    providerId: group.providerId,
+    qualificationId: group.qualificationId,
+    method: group.quote.method,
+    shippingCents: group.quote.shippingCents,
+    estimatedDeliveryMinDays: group.quote.estimatedDeliveryMinDays,
+    estimatedDeliveryMaxDays: group.quote.estimatedDeliveryMaxDays,
+    estimateKind: group.quote.estimateKind,
+    expiresAt: (group.quote.expiresAt ?? checkoutExpiry).toISOString(),
+  };
+}
+
+function fulfillmentItemSnapshot(item: FulfillmentPlanItem): Record<string, unknown> {
+  return {
+    projectId: item.item.project_id,
+    productModelId: item.item.product_model_id,
+    productVariantId: item.item.product_variant_id,
+    externalBlueprintId: item.externalBlueprintId,
+    externalVariantId: item.externalVariantId,
+    quantity: item.item.quantity,
+  };
+}
+
 function toShippingSnapshot(
-  quote: NormalizedShippingQuote,
+  groups: FulfillmentGroupPlan[],
   customerShippingCents: number,
   expiresAt: Date,
 ): ShippingSnapshot {
+  const snapshots = groups.map((group) => groupShippingSnapshot(group, expiresAt));
   return {
-    method: quote.method,
+    method: snapshots.length === 1 ? snapshots[0]!.method : 'Multiple shipments',
     customerShippingCents,
-    providerShippingCostCents: quote.shippingCents,
+    providerShippingCostCents: snapshots.reduce((total, group) => total + group.shippingCents, 0),
     currency,
-    estimatedDeliveryMinDays: quote.estimatedDeliveryMinDays,
-    estimatedDeliveryMaxDays: quote.estimatedDeliveryMaxDays,
-    estimateKind: quote.estimateKind,
+    estimatedDeliveryMinDays: nullableMin(snapshots.map((group) => group.estimatedDeliveryMinDays)),
+    estimatedDeliveryMaxDays: nullableMax(snapshots.map((group) => group.estimatedDeliveryMaxDays)),
+    estimateKind:
+      new Set(snapshots.map((group) => group.estimateKind)).size === 1
+        ? snapshots[0]!.estimateKind
+        : 'MULTIPLE',
     expiresAt: expiresAt.toISOString(),
     provisional: true,
+    groups: snapshots,
   };
+}
+
+function nullableMin(values: Array<number | null>): number | null {
+  const present = values.filter((value): value is number => value !== null);
+  return present.length ? Math.min(...present) : null;
+}
+
+function nullableMax(values: Array<number | null>): number | null {
+  const present = values.filter((value): value is number => value !== null);
+  return present.length ? Math.max(...present) : null;
 }
 function paymentStatus(outcome: VerifiedPaymentEvent['outcome']): string {
   return outcome === 'SUCCEEDED'

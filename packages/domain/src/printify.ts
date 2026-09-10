@@ -110,14 +110,12 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
       {
         method: 'POST',
         body: JSON.stringify({
-          line_items: [
-            {
-              blueprint_id: Number(input.externalBlueprintId),
-              print_provider_id: Number(input.externalProviderId),
-              variant_id: Number(input.externalVariantId),
-              quantity: 1,
-            },
-          ],
+          line_items: input.items.map((item) => ({
+            blueprint_id: Number(item.externalBlueprintId),
+            print_provider_id: Number(input.externalProviderId),
+            variant_id: Number(item.externalVariantId),
+            quantity: item.quantity,
+          })),
           address_to: { country: input.destinationCountry },
         }),
       },
@@ -268,10 +266,14 @@ export class FakePrintifyFulfillmentAdapter implements FulfillmentService {
         'Shipping is unavailable for this provider and destination.',
       );
     }
-    const variant = provider.variants.find(
-      (candidate) => candidate.externalVariantId === input.externalVariantId,
+    const unavailable = input.items.find(
+      (item) =>
+        !provider.variants.some(
+          (candidate) =>
+            candidate.externalVariantId === item.externalVariantId && candidate.available,
+        ),
     );
-    if (!variant?.available) {
+    if (unavailable) {
       throw new FulfillmentIntegrationError(
         'VARIANT_UNAVAILABLE',
         'The selected shirt option is unavailable.',

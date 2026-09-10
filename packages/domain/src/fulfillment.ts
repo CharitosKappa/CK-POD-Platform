@@ -244,9 +244,14 @@ export class CatalogSyncService {
     const mapping = requireRow(result.rows[0], 'Provider variant mapping is unavailable.');
     const quote = await this.fulfillment.quoteShipping({
       externalProviderId: mapping.external_provider_id,
-      externalBlueprintId: mapping.external_blueprint_id,
-      externalVariantId: mapping.external_variant_id,
       destinationCountry: input.destinationCountry,
+      items: [
+        {
+          externalBlueprintId: mapping.external_blueprint_id,
+          externalVariantId: mapping.external_variant_id,
+          quantity: 1,
+        },
+      ],
     });
     await this.pool.query(
       `INSERT INTO app.shipping_quotes (

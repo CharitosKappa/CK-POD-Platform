@@ -66,11 +66,17 @@ export interface FulfillmentCatalogSnapshot {
   observedAt: Date;
 }
 
-export interface ShippingQuoteRequest {
-  externalProviderId: string;
+export interface ShippingQuoteLine {
   externalBlueprintId: string;
   externalVariantId: string;
+  quantity: number;
+}
+
+/** A quote belongs to one provider-compatible fulfillment group. */
+export interface ShippingQuoteRequest {
+  externalProviderId: string;
   destinationCountry: string;
+  items: ShippingQuoteLine[];
 }
 
 export interface NormalizedShippingQuote {

@@ -197,6 +197,13 @@
       "when": 1789305000000,
       "tag": "0028_checkout_billing_address_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789306000000,
+      "tag": "0029_multi_provider_fulfillment_groups",
+      "breakpoints": true
     }
   ]
 }

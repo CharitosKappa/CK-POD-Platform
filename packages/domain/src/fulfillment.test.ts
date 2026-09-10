@@ -31,25 +31,40 @@ describe('Printify fulfillment boundary', () => {
     await expect(
       adapter.quoteShipping({
         externalProviderId: 'fake-harbor',
-        externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
-        externalVariantId: 'fake-essential-dtg-tee-black-M',
         destinationCountry: 'US',
+        items: [
+          {
+            externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
+            externalVariantId: 'fake-essential-dtg-tee-black-M',
+            quantity: 1,
+          },
+        ],
       }),
     ).resolves.toMatchObject({ shippingCents: 550, estimatedDeliveryMaxDays: 8 });
     await expect(
       adapter.quoteShipping({
         externalProviderId: 'fake-harbor',
-        externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
-        externalVariantId: 'fake-essential-dtg-tee-black-2XL',
         destinationCountry: 'US',
+        items: [
+          {
+            externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
+            externalVariantId: 'fake-essential-dtg-tee-black-2XL',
+            quantity: 1,
+          },
+        ],
       }),
     ).resolves.toMatchObject({ shippingCents: 550, estimatedDeliveryMaxDays: 8 });
     await expect(
       adapter.quoteShipping({
         externalProviderId: 'fake-harbor',
-        externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
-        externalVariantId: 'fake-essential-dtg-tee-black-M',
         destinationCountry: 'GB',
+        items: [
+          {
+            externalBlueprintId: 'fake-essential-dtg-tee-blueprint',
+            externalVariantId: 'fake-essential-dtg-tee-black-M',
+            quantity: 1,
+          },
+        ],
       }),
     ).rejects.toMatchObject({ code: 'DESTINATION_UNSUPPORTED' });
     await expect(
