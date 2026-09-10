@@ -56,6 +56,12 @@ export async function POST(
         { requestId: request.headers.get('x-request-id'), orderNumber, action: body.action },
       );
       return NextResponse.json({ ok: true, result });
+    } else if (body.action === 'EVALUATE_FULFILLMENT_GROUP' && body.fulfillmentGroupId) {
+      const result = await operations.evaluateFulfillmentGroupReadiness(session, {
+        orderNumber,
+        fulfillmentGroupId: body.fulfillmentGroupId,
+      });
+      return NextResponse.json({ ok: true, result });
     } else if (body.action === 'SUBMIT_FULFILLMENT_GROUP' && body.fulfillmentGroupId) {
       const result = await operations.submitFulfillmentGroup(session, {
         orderNumber,

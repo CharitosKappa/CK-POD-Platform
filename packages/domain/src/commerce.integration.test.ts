@@ -779,14 +779,13 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       orderNumber,
     ]);
     await expect(
-      operations.submitFulfillmentGroup(account, { orderNumber, fulfillmentGroupId }),
-    ).rejects.toBeInstanceOf(OrderTransitionError);
+      operations.evaluateFulfillmentGroupReadiness(account, { orderNumber, fulfillmentGroupId }),
+    ).resolves.toEqual({ ready: true, blockers: [] });
+    expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
+      'READY_FOR_PRODUCTION',
+    );
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
-    await pool.query(
-      `UPDATE app.orders SET status = 'READY_FOR_PRODUCTION' WHERE order_number = $1`,
-      [orderNumber],
-    );
 
     fulfillment.failNextCreate = true;
     await expect(

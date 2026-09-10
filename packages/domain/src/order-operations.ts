@@ -258,6 +258,145 @@ export class OrderOperationsService {
     }));
   }
 
+  /**
+   * Revalidates the immutable provider qualification captured with a checkout
+   * group. It never reroutes a paid group, because a provider switch would
+   * invalidate the frozen shipping and cost snapshots.
+   */
+  async evaluateFulfillmentGroupReadiness(
+    session: ActiveSession,
+    input: { orderNumber: string; fulfillmentGroupId: string },
+  ): Promise<{ ready: boolean; blockers: string[] }> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const result = await this.pool.query<GroupReadinessRow>(
+      `SELECT fulfillment_group.id AS fulfillment_group_id, fulfillment_group.order_id,
+              orders.status AS order_status, fulfillment_group.qualification_id,
+              qualification.qualification_status, qualification.active AS qualification_active,
+              qualification.g3_reviewed, qualification.physical_test_status,
+              qualification.technical_compatible, qualification.shipping_enabled,
+              qualification.destination_countries,
+              provider.status AS provider_status, provider.external_available,
+              order_item.prepress_run_id, prepress.status AS prepress_status,
+              prepress.production_master_asset_id,
+              provider_variant.available AS provider_variant_available,
+              profile_mapping.qualification_id AS qualification_profile_id,
+              (SELECT count(*)::int FROM app.proof_approvals proof
+               WHERE proof.cart_item_id = order_item.cart_item_id
+                 AND proof.approval_state = 'APPROVED'
+                 AND proof.project_version_id = order_item.project_version_id
+                 AND proof.prepress_run_id = order_item.prepress_run_id
+                 AND proof.mockup_id = order_item.mockup_id) AS approved_proofs,
+              (SELECT outcome FROM app.order_reviews review
+               WHERE review.order_id = orders.id AND review.stage = 'PREPRESS'
+               ORDER BY review.created_at DESC LIMIT 1) AS prepress_review,
+              (SELECT outcome FROM app.order_reviews review
+               WHERE review.order_id = orders.id AND review.stage = 'COMPLIANCE'
+               ORDER BY review.created_at DESC LIMIT 1) AS compliance_review,
+              orders.shipping_address_snapshot->>'countryCode' AS destination_country
+       FROM app.order_fulfillment_groups fulfillment_group
+       JOIN app.orders orders ON orders.id = fulfillment_group.order_id
+       JOIN app.provider_qualifications qualification ON qualification.id = fulfillment_group.qualification_id
+       JOIN app.print_providers provider ON provider.id = fulfillment_group.provider_id
+       JOIN app.order_fulfillment_group_items group_item
+         ON group_item.fulfillment_group_id = fulfillment_group.id
+       JOIN app.order_items order_item ON order_item.id = group_item.order_item_id
+       JOIN app.prepress_runs prepress ON prepress.id = order_item.prepress_run_id
+       LEFT JOIN app.provider_variants provider_variant
+         ON provider_variant.provider_id = provider.id
+        AND provider_variant.product_variant_id = order_item.product_variant_id
+       LEFT JOIN app.provider_profile_mappings profile_mapping
+         ON profile_mapping.qualification_id = qualification.id
+        AND profile_mapping.production_profile_id = prepress.production_profile_id
+       WHERE fulfillment_group.id = $1 AND orders.order_number = $2
+       ORDER BY order_item.created_at`,
+      [input.fulfillmentGroupId, input.orderNumber],
+    );
+    const rows = result.rows;
+    const first = required(rows[0], 'Fulfillment group not found for this order.');
+    const blockers = groupReadinessBlockers(rows);
+    const policy = await this.policy.finalArtworkEligibility(input.orderNumber);
+    if (!policy.eligible) blockers.push(policy.code);
+    if (!blockers.length) {
+      const group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
+      for (const item of group.items.filter((candidate) => !candidate.derivativeAssetId)) {
+        try {
+          const derivative = await this.derivatives.create({
+            prepressRunId: item.prepressRunId,
+            qualificationId: group.qualificationId,
+          });
+          if (derivative.status !== 'READY' || !derivative.derivativeAssetId) {
+            blockers.push('PROVIDER_DERIVATIVE');
+          }
+        } catch {
+          blockers.push('PROVIDER_DERIVATIVE');
+        }
+      }
+      const refreshed = await this.groupSubmissionContext(
+        input.orderNumber,
+        input.fulfillmentGroupId,
+      );
+      if (refreshed.items.some((item) => !item.derivativeAssetId)) {
+        blockers.push('PROVIDER_DERIVATIVE');
+      }
+    }
+    const uniqueBlockers = [...new Set(blockers)];
+    const ready = uniqueBlockers.length === 0;
+    await withTransaction(this.pool, async (client) => {
+      await client.query(
+        `INSERT INTO app.order_fulfillment_group_readiness_evaluations (
+           fulfillment_group_id, ready, blockers, snapshot, created_by_user_id
+         ) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)`,
+        [
+          first.fulfillment_group_id,
+          ready,
+          JSON.stringify(uniqueBlockers),
+          JSON.stringify({
+            qualificationId: first.qualification_id,
+            providerStatus: first.provider_status,
+            qualificationStatus: first.qualification_status,
+            qualificationActive: first.qualification_active,
+            g3Reviewed: first.g3_reviewed,
+            physicalTestStatus: first.physical_test_status,
+            technicallyCompatible: first.technical_compatible,
+            providerExternallyAvailable: first.external_available,
+            itemCount: rows.length,
+            destinationCountry: first.destination_country,
+          }),
+          session.userId,
+        ],
+      );
+      await client.query(
+        `UPDATE app.order_fulfillment_groups
+         SET status = $2, updated_at = now()
+         WHERE id = $1 AND status IN ('PENDING', 'FAILED', 'READY_FOR_PRODUCTION')`,
+        [first.fulfillment_group_id, ready ? 'READY_FOR_PRODUCTION' : 'PENDING'],
+      );
+      const order = await lockOrder(client, input.orderNumber);
+      if (ready && order.status === 'ROUTING') {
+        const pendingGroups = await client.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM app.order_fulfillment_groups
+           WHERE order_id = $1 AND status NOT IN ('READY_FOR_PRODUCTION', 'SUBMITTED', 'IN_PRODUCTION', 'SHIPPED', 'DELIVERED')`,
+          [order.id],
+        );
+        if ((pendingGroups.rows[0]?.count ?? 0) === 0) {
+          await this.transitionLocked(
+            client,
+            order,
+            'READY_FOR_PRODUCTION',
+            session,
+            'PRINTABILITY_CONCERN',
+          );
+        }
+      }
+      await this.audit(client, order.id, 'fulfillment_group_readiness_evaluated', session, null, {
+        fulfillmentGroupId: first.fulfillment_group_id,
+        ready,
+        blockers: uniqueBlockers,
+      });
+    });
+    return { ready, blockers: uniqueBlockers };
+  }
+
   async startPrepressReview(session: ActiveSession, orderNumber: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     await this.transitionByNumber(orderNumber, 'PREPRESS_REVIEW', {
@@ -591,28 +730,11 @@ export class OrderOperationsService {
         'Real production submission is disabled by environment safety configuration.',
       );
     }
-    const readiness = await this.readinessSnapshot(input.orderNumber, { allowSubmitted: true });
-    if (readiness.blockers.length) {
+    const readiness = await this.evaluateFulfillmentGroupReadiness(session, input);
+    if (!readiness.ready) {
       throw new OrderTransitionError('This order is not ready for production.');
     }
-    let group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
-    for (const item of group.items.filter((candidate) => !candidate.derivativeAssetId)) {
-      const derivative = await this.derivatives.create({
-        prepressRunId: item.prepressRunId,
-        qualificationId: group.qualificationId,
-      });
-      if (derivative.status !== 'READY' || !derivative.derivativeAssetId) {
-        throw new OrderTransitionError(
-          'A provider derivative requires operational review before this group can be submitted.',
-        );
-      }
-    }
-    group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
-    if (group.items.some((item) => !item.derivativeAssetId)) {
-      throw new OrderTransitionError(
-        'Provider derivatives are not ready for this fulfillment group.',
-      );
-    }
+    const group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
     const external = await this.createExternalOrderForGroup(session, group);
     const action = await this.beginGroupAction(
       input.orderNumber,
@@ -1498,6 +1620,30 @@ interface GroupSubmissionRow {
   quantity: number;
   derivative_asset_id: string | null;
 }
+interface GroupReadinessRow {
+  fulfillment_group_id: string;
+  order_id: string;
+  order_status: CanonicalOrderState;
+  qualification_id: string;
+  qualification_status: string;
+  qualification_active: boolean;
+  g3_reviewed: boolean;
+  physical_test_status: string;
+  technical_compatible: boolean;
+  shipping_enabled: boolean;
+  destination_countries: string[];
+  provider_status: string;
+  external_available: boolean;
+  prepress_run_id: string;
+  prepress_status: string;
+  production_master_asset_id: string | null;
+  provider_variant_available: boolean | null;
+  qualification_profile_id: string | null;
+  approved_proofs: number;
+  prepress_review: string | null;
+  compliance_review: string | null;
+  destination_country: string;
+}
 interface FulfillmentGroupSubmissionContext {
   id: string;
   orderId: string;
@@ -1513,6 +1659,38 @@ interface FulfillmentGroupSubmissionContext {
     quantity: number;
     derivativeAssetId: string | null;
   }>;
+}
+
+function groupReadinessBlockers(rows: GroupReadinessRow[]): string[] {
+  const first = required(rows[0], 'Fulfillment group is empty.');
+  const blockers: string[] = [];
+  if (!['ROUTING', 'READY_FOR_PRODUCTION', 'SUBMITTED_TO_PRINTIFY'].includes(first.order_status)) {
+    blockers.push('ORDER_STAGE');
+  }
+  if (first.prepress_review !== 'APPROVED') blockers.push('PREPRESS_REVIEW');
+  if (first.compliance_review !== 'APPROVED') blockers.push('COMPLIANCE_REVIEW');
+  if (
+    first.qualification_status !== 'QUALIFIED' ||
+    !first.qualification_active ||
+    !first.g3_reviewed ||
+    first.physical_test_status !== 'PASSED' ||
+    !first.technical_compatible ||
+    first.provider_status !== 'ENABLED'
+  ) {
+    blockers.push('PROVIDER_QUALIFICATION');
+  }
+  for (const row of rows) {
+    if (row.approved_proofs !== 1) blockers.push('PROOF_APPROVAL');
+    if (
+      !['PASSED', 'REVIEW_REQUIRED'].includes(row.prepress_status) ||
+      !row.production_master_asset_id
+    ) {
+      blockers.push('PREPRESS');
+    }
+    if (!row.provider_variant_available) blockers.push('PROVIDER_VARIANT');
+    if (!row.qualification_profile_id) blockers.push('PROVIDER_PROFILE');
+  }
+  return blockers;
 }
 
 async function lockOrder(client: SqlClient, orderNumber: string): Promise<LockedOrder> {

@@ -1232,7 +1232,7 @@ export class CommerceService {
     );
     const groups = new Map<string, Omit<FulfillmentGroupPlan, 'quote'>>();
     for (const plannedItem of resolved) {
-      const key = `${plannedItem.adapterType}:${plannedItem.providerId}:${destinationCountry}`;
+      const key = `${plannedItem.adapterType}:${plannedItem.providerId}:${plannedItem.qualificationId}:${destinationCountry}`;
       const existing = groups.get(key);
       if (existing) {
         existing.items.push(plannedItem.item);
