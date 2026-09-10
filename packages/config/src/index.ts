@@ -95,6 +95,11 @@ export const serverEnvironmentSchema = z
       .string()
       .min(32)
       .default('local-development-email-code-pepper-change-before-production'),
+    STAFF_AUTH_EMAIL_CODE_PEPPER: z
+      .string()
+      .min(32)
+      .default('local-development-staff-email-code-pepper-change-before-production'),
+    INITIAL_ADMIN_EMAIL: optionalNonEmptyString,
     LIFECYCLE_ADAPTER: lifecycleAdapterMode.default('fake'),
     LIFECYCLE_MARKETING_ENABLED: strictBoolean.default(true),
     KLAVIYO_API_KEY: optionalNonEmptyString,

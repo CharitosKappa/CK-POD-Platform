@@ -105,6 +105,17 @@ export interface ReviewQueueItem {
   policyRulesetId: string | null;
 }
 
+export const operationalOrderViews = [
+  'ALL',
+  'NEEDS_REVIEW',
+  'READY',
+  'IN_PRODUCTION',
+  'PARTIALLY_SHIPPED',
+  'ON_HOLD',
+] as const;
+
+export type OperationalOrderView = (typeof operationalOrderViews)[number];
+
 /**
  * A fulfillment group is the operational unit that will become one Printify
  * order. Customer-facing order reads remain aggregated at this stage.
@@ -127,6 +138,22 @@ export interface FulfillmentGroupOperationItem {
   }>;
   itemCount: number;
   createdAt: Date;
+}
+
+/** Staff-only order data for the operations workspace. */
+export interface OperationalOrderDetail extends ReviewQueueItem {
+  fulfillmentGroups: FulfillmentGroupOperationItem[];
+}
+
+export interface OperationsDashboardSummary {
+  queues: {
+    needsReview: number;
+    ready: number;
+    inProduction: number;
+    partiallyShipped: number;
+    onHold: number;
+  };
+  recentOrders: ReviewQueueItem[];
 }
 
 /**
@@ -155,22 +182,47 @@ export class OrderOperationsService {
 
   async listReviewQueue(
     session: ActiveSession,
-    filters: { state?: CanonicalOrderState; reason?: string } = {},
+    filters: {
+      state?: CanonicalOrderState;
+      reason?: string;
+      view?: OperationalOrderView;
+      limit?: number;
+      sort?: 'ASC' | 'DESC';
+    } = {},
   ): Promise<ReviewQueueItem[]> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     const values: unknown[] = [];
-    const where = [
-      `o.status IN ('PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING', 'ON_HOLD', 'FAILED')`,
-    ];
+    const where: string[] = [];
     if (filters.state) {
       values.push(filters.state);
       where.push(`o.status = $${values.length}`);
-    }
+    } else if (filters.view && filters.view !== 'ALL') {
+      const viewConditions: Record<Exclude<OperationalOrderView, 'ALL'>, string> = {
+        NEEDS_REVIEW: `o.status IN ('PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING')`,
+        READY: `o.status = 'READY_FOR_PRODUCTION'`,
+        IN_PRODUCTION: `o.status IN ('SUBMITTED_TO_PRINTIFY', 'IN_PRODUCTION')`,
+        PARTIALLY_SHIPPED: `o.status = 'PARTIALLY_SHIPPED'`,
+        ON_HOLD: `o.status = 'ON_HOLD'`,
+      };
+      where.push(viewConditions[filters.view]);
+    } else
+      where.push(
+        `o.status IN (
+          'PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING', 'READY_FOR_PRODUCTION',
+          'SUBMITTED_TO_PRINTIFY', 'IN_PRODUCTION', 'PARTIALLY_SHIPPED', 'SHIPPED', 'DELIVERED',
+          'ON_HOLD', 'FAILED'
+        )`,
+      );
     if (filters.reason) {
       values.push(filters.reason);
       where.push(
         `EXISTS (SELECT 1 FROM app.order_reviews r WHERE r.order_id = o.id AND r.reason_code = $${values.length})`,
       );
+    }
+    let limit = '';
+    if (filters.limit) {
+      values.push(Math.min(Math.max(Math.floor(filters.limit), 1), 100));
+      limit = `LIMIT $${values.length}`;
     }
     const result = await this.pool.query<{
       order_number: string;
@@ -196,7 +248,7 @@ export class OrderOperationsService {
          SELECT * FROM app.policy_evaluations x WHERE x.order_id = o.id
            AND x.stage = 'FINAL_ARTWORK_PRE_PRODUCTION' ORDER BY x.created_at DESC LIMIT 1
        ) pe ON true
-       WHERE ${where.join(' AND ')} ORDER BY o.created_at ASC`,
+       WHERE ${where.join(' AND ')} ORDER BY o.created_at ${filters.sort === 'DESC' ? 'DESC' : 'ASC'} ${limit}`,
       values,
     );
     return result.rows.map((row) => ({
@@ -212,6 +264,98 @@ export class OrderOperationsService {
       policyFindingCodes: row.policy_finding_codes,
       policyRulesetId: row.policy_ruleset_id,
     }));
+  }
+
+  async getOperationsDashboard(session: ActiveSession): Promise<OperationsDashboardSummary> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const [counts, recentOrders] = await Promise.all([
+      this.pool.query<{
+        needs_review: string;
+        ready: string;
+        in_production: string;
+        partially_shipped: string;
+        on_hold: string;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE status IN ('PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING'))::text AS needs_review,
+           COUNT(*) FILTER (WHERE status = 'READY_FOR_PRODUCTION')::text AS ready,
+           COUNT(*) FILTER (WHERE status IN ('SUBMITTED_TO_PRINTIFY', 'IN_PRODUCTION'))::text AS in_production,
+           COUNT(*) FILTER (WHERE status = 'PARTIALLY_SHIPPED')::text AS partially_shipped,
+           COUNT(*) FILTER (WHERE status = 'ON_HOLD')::text AS on_hold
+         FROM app.orders`,
+      ),
+      this.listReviewQueue(session, { limit: 5, sort: 'DESC' }),
+    ]);
+    const row = counts.rows[0] ?? {
+      needs_review: '0',
+      ready: '0',
+      in_production: '0',
+      partially_shipped: '0',
+      on_hold: '0',
+    };
+    return {
+      queues: {
+        needsReview: Number(row.needs_review),
+        ready: Number(row.ready),
+        inProduction: Number(row.in_production),
+        partiallyShipped: Number(row.partially_shipped),
+        onHold: Number(row.on_hold),
+      },
+      recentOrders,
+    };
+  }
+
+  async getOperationalOrder(
+    session: ActiveSession,
+    orderNumber: string,
+  ): Promise<OperationalOrderDetail | null> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const result = await this.pool.query<{
+      order_number: string;
+      status: CanonicalOrderState;
+      customer_email: string;
+      product_name: string;
+      color_code: string;
+      quantity: number;
+      created_at: Date;
+      latest_reason: string | null;
+      policy_outcome: PolicyOutcome | null;
+      policy_finding_codes: string[];
+      policy_ruleset_id: string | null;
+    }>(
+      `SELECT o.order_number, o.status, o.customer_email, m.display_name AS product_name,
+              oi.item_snapshot->>'colorCode' AS color_code, oi.quantity, o.created_at,
+              (SELECT r.reason_code FROM app.order_reviews r WHERE r.order_id = o.id ORDER BY r.created_at DESC LIMIT 1) AS latest_reason,
+              pe.machine_result AS policy_outcome, pe.ruleset_id AS policy_ruleset_id,
+              COALESCE((SELECT array_agg(f.code ORDER BY f.created_at) FROM app.policy_findings f WHERE f.evaluation_id = pe.id), ARRAY[]::text[]) AS policy_finding_codes
+       FROM app.orders o
+       JOIN app.order_items oi ON oi.order_id = o.id
+       JOIN app.product_models m ON m.id = oi.product_model_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM app.policy_evaluations x WHERE x.order_id = o.id
+           AND x.stage = 'FINAL_ARTWORK_PRE_PRODUCTION' ORDER BY x.created_at DESC LIMIT 1
+       ) pe ON true
+       WHERE o.order_number = $1
+       ORDER BY oi.created_at
+       LIMIT 1`,
+      [orderNumber],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      orderNumber: row.order_number,
+      status: row.status,
+      customerEmail: row.customer_email,
+      productName: row.product_name,
+      colorCode: row.color_code,
+      quantity: row.quantity,
+      createdAt: row.created_at,
+      latestReason: row.latest_reason,
+      policyOutcome: row.policy_outcome,
+      policyFindingCodes: row.policy_finding_codes,
+      policyRulesetId: row.policy_ruleset_id,
+      fulfillmentGroups: await this.listFulfillmentGroups(session, orderNumber),
+    };
   }
 
   /**

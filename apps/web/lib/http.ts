@@ -10,6 +10,9 @@ import {
   FulfillmentAccessError,
   OrderOperationsAccessError,
   OrderTransitionError,
+  CustomerOperationsAccessError,
+  CustomerOperationsValidationError,
+  StaffAuthenticationError,
   ProjectConflictError,
   ProjectValidationError,
   ReferenceAssetValidationError,
@@ -26,6 +29,18 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (error instanceof Error && error.message === 'Authentication is required.') {
     return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
+  }
+  if (error instanceof StaffAuthenticationError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: /valid email/i.test(error.message) ? 400 : 401 },
+    );
+  }
+  if (error instanceof CustomerOperationsAccessError) {
+    return NextResponse.json(
+      { error: 'You do not have access to customer operations.' },
+      { status: 403 },
+    );
   }
   if (error instanceof FulfillmentAccessError || error instanceof OrderOperationsAccessError) {
     return NextResponse.json(
@@ -44,6 +59,9 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (error instanceof AccountValidationError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof CustomerOperationsValidationError) {
+    return NextResponse.json({ error: error.message }, { status: error.message === 'Customer not found.' ? 404 : 400 });
   }
   if (error instanceof ProjectConflictError) {
     return NextResponse.json({ error: error.message, code: 'STALE_PROJECT' }, { status: 409 });

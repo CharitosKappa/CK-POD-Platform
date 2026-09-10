@@ -19,3 +19,6 @@ redis-data/
 *.tsbuildinfo
 *.log
 .DS_Store
+
+# Brainstorming companion sessions
+.superpowers/

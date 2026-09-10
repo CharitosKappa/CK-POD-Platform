@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
+import { recordCustomerTouchpoint } from './customer-operations';
+
 import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
 import type {
@@ -946,7 +948,11 @@ export class CommerceService {
       [checkout.id],
     );
     if (existing.rows[0]) return { duplicate: false, orderNumber: existing.rows[0].order_number };
-    const created = await client.query<{ order_number: string }>(
+    const created = await client.query<{
+      order_number: string;
+      customer_email: string;
+      owner_user_id: string | null;
+    }>(
       `INSERT INTO app.orders (
          order_number, cart_id, checkout_attempt_id, owner_type, owner_session_id, owner_user_id, customer_email,
          shipping_address_snapshot, billing_address_snapshot, status, pricing_snapshot, financial_snapshot
@@ -956,7 +962,7 @@ export class CommerceService {
          FROM app.carts c
          JOIN app.shipping_addresses a ON a.id = $5
          JOIN app.checkout_attempts checkout_attempt ON checkout_attempt.id = $2 AND checkout_attempt.cart_id = c.id
-         WHERE c.id = $6 RETURNING order_number`,
+         WHERE c.id = $6 RETURNING order_number, customer_email, owner_user_id`,
       [
         orderNumber(),
         checkout.id,
@@ -974,10 +980,13 @@ export class CommerceService {
         checkout.cart_id,
       ],
     );
-    const orderNumberValue = requireRow(
-      created.rows[0],
-      'Could not create paid order.',
-    ).order_number;
+    const createdOrder = requireRow(created.rows[0], 'Could not create paid order.');
+    const orderNumberValue = createdOrder.order_number;
+    await recordCustomerTouchpoint(client, {
+      email: createdOrder.customer_email,
+      source: 'ORDER',
+      userId: createdOrder.owner_user_id,
+    });
     await client.query(
       `INSERT INTO app.saved_addresses (
          user_id, recipient_name, line1, line2, city, state_code, postal_code, country_code, phone, is_default

@@ -2,6 +2,8 @@ import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 
 
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
+import { recordCustomerTouchpoint } from './customer-operations';
+
 const SESSION_TTL_DAYS = 7;
 const EMAIL_CODE_TTL_MS = 10 * 60_000;
 const MAX_EMAIL_CODE_ATTEMPTS = 5;
@@ -221,6 +223,11 @@ export class IdentityService {
         [normalizedEmail],
       );
       const user = requireRow(userResult.rows[0], 'Could not establish the account.');
+      await recordCustomerTouchpoint(client, {
+        email: user.email,
+        source: 'ACCOUNT',
+        userId: user.id,
+      });
       return this.attachUserAndMigrate(client, session, user.id);
     });
   }
@@ -245,6 +252,11 @@ export class IdentityService {
         [normalizedEmail],
       );
       const user = requireRow(userResult.rows[0], 'Could not provision an account.');
+      await recordCustomerTouchpoint(client, {
+        email: user.email,
+        source: 'ACCOUNT',
+        userId: user.id,
+      });
       return this.attachUserAndMigrate(client, session, user.id);
     });
   }

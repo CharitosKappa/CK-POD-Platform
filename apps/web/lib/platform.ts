@@ -16,6 +16,7 @@ import {
   MockupService,
   OrderOperationsService,
   CxOperationsService,
+  CustomerOperationsService,
   LifecycleOrchestrator,
   KlaviyoLifecycleMessagingService,
   FakeLifecycleMessagingService,
@@ -23,7 +24,10 @@ import {
   ProjectService,
   StripePaymentService,
   StripeTaxService,
+  StaffAuthenticationError,
+  StaffIdentityService,
   type ActiveSession,
+  type StaffSession,
   developmentCommerceConfiguration,
 } from '@let-it-be/domain';
 
@@ -31,6 +35,7 @@ import { generationRuntime } from './generation-runtime';
 import { serverEnvironment } from './runtime-environment';
 
 const sessionCookieName = 'let_it_be_session';
+const adminSessionCookieName = 'let_it_be_admin_session';
 
 declare global {
   var letItBePool: SqlPool | undefined;
@@ -137,6 +142,20 @@ export function cxOperationsRuntime() {
   return new CxOperationsService(databasePool(), payments);
 }
 
+export function customerOperationsRuntime() {
+  return new CustomerOperationsService(databasePool());
+}
+
+export function staffIdentityRuntime() {
+  const environment = serverEnvironment();
+  return new StaffIdentityService(databasePool(), {
+    pepper: environment.STAFF_AUTH_EMAIL_CODE_PEPPER,
+    ...(environment.INITIAL_ADMIN_EMAIL
+      ? { initialOwnerEmail: environment.INITIAL_ADMIN_EMAIL.trim().toLowerCase() }
+      : {}),
+  });
+}
+
 /** Trusted post-payment workflow runtime. Payment routes intentionally do not call this. */
 export async function orderOperationsRuntime() {
   const environment = serverEnvironment();
@@ -215,6 +234,43 @@ export function setSessionCookie(store: Awaited<ReturnType<typeof cookies>>, tok
 
 export function clearSessionCookie(store: Awaited<ReturnType<typeof cookies>>): void {
   store.set(sessionCookieName, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure:
+      process.env.SESSION_COOKIE_SECURE === 'true' ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.APP_ENV === 'production',
+    path: '/',
+    maxAge: 0,
+  });
+}
+
+export async function requireAdminSession(): Promise<Omit<StaffSession, 'token'>> {
+  const store = await cookies();
+  const token = store.get(adminSessionCookieName)?.value;
+  const session = token ? await staffIdentityRuntime().getSession(token) : null;
+  if (!session) throw new StaffAuthenticationError('Admin authentication is required.');
+  return session;
+}
+
+export function setAdminSessionCookie(
+  store: Awaited<ReturnType<typeof cookies>>,
+  token: string,
+): void {
+  store.set(adminSessionCookieName, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure:
+      process.env.SESSION_COOKIE_SECURE === 'true' ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.APP_ENV === 'production',
+    path: '/',
+    maxAge: 60 * 60 * 12,
+  });
+}
+
+export function clearAdminSessionCookie(store: Awaited<ReturnType<typeof cookies>>): void {
+  store.set(adminSessionCookieName, '', {
     httpOnly: true,
     sameSite: 'lax',
     secure:

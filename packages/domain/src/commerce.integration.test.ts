@@ -711,6 +711,23 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(operations.listFulfillmentGroups(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
     );
+    await expect(operations.getOperationalOrder(ready.guest, orderNumber)).rejects.toBeInstanceOf(
+      OrderOperationsAccessError,
+    );
+    expect(
+      (await operations.listReviewQueue(account, { view: 'NEEDS_REVIEW' })).map(
+        (order) => order.orderNumber,
+      ),
+    ).toContain(orderNumber);
+    expect(await operations.getOperationsDashboard(account)).toMatchObject({
+      queues: { needsReview: expect.any(Number) },
+      recentOrders: expect.arrayContaining([expect.objectContaining({ orderNumber })]),
+    });
+    expect(await operations.getOperationalOrder(account, orderNumber)).toMatchObject({
+      orderNumber,
+      status: 'PAID',
+      fulfillmentGroups: [{ adapterType: 'PRINTIFY', status: 'PENDING' }],
+    });
     const fulfillmentGroups = await operations.listFulfillmentGroups(account, orderNumber);
     expect(fulfillmentGroups).toMatchObject([
       {
@@ -740,6 +757,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'READY_FOR_PRODUCTION',
     );
+    expect(
+      (await operations.listReviewQueue(account, { view: 'READY' })).map(
+        (order) => order.orderNumber,
+      ),
+    ).toContain(orderNumber);
     // The current order-wide routing workflow precedes group routing. For this
     // group-action test, bind the group to the qualification already approved
     // by that workflow; the next slice will make this selection per group.

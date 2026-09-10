@@ -225,6 +225,27 @@
       "when": 1789309000000,
       "tag": "0032_group_tracking_and_aggregate_status",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789310000000,
+      "tag": "0033_customer_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789311000000,
+      "tag": "0034_staff_admin_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789312000000,
+      "tag": "0035_customer_timeline_staff_actor",
+      "breakpoints": true
     }
   ]
 }
