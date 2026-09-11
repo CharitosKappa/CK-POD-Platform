@@ -48,10 +48,40 @@ The backend customer-detail response will include the latest order's payment sta
 
 ## Supporting cards
 
-- Main column: commercial metrics, latest order, timeline, and design-credit history when present.
-- Side column: customer/contact information, default address, tags, and design activity.
-- Preserve existing note and tag editing behavior.
+- Main column: commercial metrics, latest order, unified timeline, and design-credit history when present.
+- Side column: customer/contact information, default address, a compact internal-note composer, tags, and design activity.
+- The tags input must remain contained by its card at every supported viewport width.
+- Notes are submitted from the side card and appear immediately in the timeline after a successful save.
+- Preserve existing tag editing behavior.
 - Preserve existing loading, empty, feedback, and error states.
+
+## Unified timeline
+
+Build a read-only customer activity stream from existing canonical records rather than duplicating them into a new projection table. Merge and sort the newest 150 customer-related events from:
+
+- customer profile creation and updates;
+- marketing-consent changes;
+- tag changes and internal notes;
+- order placement and every recorded order-state transition;
+- refund and reprint activity;
+- design-credit ledger entries;
+- lifecycle email deliveries.
+
+Each entry includes a concise action title, a detailed description, the actor when known, an exact date and time, and contextual identifiers such as order number, amount, delivery type, or resulting status. Page-originated updates reload the customer payload after success so the new event is visible immediately.
+
+## Edit modals
+
+Replace navigation to the standalone edit page for page-local edits with accessible modal dialogs:
+
+- `Edit customer` in the page header and `Edit` in the Customer card open the same customer modal.
+- The customer modal edits first name, last name, email, phone, and email/SMS marketing preferences.
+- `Manage` in the Default address card opens a separate address modal containing country, address lines, city, state/province, and postal code.
+- Both modals are prefilled from the current customer payload and submit through the existing customer update endpoint.
+- Each submission sends the complete customer payload needed to preserve fields managed by the other modal.
+- Successful saves close the modal, show page feedback, reload the customer data, and add detailed timeline entries.
+- Validation failures remain inside the open modal.
+- Dialogs use a labelled modal surface, backdrop, close control, Cancel and Save actions, Escape-to-close, outside-click dismissal, focus placement, and background scroll locking.
+- Keep the standalone edit route available as a compatibility fallback, but do not navigate to it from the detail page.
 
 ## Visual direction
 
@@ -64,12 +94,15 @@ The backend customer-detail response will include the latest order's payment sta
 
 - Unit-test customer name fallback, relative customer duration, and return-rate calculation.
 - Test the customer-detail query mapping for latest-order payment, status, item, quantity, and price data.
+- Test unified timeline mapping and ordering across customer, order, refund, credit, and email sources.
+- Test modal payload preservation, successful reloads, validation errors, dismissal, and keyboard behavior.
 - Run format, lint, typecheck, domain tests, and production build.
-- Verify the page in a desktop browser at the current admin viewport and at the responsive single-column breakpoint.
+- Verify the page, contained tags field, note flow, both modals, and updated timeline in a desktop browser at the current admin viewport and at the responsive single-column breakpoint.
 
 ## Out of scope
 
 - Creating orders from the customer page.
+- A new event-projection table or event bus.
 - A dedicated returns workflow or merchandise-return entity.
 - Changing the Customers directory width or layout.
 - Redesigning unrelated admin pages.
