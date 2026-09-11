@@ -19,7 +19,13 @@ export const customerColumns = [
 ] as const;
 export type CustomerColumn = (typeof customerColumns)[number];
 export type CustomerViewPreference =
-  'ALL' | 'NEW' | 'RETURNING' | 'HIGH_VALUE' | 'EMAIL_SUBSCRIBERS';
+  | 'ALL'
+  | 'RECENTLY_ADDED'
+  | 'PROSPECTS'
+  | 'FIRST_TIME'
+  | 'RETURNING'
+  | 'HIGH_VALUE'
+  | 'EMAIL_SUBSCRIBERS';
 
 export const defaultAdminPreferences: AdminPreferences = Object.freeze({
   customerColumnsVersion: 2,
@@ -48,7 +54,12 @@ export function parseAdminPreferences(value: string | null): AdminPreferences {
       parsed.customerColumnsVersion === 2
         ? parsedColumns
         : [...parsedColumns, 'dateAdded' as const, 'dateUpdated' as const];
-    const parsedView = isCustomerView(parsed.customerView) ? parsed.customerView : 'ALL';
+    const parsedView =
+      parsed.customerView === 'NEW'
+        ? 'RECENTLY_ADDED'
+        : isCustomerView(parsed.customerView)
+          ? parsed.customerView
+          : 'ALL';
     return {
       customerColumnsVersion: 2,
       sidebarCollapsed: parsed.sidebarCollapsed,
@@ -87,6 +98,14 @@ function isPreferenceRecord(value: unknown): value is Record<string, unknown> {
 function isCustomerView(value: unknown): value is CustomerViewPreference {
   return (
     typeof value === 'string' &&
-    ['ALL', 'NEW', 'RETURNING', 'HIGH_VALUE', 'EMAIL_SUBSCRIBERS'].includes(value)
+    [
+      'ALL',
+      'RECENTLY_ADDED',
+      'PROSPECTS',
+      'FIRST_TIME',
+      'RETURNING',
+      'HIGH_VALUE',
+      'EMAIL_SUBSCRIBERS',
+    ].includes(value)
   );
 }

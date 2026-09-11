@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   customerSorts,
+  customerViews,
   escapeCustomerCsv,
   normalizeCustomerEmail,
   normalizeCustomerTag,
@@ -50,5 +51,17 @@ describe('customer contracts', () => {
       ]),
     );
     expect(new Set(customerSorts).size).toBe(customerSorts.length);
+  });
+
+  it('exposes distinct recency and purchase lifecycle views', () => {
+    expect(customerViews).toEqual([
+      'ALL',
+      'RECENTLY_ADDED',
+      'PROSPECTS',
+      'FIRST_TIME',
+      'RETURNING',
+      'HIGH_VALUE',
+      'EMAIL_SUBSCRIBERS',
+    ]);
   });
 });

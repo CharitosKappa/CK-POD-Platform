@@ -91,4 +91,12 @@ describe('admin preferences', () => {
       customerView: 'ALL',
     });
   });
+
+  it('migrates the legacy New view to Recently added', () => {
+    expect(
+      parseAdminPreferences(
+        '{"customerColumnsVersion":2,"sidebarCollapsed":false,"customerColumns":["orders"],"customerView":"NEW"}',
+      ).customerView,
+    ).toBe('RECENTLY_ADDED');
+  });
 });

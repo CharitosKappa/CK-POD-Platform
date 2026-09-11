@@ -23,7 +23,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   try {
     const search = new URL(request.url).searchParams;
     const sort = search.get('sort') ?? undefined;
-    const view = search.get('view') ?? undefined;
+    const requestedView = search.get('view') ?? undefined;
+    const view = requestedView === 'NEW' ? 'RECENTLY_ADDED' : requestedView;
     const emailMarketingStatus = search.get('emailMarketingStatus') ?? undefined;
     const smsMarketingStatus = search.get('smsMarketingStatus') ?? undefined;
     if (sort && !sorts.has(sort as CustomerSort))

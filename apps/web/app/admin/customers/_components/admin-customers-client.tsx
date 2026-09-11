@@ -26,7 +26,9 @@ const time = new Intl.DateTimeFormat('en-GB', {
 });
 const views: Array<[CustomerView, string]> = [
   ['ALL', 'All'],
-  ['NEW', 'New'],
+  ['RECENTLY_ADDED', 'Recently added'],
+  ['PROSPECTS', 'Prospects'],
+  ['FIRST_TIME', 'First-time'],
   ['RETURNING', 'Returning'],
   ['HIGH_VALUE', 'High value'],
   ['EMAIL_SUBSCRIBERS', 'Email subscribers'],
@@ -365,9 +367,9 @@ export function AdminCustomersClient() {
           caption="Known customer profiles"
         />
         <Metric
-          label="Returning customers"
-          value={result ? `${result.metrics.returningPercentage}%` : '—'}
-          caption="Among purchasing customers"
+          label="Repeat customer rate"
+          value={result ? `${result.metrics.repeatCustomerRate}%` : '—'}
+          caption="2+ orders among purchasers"
         />
         <Metric
           label="Average lifetime spend"

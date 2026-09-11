@@ -1,6 +1,8 @@
 export const customerViews = [
   'ALL',
-  'NEW',
+  'RECENTLY_ADDED',
+  'PROSPECTS',
+  'FIRST_TIME',
   'RETURNING',
   'HIGH_VALUE',
   'EMAIL_SUBSCRIBERS',

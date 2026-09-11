@@ -3,6 +3,9 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
+import { customerDisplayName, customerDuration } from './customer-detail-format';
+import { CustomerDetailModal, type CustomerDetailModalName } from './customer-detail-modals';
+import { CustomerTimeline } from './customer-detail-timeline';
 import type { CustomerDetail } from './customer-types';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -23,6 +26,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   const [note, setNote] = useState('');
   const [tagDraft, setTagDraft] = useState('');
   const [saving, setSaving] = useState<'note' | 'tags'>();
+  const [modal, setModal] = useState<CustomerDetailModalName>();
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -101,6 +105,11 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
     }
   }
 
+  async function handleModalSaved(message: string) {
+    setFeedback(message);
+    await load();
+  }
+
   if (loading && !customer)
     return (
       <main className="customer-admin-page">
@@ -119,6 +128,8 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
       </main>
     );
   const address = customer.addresses[0];
+  const displayName = customerDisplayName(customer);
+  const latestOrder = customer.orders[0];
 
   return (
     <main className="customer-admin-page customer-detail-page">
@@ -127,18 +138,23 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
       </Link>
       <header className="customer-detail-heading">
         <div className="customer-detail-identity">
-          <span aria-hidden="true">{initials(customer.name)}</span>
+          <span aria-hidden="true">{initials(displayName)}</span>
           <div>
-            <h1>{customer.name}</h1>
+            <h1>{displayName}</h1>
             <p>
-              Customer since {date.format(new Date(customer.customerSince))}
+              Customer since {date.format(new Date(customer.customerSince))} (
+              {customerDuration(new Date(customer.customerSince))})
               {address ? ` · ${address.city}, ${address.countryCode}` : ''}
             </p>
           </div>
         </div>
-        <Link className="customer-button primary" href={`/admin/customers/${customer.id}/edit`}>
+        <button
+          className="customer-button primary"
+          onClick={() => setModal('customer')}
+          type="button"
+        >
           Edit customer
-        </Link>
+        </button>
       </header>
       {feedback ? (
         <p className="customer-feedback" role="status">
@@ -163,38 +179,62 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
               value={money.format(customer.averageOrderValueCents / 100)}
             />
             <Metric label="Credits" value={String(customer.creditBalance)} />
+            <Metric label="Return rate" value={`${customer.returnRate}%`} />
           </section>
-          <section className="customer-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Commerce</p>
-                <h2>Orders</h2>
-              </div>
+          <section className="customer-card customer-latest-order-card">
+            <header className="customer-latest-order-section-heading">
+              <h2>Last order placed</h2>
               <Link href={`/admin/orders?q=${encodeURIComponent(customer.email)}`}>
                 View all orders
               </Link>
             </header>
-            {customer.orders.length ? (
-              <div className="customer-order-list">
-                {customer.orders.slice(0, 6).map((order) => (
-                  <Link
-                    href={`/admin/orders/${encodeURIComponent(order.orderNumber)}`}
-                    key={order.orderNumber}
-                  >
-                    <span>
-                      <strong>{order.orderNumber}</strong>
-                      <small>
-                        {date.format(new Date(order.createdAt))} · {order.itemCount} item
-                        {order.itemCount === 1 ? '' : 's'}
-                      </small>
-                    </span>
-                    <i className={`commerce-status ${statusTone(order.status)}`}>
-                      {statusLabel(order.status)}
-                    </i>
-                    <b>{money.format(order.totalCents / 100)}</b>
-                  </Link>
-                ))}
-              </div>
+            {latestOrder ? (
+              <article className="customer-latest-order">
+                <header>
+                  <div>
+                    <div className="customer-latest-order-title">
+                      <Link
+                        className="customer-order-number"
+                        href={`/admin/orders/${encodeURIComponent(latestOrder.orderNumber)}`}
+                      >
+                        {latestOrder.orderNumber}
+                      </Link>
+                      <span className={`commerce-status ${paymentTone(latestOrder.paymentStatus)}`}>
+                        <span aria-hidden="true" />
+                        {paymentStatusLabel(latestOrder.paymentStatus)}
+                      </span>
+                      <span className={`commerce-status ${statusTone(latestOrder.status)}`}>
+                        <span aria-hidden="true" />
+                        {fulfillmentStatusLabel(latestOrder.status)}
+                      </span>
+                    </div>
+                    <p>{dateTime.format(new Date(latestOrder.createdAt))} from Online store</p>
+                  </div>
+                  <strong>{money.format(latestOrder.totalCents / 100)}</strong>
+                </header>
+                <div className="customer-latest-order-items">
+                  {latestOrder.items.map((item, index) => (
+                    <Link
+                      href={`/admin/orders/${encodeURIComponent(latestOrder.orderNumber)}`}
+                      key={`${latestOrder.orderNumber}-${item.productName}-${item.color}-${item.size}-${index}`}
+                    >
+                      <span className="customer-order-thumbnail" aria-hidden="true">
+                        {item.imageUrl ? <img alt="" src={item.imageUrl} /> : <span>LIB</span>}
+                      </span>
+                      <span className="customer-order-product">
+                        <strong>{item.productName}</strong>
+                        <small>
+                          {[item.color, item.size]
+                            .filter((value) => value && value !== '—')
+                            .join(' · ') || 'Custom variant'}
+                        </small>
+                      </span>
+                      <span className="customer-order-quantity">× {item.quantity}</span>
+                      <b>{money.format((item.unitPriceCents * item.quantity) / 100)}</b>
+                    </Link>
+                  ))}
+                </div>
+              </article>
             ) : (
               <p className="customer-empty-inline">No orders yet.</p>
             )}
@@ -206,40 +246,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
                 <h2>Timeline</h2>
               </div>
             </header>
-            <div className="customer-note-composer">
-              <label htmlFor="customer-note">Internal note</label>
-              <textarea
-                id="customer-note"
-                maxLength={2000}
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                placeholder="Leave context for the next person who helps this customer…"
-              />
-              <button
-                className="customer-button secondary"
-                type="button"
-                disabled={!note.trim() || saving === 'note'}
-                onClick={() => void saveNote()}
-              >
-                {saving === 'note' ? 'Adding…' : 'Add note'}
-              </button>
-            </div>
-            {customer.timeline.length ? (
-              <div className="customer-timeline">
-                {customer.timeline.map((entry) => (
-                  <article key={entry.id}>
-                    <span aria-hidden="true" />
-                    <div>
-                      <strong>{timelineLabel(entry.eventType)}</strong>
-                      {entry.body ? <p>{entry.body}</p> : null}
-                      <time>{dateTime.format(new Date(entry.createdAt))}</time>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="customer-empty-inline">No internal activity yet.</p>
-            )}
+            <CustomerTimeline entries={customer.timeline} />
           </section>
           {customer.credits.length ? (
             <details className="customer-card customer-credit-details">
@@ -268,7 +275,9 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
                 <p>Profile</p>
                 <h2>Customer</h2>
               </div>
-              <Link href={`/admin/customers/${customer.id}/edit`}>Edit</Link>
+              <button onClick={() => setModal('customer')} type="button">
+                Edit
+              </button>
             </header>
             <dl className="customer-info-list">
               <Info label="Email" value={customer.email} />
@@ -283,7 +292,9 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
                 <p>Shipping</p>
                 <h2>Default address</h2>
               </div>
-              <Link href={`/admin/customers/${customer.id}/edit`}>Manage</Link>
+              <button onClick={() => setModal('address')} type="button">
+                Manage
+              </button>
             </header>
             {address ? (
               <address className="customer-address">
@@ -299,6 +310,34 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
             ) : (
               <p className="customer-empty-inline">No address saved.</p>
             )}
+          </section>
+          <section className="customer-card customer-note-side-card">
+            <header className="customer-card-header">
+              <div>
+                <p>Private to staff</p>
+                <h2>Note</h2>
+              </div>
+            </header>
+            <div>
+              <label className="sr-only" htmlFor="customer-note">
+                Internal note
+              </label>
+              <textarea
+                id="customer-note"
+                maxLength={2000}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                placeholder="Add context for your team…"
+              />
+              <button
+                className="customer-button secondary"
+                disabled={!note.trim() || saving === 'note'}
+                onClick={() => void saveNote()}
+                type="button"
+              >
+                {saving === 'note' ? 'Adding…' : 'Add note'}
+              </button>
+            </div>
           </section>
           <section className="customer-card customer-tags-card">
             <header className="customer-card-header">
@@ -344,6 +383,15 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
           </section>
         </aside>
       </div>
+      {modal ? (
+        <CustomerDetailModal
+          key={modal}
+          customer={customer}
+          modal={modal}
+          onClose={() => setModal(undefined)}
+          onSaved={handleModalSaved}
+        />
+      ) : null}
     </main>
   );
 }
@@ -386,12 +434,27 @@ function statusTone(status: string) {
   if (['FAILED', 'CANCELLED', 'ON_HOLD'].includes(status)) return 'is-alert';
   return '';
 }
-function timelineLabel(type: string) {
-  if (type === 'NOTE' || type === 'LEGACY_NOTE') return 'Internal note';
-  if (type === 'TAGS_UPDATED') return 'Customer tags updated';
-  if (type === 'PROFILE_UPDATED') return 'Customer profile updated';
-  if (type === 'CONSENT_UPDATED') return 'Marketing preferences updated';
-  return 'Customer profile created';
+function paymentTone(status: string) {
+  if (status === 'SUCCEEDED') return 'is-paid';
+  if (['FAILED', 'CANCELLED'].includes(status)) return 'is-alert';
+  return '';
+}
+function paymentStatusLabel(status: string) {
+  if (status === 'SUCCEEDED') return 'Paid';
+  return statusLabel(status);
+}
+function fulfillmentStatusLabel(status: string) {
+  if (status === 'DELIVERED') return 'Delivered';
+  if (status === 'SHIPPED') return 'Shipped';
+  if (status === 'IN_PRODUCTION') return 'In production';
+  if (status === 'SUBMITTED_TO_PRINTIFY') return 'Submitted';
+  if (
+    ['PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING', 'READY_FOR_PRODUCTION'].includes(
+      status,
+    )
+  )
+    return 'Unfulfilled';
+  return statusLabel(status);
 }
 function marketingLabel(value: string) {
   if (value === 'SUBSCRIBED') return 'Subscribed';

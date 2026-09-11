@@ -59,7 +59,7 @@ export interface OperationsCustomerList {
   limit: number;
   metrics: {
     totalCustomers: number;
-    returningPercentage: number;
+    repeatCustomerRate: number;
     averageLifetimeSpendCents: number;
     emailSubscribers: number;
   };
@@ -78,6 +78,7 @@ export interface OperationsCustomerDetail {
   orderCount: number;
   totalSpentCents: number;
   averageOrderValueCents: number;
+  returnRate: number;
   creditBalance: number;
   lastOrderAt: Date | null;
   savedDesignCount: number;
@@ -102,9 +103,18 @@ export interface OperationsCustomerDetail {
   orders: Array<{
     orderNumber: string;
     status: string;
+    paymentStatus: string;
     itemCount: number;
     totalCents: number;
     createdAt: Date;
+    items: Array<{
+      productName: string;
+      color: string;
+      size: string;
+      quantity: number;
+      unitPriceCents: number;
+      imageUrl: string | null;
+    }>;
   }>;
   credits: Array<{
     id: string;
@@ -118,6 +128,8 @@ export interface OperationsCustomerDetail {
     id: string;
     eventType: string;
     body: string | null;
+    metadata: Record<string, unknown>;
+    actorLabel: string | null;
     createdAt: Date;
   }>;
 }
@@ -253,8 +265,10 @@ export class CustomerOperationsService {
     if (minOrders !== undefined) where.push(`order_summary.order_count >= ${add(minOrders)}`);
     if (minSpentCents !== undefined)
       where.push(`order_summary.total_spent_cents >= ${add(minSpentCents)}`);
-    if (view === 'NEW')
+    if (view === 'RECENTLY_ADDED')
       where.push(`cp.first_seen_at >= now() - interval '${CUSTOMER_NEW_DAYS} days'`);
+    if (view === 'PROSPECTS') where.push('order_summary.order_count = 0');
+    if (view === 'FIRST_TIME') where.push('order_summary.order_count = 1');
     if (view === 'RETURNING') where.push('order_summary.order_count >= 2');
     if (view === 'HIGH_VALUE')
       where.push(`order_summary.total_spent_cents >= ${CUSTOMER_HIGH_VALUE_CENTS}`);
@@ -295,7 +309,7 @@ export class CustomerOperationsService {
     const metricsResult = await this.pool.query<CustomerMetricsRow>(
       `SELECT count(*)::int AS total_customers,
               coalesce(round(100.0 * count(*) FILTER (WHERE summary.order_count >= 2)
-                / nullif(count(*) FILTER (WHERE summary.order_count >= 1), 0)), 0)::int AS returning_percentage,
+                / nullif(count(*) FILTER (WHERE summary.order_count >= 1), 0)), 0)::int AS repeat_customer_rate,
               coalesce(round(avg(summary.total_spent_cents) FILTER (WHERE summary.order_count >= 1)), 0)::int AS average_lifetime_spend_cents,
               count(*) FILTER (WHERE cp.email_marketing_status = 'SUBSCRIBED')::int AS email_subscribers
        FROM app.customer_profiles cp
@@ -309,7 +323,7 @@ export class CustomerOperationsService {
       limit,
       metrics: {
         totalCustomers: metrics.total_customers,
-        returningPercentage: metrics.returning_percentage,
+        repeatCustomerRate: metrics.repeat_customer_rate,
         averageLifetimeSpendCents: metrics.average_lifetime_spend_cents,
         emailSubscribers: metrics.email_subscribers,
       },
@@ -332,14 +346,17 @@ export class CustomerOperationsService {
               coalesce(nullif(trim(concat_ws(' ', cp.first_name, cp.last_name)), ''),
                        nullif(trim(concat_ws(' ', profile.first_name, profile.last_name)), ''),
                        profile_address.recipient_name, saved_address.recipient_name,
+                       order_address.recipient_name,
                        cp.normalized_email) AS name,
               order_summary.order_count, order_summary.total_spent_cents,
+              order_summary.returned_order_count,
               order_summary.last_order_at, coalesce(credit.current_balance, 0) AS credit_balance,
               coalesce(designs.count, 0)::int AS saved_design_count, designs.last_design_at
        FROM app.customer_profiles cp
        LEFT JOIN app.account_profiles profile ON profile.user_id = cp.user_id
        LEFT JOIN LATERAL (${customerProfileAddressSql()}) profile_address ON true
        LEFT JOIN LATERAL (${savedAddressSql()}) saved_address ON true
+       LEFT JOIN LATERAL (${orderAddressSql()}) order_address ON true
        LEFT JOIN LATERAL (${orderSummarySql()}) order_summary ON true
        LEFT JOIN app.credit_accounts credit
          ON credit.owner_type = 'USER' AND credit.owner_user_id = cp.user_id
@@ -354,11 +371,24 @@ export class CustomerOperationsService {
     if (!customer) throw new CustomerOperationsValidationError('Customer not found.');
     const [orders, addresses, credits, tags, timeline] = await Promise.all([
       this.pool.query<CustomerOrderRow>(
-        `SELECT o.order_number, o.status, count(oi.id)::int AS item_count,
-                coalesce((o.pricing_snapshot ->> 'totalCents')::int, 0) AS total_cents, o.created_at
-         FROM app.orders o LEFT JOIN app.order_items oi ON oi.order_id = o.id
+        `SELECT o.order_number, o.status, coalesce(sum(oi.quantity), 0)::int AS item_count,
+                coalesce((o.pricing_snapshot ->> 'totalCents')::int, 0) AS total_cents,
+                coalesce(payment.status, 'UNKNOWN') AS payment_status, o.created_at,
+                coalesce(jsonb_agg(jsonb_build_object(
+                  'productName', model.display_name,
+                  'color', coalesce(oi.item_snapshot ->> 'colorName', variant.color_name, oi.item_snapshot ->> 'colorCode', '—'),
+                  'size', coalesce(oi.item_snapshot ->> 'size', oi.item_snapshot ->> 'sizeCode', variant.size, '—'),
+                  'quantity', oi.quantity,
+                  'unitPriceCents', coalesce((oi.item_snapshot ->> 'unitRetailCents')::int, variant.price_cents, 0),
+                  'imageUrl', variant.image_url
+                ) ORDER BY oi.created_at) FILTER (WHERE oi.id IS NOT NULL), '[]'::jsonb) AS items
+         FROM app.orders o
+         LEFT JOIN app.order_items oi ON oi.order_id = o.id
+         LEFT JOIN app.product_models model ON model.id = oi.product_model_id
+         LEFT JOIN app.product_variants variant ON variant.id = oi.product_variant_id
+         LEFT JOIN app.payments payment ON payment.checkout_attempt_id = o.checkout_attempt_id
          WHERE lower(trim(o.customer_email)) = $1
-         GROUP BY o.id ORDER BY o.created_at DESC LIMIT 50`,
+         GROUP BY o.id, payment.status ORDER BY o.created_at DESC LIMIT 50`,
         [customer.email],
       ),
       this.pool.query<CustomerAddressRow>(
@@ -403,15 +433,7 @@ export class CustomerOperationsService {
          WHERE relation.customer_profile_id = $1 ORDER BY tag.value`,
         [customer.id],
       ),
-      this.pool.query<CustomerTimelineRow>(
-        `SELECT id::text, event_type, body, created_at FROM app.customer_timeline_events
-         WHERE customer_profile_id = $1
-         UNION ALL
-         SELECT id::text, 'LEGACY_NOTE', body, created_at FROM app.customer_notes
-         WHERE lower(trim(customer_email)) = $2
-         ORDER BY created_at DESC LIMIT 100`,
-        [customer.id, customer.email],
-      ),
+      customerTimeline(this.pool, customer),
     ]);
     return {
       id: customer.id,
@@ -428,6 +450,9 @@ export class CustomerOperationsService {
       averageOrderValueCents: customer.order_count
         ? Math.round(customer.total_spent_cents / customer.order_count)
         : 0,
+      returnRate: customer.order_count
+        ? Math.round((customer.returned_order_count / customer.order_count) * 100)
+        : 0,
       creditBalance: customer.credit_balance,
       lastOrderAt: customer.last_order_at,
       savedDesignCount: customer.saved_design_count,
@@ -439,9 +464,18 @@ export class CustomerOperationsService {
       orders: orders.rows.map((row) => ({
         orderNumber: row.order_number,
         status: row.status,
+        paymentStatus: row.payment_status,
         itemCount: row.item_count,
         totalCents: row.total_cents,
         createdAt: row.created_at,
+        items: row.items.map((item) => ({
+          productName: item.productName || 'Custom product',
+          color: item.color,
+          size: item.size,
+          quantity: item.quantity,
+          unitPriceCents: item.unitPriceCents,
+          imageUrl: item.imageUrl,
+        })),
       })),
       credits: credits.rows.map((row) => ({
         id: row.id,
@@ -451,12 +485,7 @@ export class CustomerOperationsService {
         createdAt: row.created_at,
       })),
       tags: tags.rows.map((row) => row.value),
-      timeline: timeline.rows.map((row) => ({
-        id: row.id,
-        eventType: row.event_type,
-        body: row.body,
-        createdAt: row.created_at,
-      })),
+      timeline,
     };
   }
 
@@ -523,11 +552,30 @@ export class CustomerOperationsService {
       const current = await client.query<{
         id: string;
         user_id: string | null;
+        normalized_email: string;
+        first_name: string | null;
+        last_name: string | null;
+        phone: string | null;
         email_marketing_status: MarketingStatus;
         sms_marketing_status: MarketingStatus;
+        line1: string | null;
+        line2: string | null;
+        city: string | null;
+        state_code: string | null;
+        postal_code: string | null;
+        country_code: string | null;
       }>(
-        `SELECT id,user_id,email_marketing_status,sms_marketing_status
-         FROM app.customer_profiles WHERE id=$1 FOR UPDATE`,
+        `SELECT profile.id,profile.user_id,profile.normalized_email,profile.first_name,
+                profile.last_name,profile.phone,profile.email_marketing_status,
+                profile.sms_marketing_status,address.line1,address.line2,address.city,
+                address.state_code,address.postal_code,address.country_code
+         FROM app.customer_profiles profile
+         LEFT JOIN LATERAL (
+           SELECT line1,line2,city,state_code,postal_code,country_code
+           FROM app.customer_addresses WHERE customer_profile_id=profile.id
+           ORDER BY is_default DESC,updated_at DESC LIMIT 1
+         ) address ON true
+         WHERE profile.id=$1 FOR UPDATE OF profile`,
         [id],
       );
       if (!current.rows[0]) throw new CustomerOperationsValidationError('Customer not found.');
@@ -574,14 +622,21 @@ export class CustomerOperationsService {
       const consentChanged =
         current.rows[0].email_marketing_status !== profile.emailMarketingStatus ||
         current.rows[0].sms_marketing_status !== profile.smsMarketingStatus;
+      const changedFields = profileChangedFields(current.rows[0], profile);
       await this.writeAddress(client, id, profile, true);
       if (input.tags) await this.writeTags(client, id, profile.tags, true);
-      await client.query(
-        `INSERT INTO app.customer_timeline_events
-           (customer_profile_id,event_type,metadata,actor_staff_member_id,actor_user_id)
-         VALUES ($1,'PROFILE_UPDATED',$2::jsonb,$3,$4)`,
-        [id, JSON.stringify({ source: 'ADMIN' }), actor.staffMemberId, actor.userId],
-      );
+      if (changedFields.length)
+        await client.query(
+          `INSERT INTO app.customer_timeline_events
+             (customer_profile_id,event_type,metadata,actor_staff_member_id,actor_user_id)
+           VALUES ($1,'PROFILE_UPDATED',$2::jsonb,$3,$4)`,
+          [
+            id,
+            JSON.stringify({ source: 'ADMIN', changedFields }),
+            actor.staffMemberId,
+            actor.userId,
+          ],
+        );
       if (consentChanged)
         await client.query(
           `INSERT INTO app.customer_timeline_events
@@ -838,6 +893,209 @@ type ValidatedProfile = {
   note: string | null;
 };
 
+async function customerTimeline(
+  pool: SqlPool,
+  customer: Pick<CustomerIdentityRow, 'id' | 'email' | 'user_id'>,
+): Promise<OperationsCustomerDetail['timeline']> {
+  const [profile, orders, transitions, refunds, reprints, credits, generations, deliveries] =
+    await Promise.all([
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'customer:' || event.id::text AS id, event.event_type, event.body,
+              event.metadata, coalesce(staff.normalized_email, actor.email) AS actor_label,
+              event.created_at
+       FROM app.customer_timeline_events event
+       LEFT JOIN app.staff_members staff ON staff.id=event.actor_staff_member_id
+       LEFT JOIN app.users actor ON actor.id=event.actor_user_id
+       WHERE event.customer_profile_id=$1
+       UNION ALL
+       SELECT 'legacy-note:' || note.id::text, 'LEGACY_NOTE', note.body, '{}'::jsonb,
+              actor.email, note.created_at
+       FROM app.customer_notes note
+       LEFT JOIN app.users actor ON actor.id=note.created_by_user_id
+       WHERE lower(trim(note.customer_email))=$2
+       ORDER BY created_at DESC
+       LIMIT 150`,
+        [customer.id, customer.email],
+      ),
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'order:' || orders.id::text AS id, 'ORDER_PLACED' AS event_type, NULL AS body,
+              jsonb_build_object(
+                'orderNumber', orders.order_number,
+                'totalCents', coalesce((orders.pricing_snapshot->>'totalCents')::int,0),
+                'status', orders.status
+              ) AS metadata,
+              'Customer'::text AS actor_label, orders.created_at
+       FROM app.orders orders
+       WHERE lower(trim(orders.customer_email))=$1
+       ORDER BY orders.created_at DESC
+       LIMIT 150`,
+        [customer.email],
+      ),
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'order-state:' || history.id::text AS id, 'ORDER_STATUS_CHANGED' AS event_type,
+              history.reason AS body,
+              jsonb_build_object(
+                'orderNumber', orders.order_number,
+                'fromState', history.from_state,
+                'toState', history.to_state,
+                'reasonCode', history.reason_code
+              ) || history.metadata AS metadata,
+              coalesce(staff.normalized_email, actor.email, initcap(lower(history.actor_type))) AS actor_label,
+              history.created_at
+       FROM app.order_state_history history
+       JOIN app.orders orders ON orders.id=history.order_id
+       LEFT JOIN app.staff_members staff ON staff.id=history.actor_staff_member_id
+       LEFT JOIN app.users actor ON actor.id=history.actor_user_id
+       WHERE lower(trim(orders.customer_email))=$1
+       ORDER BY history.created_at DESC
+       LIMIT 150`,
+        [customer.email],
+      ),
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'refund:' || refund.id::text AS id, 'REFUND' AS event_type, refund.notes AS body,
+              jsonb_build_object(
+                'orderNumber', orders.order_number,
+                'amountCents', refund.amount_cents,
+                'reasonCode', refund.reason_code,
+                'status', refund.status
+              ) AS metadata,
+              actor.email AS actor_label, refund.created_at
+       FROM app.order_refunds refund
+       JOIN app.orders orders ON orders.id=refund.order_id
+       LEFT JOIN app.users actor ON actor.id=refund.initiated_by_user_id
+       WHERE lower(trim(orders.customer_email))=$1
+       ORDER BY refund.created_at DESC
+       LIMIT 150`,
+        [customer.email],
+      ),
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'reprint:' || reprint.id::text AS id, 'REPRINT' AS event_type, reprint.notes AS body,
+              jsonb_build_object(
+                'orderNumber', orders.order_number,
+                'reasonCode', reprint.reason_code,
+                'status', reprint.status,
+                'estimatedCostCents', reprint.estimated_cost_cents
+              ) AS metadata,
+              actor.email AS actor_label, reprint.created_at
+       FROM app.order_reprints reprint
+       JOIN app.orders orders ON orders.id=reprint.original_order_id
+       LEFT JOIN app.users actor ON actor.id=reprint.created_by_user_id
+       WHERE lower(trim(orders.customer_email))=$1
+       ORDER BY reprint.created_at DESC
+       LIMIT 150`,
+        [customer.email],
+      ),
+      customer.user_id
+        ? pool.query<CustomerTimelineRow>(
+            `SELECT 'credit:' || ledger.id::text AS id, 'CREDIT_LEDGER' AS event_type,
+                  NULL AS body,
+                  jsonb_build_object(
+                    'entryType', ledger.entry_type,
+                    'amount', ledger.amount,
+                    'balanceAfter', ledger.balance_after,
+                    'generationId', ledger.generation_id
+                  ) || ledger.metadata AS metadata,
+                  NULL::text AS actor_label, ledger.created_at
+           FROM app.credit_ledger ledger
+           JOIN app.credit_accounts account ON account.id=ledger.credit_account_id
+           WHERE account.owner_type='USER' AND account.owner_user_id=$1
+           ORDER BY ledger.created_at DESC
+           LIMIT 150`,
+            [customer.user_id],
+          )
+        : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
+      customer.user_id
+        ? pool.query<CustomerTimelineRow>(
+            `SELECT 'generation:' || generation.id::text AS id,
+                    'DESIGN_GENERATION' AS event_type, generation.raw_prompt AS body,
+                    jsonb_build_object(
+                      'status', generation.status,
+                      'creditStatus', generation.credit_status,
+                      'projectId', generation.project_id,
+                      'failureCategory', generation.failure_category
+                    ) AS metadata,
+                    'Customer'::text AS actor_label, generation.created_at
+             FROM app.generations generation
+             WHERE generation.requested_by_user_id=$1
+             ORDER BY generation.created_at DESC
+             LIMIT 150`,
+            [customer.user_id],
+          )
+        : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
+      pool.query<CustomerTimelineRow>(
+        `SELECT 'delivery:' || delivery.id::text AS id, 'EMAIL_DELIVERY' AS event_type,
+              NULL AS body,
+              jsonb_build_object(
+                'messageType', delivery.message_type,
+                'classification', delivery.classification,
+                'status', delivery.status,
+                'orderNumber', orders.order_number
+              ) AS metadata,
+              'System'::text AS actor_label, delivery.created_at
+       FROM app.lifecycle_deliveries delivery
+       LEFT JOIN app.orders orders ON orders.id=delivery.order_id
+       WHERE lower(trim(delivery.recipient_email))=$1
+       ORDER BY delivery.created_at DESC
+       LIMIT 150`,
+        [customer.email],
+      ),
+    ]);
+
+  return [profile, orders, transitions, refunds, reprints, credits, generations, deliveries]
+    .flatMap((result) => result.rows)
+    .sort((left, right) => right.created_at.getTime() - left.created_at.getTime())
+    .slice(0, 150)
+    .map((row) => ({
+      id: row.id,
+      eventType: row.event_type,
+      body: row.body,
+      metadata: row.metadata ?? {},
+      actorLabel: row.actor_label,
+      createdAt: row.created_at,
+    }));
+}
+
+function profileChangedFields(
+  current: {
+    normalized_email: string;
+    first_name: string | null;
+    last_name: string | null;
+    phone: string | null;
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    state_code: string | null;
+    postal_code: string | null;
+    country_code: string | null;
+  },
+  profile: ValidatedProfile,
+): string[] {
+  const changed: string[] = [];
+  if (current.normalized_email !== profile.email) changed.push('email');
+  if (current.first_name !== profile.firstName) changed.push('first name');
+  if (current.last_name !== profile.lastName) changed.push('last name');
+  if (current.phone !== profile.phone) changed.push('phone');
+  const previousAddress = [
+    current.line1,
+    current.line2,
+    current.city,
+    current.state_code,
+    current.postal_code,
+    current.country_code,
+  ].map((value) => value ?? '');
+  const nextAddress = [
+    profile.address?.line1,
+    profile.address?.line2,
+    profile.address?.city,
+    profile.address?.stateCode,
+    profile.address?.postalCode,
+    profile.address?.countryCode,
+  ].map((value) => value ?? '');
+  if (previousAddress.some((value, index) => value !== nextAddress[index]))
+    changed.push('default address');
+  return changed;
+}
+
 function validateProfileInput(input: CustomerProfileInput): ValidatedProfile {
   const email = normalizeCustomerEmail(input.email);
   const firstName = normalizeOptional(input.firstName, 80, 'first name');
@@ -907,9 +1165,13 @@ function orderSummarySql(alias = 'order_summary') {
   void alias;
   return `SELECT count(*)::int AS order_count,
                  coalesce(sum((pricing_snapshot->>'totalCents')::int),0)::int AS total_spent_cents,
-                 max(created_at) AS last_order_at
-          FROM app.orders WHERE lower(trim(customer_email))=cp.normalized_email
-            AND status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')`;
+                 max(created_at) AS last_order_at,
+                 count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM app.order_refunds refund
+                   WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+                 ))::int AS returned_order_count
+          FROM app.orders orders WHERE lower(trim(orders.customer_email))=cp.normalized_email
+            AND orders.status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')`;
 }
 function tagsSql() {
   return `SELECT array_agg(tag.value ORDER BY tag.value) AS values
@@ -938,7 +1200,7 @@ interface CustomerListRow {
 }
 interface CustomerMetricsRow {
   total_customers: number;
-  returning_percentage: number;
+  repeat_customer_rate: number;
   average_lifetime_spend_cents: number;
   email_subscribers: number;
 }
@@ -955,6 +1217,7 @@ interface CustomerIdentityRow {
   name: string;
   order_count: number;
   total_spent_cents: number;
+  returned_order_count: number;
   credit_balance: number;
   last_order_at: Date | null;
   saved_design_count: number;
@@ -965,9 +1228,18 @@ interface CustomerIdentityRow {
 interface CustomerOrderRow {
   order_number: string;
   status: string;
+  payment_status: string;
   item_count: number;
   total_cents: number;
   created_at: Date;
+  items: Array<{
+    productName: string;
+    color: string;
+    size: string;
+    quantity: number;
+    unitPriceCents: number;
+    imageUrl: string | null;
+  }>;
 }
 interface CustomerAddressRow {
   id: string;
@@ -993,6 +1265,8 @@ interface CustomerTimelineRow {
   id: string;
   event_type: string;
   body: string | null;
+  metadata: Record<string, unknown>;
+  actor_label: string | null;
   created_at: Date;
 }
 interface CustomerExportRow {

@@ -369,8 +369,10 @@ function selectionQuery(selection: CustomerExportSelection, cursor?: string) {
       where.push(`cp.email_marketing_status=${add(filters.emailMarketingStatus)}`);
     if (filters.minOrders !== undefined)
       where.push(`order_summary.order_count >= ${add(filters.minOrders)}`);
-    if (filters.view === 'NEW')
+    if (filters.view === 'RECENTLY_ADDED')
       where.push(`cp.first_seen_at >= now() - interval '${CUSTOMER_NEW_DAYS} days'`);
+    if (filters.view === 'PROSPECTS') where.push('order_summary.order_count = 0');
+    if (filters.view === 'FIRST_TIME') where.push('order_summary.order_count = 1');
     if (filters.view === 'RETURNING') where.push('order_summary.order_count >= 2');
     if (filters.view === 'HIGH_VALUE')
       where.push(`order_summary.total_spent_cents >= ${CUSTOMER_HIGH_VALUE_CENTS}`);
@@ -393,7 +395,8 @@ function normalizeSelection(input: unknown): CustomerExportSelection {
   if (input.type !== 'FILTER' || !isRecord(input.filters))
     throw new CustomerExportValidationError('Choose customers to export.');
   const raw = input.filters;
-  const view = raw.view === undefined ? 'ALL' : String(raw.view);
+  const requestedView = raw.view === undefined ? 'ALL' : String(raw.view);
+  const view = requestedView === 'NEW' ? 'RECENTLY_ADDED' : requestedView;
   if (!customerViews.includes(view as CustomerView))
     throw new CustomerExportValidationError('Unsupported customer view.');
   const emailMarketingStatus = raw.emailMarketingStatus;

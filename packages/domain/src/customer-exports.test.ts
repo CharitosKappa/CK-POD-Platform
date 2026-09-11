@@ -98,4 +98,20 @@ describe('hybrid customer exports', () => {
       expect.any(Array),
     );
   });
+
+  it('maps legacy NEW export snapshots to the recently-added segment', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ id: customerId }], rowCount: 1 });
+    const service = new CustomerExportService(
+      { query } as unknown as SqlPool,
+      new InMemoryJobQueue(),
+      new MemoryObjectStorage(),
+    );
+
+    await service.resolveIds(actor, {
+      type: 'FILTER',
+      filters: { view: 'NEW' as never },
+    });
+
+    expect(query.mock.calls[0]?.[0]).toContain("cp.first_seen_at >= now() - interval '30 days'");
+  });
 });

@@ -1,5 +1,12 @@
 export type MarketingStatus = 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
-export type CustomerView = 'ALL' | 'NEW' | 'RETURNING' | 'HIGH_VALUE' | 'EMAIL_SUBSCRIBERS';
+export type CustomerView =
+  | 'ALL'
+  | 'RECENTLY_ADDED'
+  | 'PROSPECTS'
+  | 'FIRST_TIME'
+  | 'RETURNING'
+  | 'HIGH_VALUE'
+  | 'EMAIL_SUBSCRIBERS';
 export type CustomerSort =
   | 'LAST_SEEN_DESC'
   | 'NAME_ASC'
@@ -48,7 +55,7 @@ export type CustomerListResponse = {
   limit: number;
   metrics: {
     totalCustomers: number;
-    returningPercentage: number;
+    repeatCustomerRate: number;
     averageLifetimeSpendCents: number;
     emailSubscribers: number;
   };
@@ -79,6 +86,7 @@ export type CustomerDetail = {
   orderCount: number;
   totalSpentCents: number;
   averageOrderValueCents: number;
+  returnRate: number;
   creditBalance: number;
   lastOrderAt: string | null;
   savedDesignCount: number;
@@ -101,9 +109,18 @@ export type CustomerDetail = {
   orders: Array<{
     orderNumber: string;
     status: string;
+    paymentStatus: string;
     itemCount: number;
     totalCents: number;
     createdAt: string;
+    items: Array<{
+      productName: string;
+      color: string;
+      size: string;
+      quantity: number;
+      unitPriceCents: number;
+      imageUrl: string | null;
+    }>;
   }>;
   credits: Array<{
     id: string;
@@ -113,5 +130,12 @@ export type CustomerDetail = {
     createdAt: string;
   }>;
   tags: string[];
-  timeline: Array<{ id: string; eventType: string; body: string | null; createdAt: string }>;
+  timeline: Array<{
+    id: string;
+    eventType: string;
+    body: string | null;
+    metadata: Record<string, unknown>;
+    actorLabel: string | null;
+    createdAt: string;
+  }>;
 };
