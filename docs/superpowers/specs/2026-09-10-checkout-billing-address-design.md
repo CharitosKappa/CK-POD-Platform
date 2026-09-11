@@ -19,14 +19,14 @@ The existing delivery-address save checkbox continues to save only the delivery 
 
 ## Boundaries
 
-| Data or action | Source of truth | May use billing address? |
-| --- | --- | --- |
-| Delivery quote and carrier choice | Delivery address | No |
-| Destination tax calculation | Delivery address | No |
-| Print-provider fulfillment destination | Delivery address | No |
-| Payment authorization / future AVS adapter boundary | Billing address | Yes |
-| Receipt / customer communication | Contact email | No |
-| Paid order record | Immutable delivery and billing snapshots | Yes |
+| Data or action                                      | Source of truth                          | May use billing address? |
+| --------------------------------------------------- | ---------------------------------------- | ------------------------ |
+| Delivery quote and carrier choice                   | Delivery address                         | No                       |
+| Destination tax calculation                         | Delivery address                         | No                       |
+| Print-provider fulfillment destination              | Delivery address                         | No                       |
+| Payment authorization / future AVS adapter boundary | Billing address                          | Yes                      |
+| Receipt / customer communication                    | Contact email                            | No                       |
+| Paid order record                                   | Immutable delivery and billing snapshots | Yes                      |
 
 No print provider, supplier, or technical print information appears in checkout.
 

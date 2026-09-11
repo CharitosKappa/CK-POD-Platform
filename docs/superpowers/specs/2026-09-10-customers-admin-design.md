@@ -80,4 +80,3 @@ The directory and profile use loading, empty, unauthorized, not-found, and safe 
 - UI tests cover directory search/filter states, desktop row navigation, mobile drill-in/back navigation, and note/tag feedback.
 - Existing account, credit, commerce, privacy, and operations tests continue to pass.
 - Type checks, linting, and a production web build pass before delivery.
-

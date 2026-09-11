@@ -3,6 +3,7 @@ docs/MASTER_BUILD_PROMPT.md
 docs/CEO_REQUIREMENTS_GR.md
 
 # Managed by Next.js during development and production builds.
+apps/ux-prototype/next-env.d.ts
 apps/web/next-env.d.ts
 
 # Generated and dependency content

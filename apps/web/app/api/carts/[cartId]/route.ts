@@ -59,7 +59,11 @@ export async function DELETE(
   try {
     const { cartId } = await context.params;
     const body = (await request.json()) as { itemId?: string; expectedRevision?: number };
-    if (!body.itemId || body.expectedRevision === undefined || !Number.isInteger(body.expectedRevision)) {
+    if (
+      !body.itemId ||
+      body.expectedRevision === undefined ||
+      !Number.isInteger(body.expectedRevision)
+    ) {
       return NextResponse.json({ error: 'A valid cart revision is required.' }, { status: 400 });
     }
     const cart = await (

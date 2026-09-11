@@ -61,7 +61,10 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof CustomerOperationsValidationError) {
-    return NextResponse.json({ error: error.message }, { status: error.message === 'Customer not found.' ? 404 : 400 });
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.message === 'Customer not found.' ? 404 : 400 },
+    );
   }
   if (error instanceof ProjectConflictError) {
     return NextResponse.json({ error: error.message, code: 'STALE_PROJECT' }, { status: 409 });

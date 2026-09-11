@@ -4,8 +4,7 @@ import type { ActiveSession } from './identity';
 import type { StaffRole } from './staff-identity';
 
 export type CustomerOperationsActor =
-  | ActiveSession
-  | { staffMemberId: string; role: StaffRole; email: string };
+  ActiveSession | { staffMemberId: string; role: StaffRole; email: string };
 
 export type CustomerTouchpoint = 'ACCOUNT' | 'CHECKOUT' | 'ORDER' | 'NEWSLETTER';
 export type CustomerSort = 'LAST_SEEN_DESC' | 'TOTAL_SPENT_DESC' | 'ORDER_COUNT_DESC' | 'NAME_ASC';
@@ -227,7 +226,10 @@ export class CustomerOperationsService {
     };
   }
 
-  async getCustomer(session: CustomerOperationsActor, customerId: string): Promise<OperationsCustomerDetail> {
+  async getCustomer(
+    session: CustomerOperationsActor,
+    customerId: string,
+  ): Promise<OperationsCustomerDetail> {
     await this.requireStaff(session);
     await reconcileCustomerProfiles(this.pool);
     const id = requireCustomerId(customerId);
@@ -373,7 +375,9 @@ export class CustomerOperationsService {
     const id = requireCustomerId(customerId);
     const note = body.trim();
     if (!note || note.length > 2_000)
-      throw new CustomerOperationsValidationError('Enter an internal note of up to 2,000 characters.');
+      throw new CustomerOperationsValidationError(
+        'Enter an internal note of up to 2,000 characters.',
+      );
     const inserted = await this.pool.query<{ id: string }>(
       `INSERT INTO app.customer_timeline_events (customer_profile_id, event_type, body, actor_user_id, actor_staff_member_id)
        SELECT id, 'NOTE', $2, $3, $4 FROM app.customer_profiles WHERE id = $1 RETURNING id`,
@@ -382,18 +386,25 @@ export class CustomerOperationsService {
     if (!inserted.rows[0]) throw new CustomerOperationsValidationError('Customer not found.');
   }
 
-  async replaceTags(session: CustomerOperationsActor, customerId: string, values: string[]): Promise<string[]> {
+  async replaceTags(
+    session: CustomerOperationsActor,
+    customerId: string,
+    values: string[],
+  ): Promise<string[]> {
     const actor = await this.requireStaff(session);
     const id = requireCustomerId(customerId);
     const tags = [...new Set(values.map(normalizeTag))];
-    if (tags.length > 20) throw new CustomerOperationsValidationError('Use up to 20 customer tags.');
+    if (tags.length > 20)
+      throw new CustomerOperationsValidationError('Use up to 20 customer tags.');
     await withTransaction(this.pool, async (client) => {
       const customer = await client.query<{ id: string }>(
         `SELECT id FROM app.customer_profiles WHERE id = $1 FOR UPDATE`,
         [id],
       );
       if (!customer.rows[0]) throw new CustomerOperationsValidationError('Customer not found.');
-      await client.query(`DELETE FROM app.customer_profile_tags WHERE customer_profile_id = $1`, [id]);
+      await client.query(`DELETE FROM app.customer_profile_tags WHERE customer_profile_id = $1`, [
+        id,
+      ]);
       for (const tag of tags) {
         const stored = await client.query<{ id: string }>(
           `INSERT INTO app.customer_tags (value) VALUES ($1)
@@ -415,13 +426,16 @@ export class CustomerOperationsService {
     return tags;
   }
 
-  private async requireStaff(session: CustomerOperationsActor): Promise<{ userId: string | null; staffMemberId: string | null }> {
+  private async requireStaff(
+    session: CustomerOperationsActor,
+  ): Promise<{ userId: string | null; staffMemberId: string | null }> {
     if ('staffMemberId' in session) {
       if (!['OWNER', 'OPERATIONS'].includes(session.role))
         throw new CustomerOperationsAccessError('Operations access is restricted.');
       return { userId: null, staffMemberId: session.staffMemberId };
     }
-    if (!session.userId) throw new CustomerOperationsAccessError('Operations access is restricted.');
+    if (!session.userId)
+      throw new CustomerOperationsAccessError('Operations access is restricted.');
     const result = await this.pool.query<{ role: string }>(
       `SELECT role FROM app.users WHERE id = $1`,
       [session.userId],
@@ -460,32 +474,81 @@ interface CustomerIdentityRow {
   credit_balance: number;
   saved_design_count: number;
 }
-interface CustomerOrderRow { order_number: string; status: string; item_count: number; total_cents: number; created_at: Date }
-interface CustomerAddressRow { id: string; recipient_name: string; line1: string; line2: string | null; city: string; state_code: string; postal_code: string; country_code: string; phone: string | null; is_default: boolean; source: string }
-interface CustomerCreditRow { id: string; entry_type: string; amount: number; balance_after: number; created_at: Date }
-interface CustomerTimelineRow { id: string; event_type: string; body: string | null; created_at: Date }
+interface CustomerOrderRow {
+  order_number: string;
+  status: string;
+  item_count: number;
+  total_cents: number;
+  created_at: Date;
+}
+interface CustomerAddressRow {
+  id: string;
+  recipient_name: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state_code: string;
+  postal_code: string;
+  country_code: string;
+  phone: string | null;
+  is_default: boolean;
+  source: string;
+}
+interface CustomerCreditRow {
+  id: string;
+  entry_type: string;
+  amount: number;
+  balance_after: number;
+  created_at: Date;
+}
+interface CustomerTimelineRow {
+  id: string;
+  event_type: string;
+  body: string | null;
+  created_at: Date;
+}
 
 function mapListRow(row: CustomerListRow): OperationsCustomerListItem {
-  return { id: row.id, email: row.email, name: row.name, orderCount: row.order_count, totalSpentCents: row.total_spent_cents, creditBalance: row.credit_balance, lastOrderAt: row.last_order_at, lastSeenAt: row.last_seen_at, tags: row.tags };
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    orderCount: row.order_count,
+    totalSpentCents: row.total_spent_cents,
+    creditBalance: row.credit_balance,
+    lastOrderAt: row.last_order_at,
+    lastSeenAt: row.last_seen_at,
+    tags: row.tags,
+  };
 }
-function boundedInteger(value: number | undefined, fallback: number, min: number, max: number, label: string): number {
+function boundedInteger(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  label: string,
+): number {
   const result = value ?? fallback;
-  if (!Number.isInteger(result) || result < min || result > max) throw new CustomerOperationsValidationError(`Enter a valid ${label}.`);
+  if (!Number.isInteger(result) || result < min || result > max)
+    throw new CustomerOperationsValidationError(`Enter a valid ${label}.`);
   return result;
 }
 function optionalNonNegativeInteger(value: number | undefined, label: string): number | undefined {
   if (value === undefined) return undefined;
-  if (!Number.isInteger(value) || value < 0) throw new CustomerOperationsValidationError(`Enter a valid ${label}.`);
+  if (!Number.isInteger(value) || value < 0)
+    throw new CustomerOperationsValidationError(`Enter a valid ${label}.`);
   return value;
 }
 function normalizeCustomerEmail(value: string): string {
   const email = value.trim().toLowerCase();
-  if (!/^\S+@\S+\.\S+$/.test(email)) throw new CustomerOperationsValidationError('Enter a valid customer email.');
+  if (!/^\S+@\S+\.\S+$/.test(email))
+    throw new CustomerOperationsValidationError('Enter a valid customer email.');
   return email;
 }
 function normalizeTag(value: string): string {
   const tag = value.trim().replace(/\s+/g, ' ');
-  if (!tag || tag.length > 48) throw new CustomerOperationsValidationError('Enter a customer tag of up to 48 characters.');
+  if (!tag || tag.length > 48)
+    throw new CustomerOperationsValidationError('Enter a customer tag of up to 48 characters.');
   return tag;
 }
 function requireCustomerId(value: string): string {
@@ -494,7 +557,8 @@ function requireCustomerId(value: string): string {
   return value;
 }
 function customerSortSql(sort: CustomerSort): string {
-  if (sort === 'TOTAL_SPENT_DESC') return 'order_summary.total_spent_cents DESC, cp.last_seen_at DESC';
+  if (sort === 'TOTAL_SPENT_DESC')
+    return 'order_summary.total_spent_cents DESC, cp.last_seen_at DESC';
   if (sort === 'ORDER_COUNT_DESC') return 'order_summary.order_count DESC, cp.last_seen_at DESC';
   if (sort === 'NAME_ASC') return 'name ASC, cp.id ASC';
   return 'cp.last_seen_at DESC, cp.id DESC';

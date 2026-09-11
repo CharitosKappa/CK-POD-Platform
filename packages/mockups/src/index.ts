@@ -33,22 +33,38 @@ export interface RenderedMockup {
 }
 
 const developmentColorSwatches = [
-  { code: 'white', tint: '#ffffff' }, { code: 'ivory', tint: '#fff7e7' },
-  { code: 'pepper', tint: '#5f605b' }, { code: 'black', tint: '#000000' },
-  { code: 'mustard', tint: '#d0ae6e' }, { code: 'yam', tint: '#c9814f' },
-  { code: 'grey', tint: '#7a7f79' }, { code: 'moss', tint: '#747f66' },
-  { code: 'light-green', tint: '#738874' }, { code: 'chambray', tint: '#d9edf5' },
-  { code: 'flo-blue', tint: '#7682c2' }, { code: 'graphite', tint: '#373231' },
-  { code: 'violet', tint: '#a88fd7' }, { code: 'orchid', tint: '#cbb3cc' },
-  { code: 'blossom', tint: '#f8d1e2' }, { code: 'crunchberry', tint: '#eb7ca2' },
-  { code: 'berry', tint: '#775568' }, { code: 'watermelon', tint: '#da807b' },
-  { code: 'bay', tint: '#c3cfc1' }, { code: 'blue-jean', tint: '#788ca1' },
-  { code: 'crimson', tint: '#b66a74' }, { code: 'butter', tint: '#f5e1a4' },
-  { code: 'chalky-mint', tint: '#a7d9d4' }, { code: 'blue-spruce', tint: '#536758' },
-  { code: 'brick', tint: '#915c5c' }, { code: 'espresso', tint: '#846b5b' },
-  { code: 'island-reef', tint: '#a2d8c2' }, { code: 'lagoon-blue', tint: '#89e4ed' },
-  { code: 'sapphire', tint: '#03b2d3' }, { code: 'navy', tint: '#263040' },
-  { code: 'neon-pink', tint: '#f57caf' }, { code: 'chili', tint: '#853f44' },
+  { code: 'white', tint: '#ffffff' },
+  { code: 'ivory', tint: '#fff7e7' },
+  { code: 'pepper', tint: '#5f605b' },
+  { code: 'black', tint: '#000000' },
+  { code: 'mustard', tint: '#d0ae6e' },
+  { code: 'yam', tint: '#c9814f' },
+  { code: 'grey', tint: '#7a7f79' },
+  { code: 'moss', tint: '#747f66' },
+  { code: 'light-green', tint: '#738874' },
+  { code: 'chambray', tint: '#d9edf5' },
+  { code: 'flo-blue', tint: '#7682c2' },
+  { code: 'graphite', tint: '#373231' },
+  { code: 'violet', tint: '#a88fd7' },
+  { code: 'orchid', tint: '#cbb3cc' },
+  { code: 'blossom', tint: '#f8d1e2' },
+  { code: 'crunchberry', tint: '#eb7ca2' },
+  { code: 'berry', tint: '#775568' },
+  { code: 'watermelon', tint: '#da807b' },
+  { code: 'bay', tint: '#c3cfc1' },
+  { code: 'blue-jean', tint: '#788ca1' },
+  { code: 'crimson', tint: '#b66a74' },
+  { code: 'butter', tint: '#f5e1a4' },
+  { code: 'chalky-mint', tint: '#a7d9d4' },
+  { code: 'blue-spruce', tint: '#536758' },
+  { code: 'brick', tint: '#915c5c' },
+  { code: 'espresso', tint: '#846b5b' },
+  { code: 'island-reef', tint: '#a2d8c2' },
+  { code: 'lagoon-blue', tint: '#89e4ed' },
+  { code: 'sapphire', tint: '#03b2d3' },
+  { code: 'navy', tint: '#263040' },
+  { code: 'neon-pink', tint: '#f57caf' },
+  { code: 'chili', tint: '#853f44' },
   { code: 'red', tint: '#a80d27' },
 ] as const;
 
@@ -149,7 +165,9 @@ export class SharpGarmentMockupRenderer {
   }
 }
 
-function profile(colorCode: (typeof developmentColorSwatches)[number]['code']): GarmentMockupProfile {
+function profile(
+  colorCode: (typeof developmentColorSwatches)[number]['code'],
+): GarmentMockupProfile {
   const dedicatedAsset = ['black', 'white', 'navy'].includes(colorCode);
   const tint = developmentColorSwatches.find((candidate) => candidate.code === colorCode)!.tint;
   return {

@@ -7,7 +7,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(): Promise<NextResponse> {
   try {
-    return NextResponse.json({ designs: await services().account.designs(await requireSession(false)) });
+    return NextResponse.json({
+      designs: await services().account.designs(await requireSession(false)),
+    });
   } catch (error) {
     return handleRouteError(error);
   }

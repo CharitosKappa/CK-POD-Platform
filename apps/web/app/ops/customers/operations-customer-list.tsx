@@ -108,16 +108,28 @@ export function OperationsCustomerList({
           <details className="ops-customers-columns">
             <summary>Columns</summary>
             <label>
-              <input checked={showCredits} onChange={(event) => setShowCredits(event.target.checked)} type="checkbox" />
+              <input
+                checked={showCredits}
+                onChange={(event) => setShowCredits(event.target.checked)}
+                type="checkbox"
+              />
               Design credits
             </label>
             <label>
-              <input checked={showLastOrder} onChange={(event) => setShowLastOrder(event.target.checked)} type="checkbox" />
+              <input
+                checked={showLastOrder}
+                onChange={(event) => setShowLastOrder(event.target.checked)}
+                type="checkbox"
+              />
               Last order
             </label>
           </details>
         </div>
-        {error ? <p className="ops-admin-feedback is-error" role="alert">{error}</p> : null}
+        {error ? (
+          <p className="ops-admin-feedback is-error" role="alert">
+            {error}
+          </p>
+        ) : null}
         <div className="ops-customer-table-wrap">
           <table className="ops-customer-table">
             <thead>
@@ -133,7 +145,9 @@ export function OperationsCustomerList({
               {result?.customers.map((customer) => (
                 <tr key={customer.id}>
                   <td data-label="Customer">
-                    <Link href={`${pageBase}/${encodeURIComponent(customer.id)}`}>{customer.name}</Link>
+                    <Link href={`${pageBase}/${encodeURIComponent(customer.id)}`}>
+                      {customer.name}
+                    </Link>
                     <span>{customer.email}</span>
                     {customer.tags.length ? <small>{customer.tags.join(' · ')}</small> : null}
                   </td>
@@ -141,23 +155,51 @@ export function OperationsCustomerList({
                   <td data-label="Total spent">{money.format(customer.totalSpentCents / 100)}</td>
                   {showCredits ? (
                     <td data-label="Design credits">
-                      <span className={customer.creditBalance ? 'ops-customer-credit' : 'ops-status-chip neutral'}>
-                        {customer.creditBalance ? `${customer.creditBalance} available` : 'No credits'}
+                      <span
+                        className={
+                          customer.creditBalance ? 'ops-customer-credit' : 'ops-status-chip neutral'
+                        }
+                      >
+                        {customer.creditBalance
+                          ? `${customer.creditBalance} available`
+                          : 'No credits'}
                       </span>
                     </td>
                   ) : null}
-                  {showLastOrder ? <td data-label="Last order">{customer.lastOrderAt ? date.format(new Date(customer.lastOrderAt)) : '—'}</td> : null}
+                  {showLastOrder ? (
+                    <td data-label="Last order">
+                      {customer.lastOrderAt ? date.format(new Date(customer.lastOrderAt)) : '—'}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
           </table>
-          {!loading && !error && result?.customers.length === 0 ? <p className="ops-admin-empty">No customer matches this view.</p> : null}
+          {!loading && !error && result?.customers.length === 0 ? (
+            <p className="ops-admin-empty">No customer matches this view.</p>
+          ) : null}
         </div>
         {result && result.total > result.limit ? (
           <nav className="ops-customers-pagination" aria-label="Customer pages">
-            <button type="button" className="ops-admin-secondary" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>Previous</button>
-            <span>Page {page} of {Math.ceil(result.total / result.limit)}</span>
-            <button type="button" className="ops-admin-secondary" disabled={page >= Math.ceil(result.total / result.limit)} onClick={() => setPage((current) => current + 1)}>Next</button>
+            <button
+              type="button"
+              className="ops-admin-secondary"
+              disabled={page === 1}
+              onClick={() => setPage((current) => current - 1)}
+            >
+              Previous
+            </button>
+            <span>
+              Page {page} of {Math.ceil(result.total / result.limit)}
+            </span>
+            <button
+              type="button"
+              className="ops-admin-secondary"
+              disabled={page >= Math.ceil(result.total / result.limit)}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              Next
+            </button>
           </nav>
         ) : null}
       </section>

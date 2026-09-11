@@ -7,7 +7,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(): Promise<NextResponse> {
   try {
-    return NextResponse.json({ addresses: await services().account.addresses(await requireSession(false)) });
+    return NextResponse.json({
+      addresses: await services().account.addresses(await requireSession(false)),
+    });
   } catch (error) {
     return handleRouteError(error);
   }
@@ -60,7 +62,10 @@ async function save(request: Request): Promise<NextResponse> {
       typeof body.postalCode !== 'string' ||
       typeof body.countryCode !== 'string'
     ) {
-      return NextResponse.json({ error: 'Complete address details are required.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Complete address details are required.' },
+        { status: 400 },
+      );
     }
     const payload = {
       recipientName: body.recipientName,

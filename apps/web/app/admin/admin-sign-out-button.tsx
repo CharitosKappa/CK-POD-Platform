@@ -12,7 +12,12 @@ export function AdminSignOutButton() {
   }
 
   return (
-    <button className="ops-admin-nav-link ops-admin-sign-out" disabled={signingOut} onClick={() => void signOut()} type="button">
+    <button
+      className="ops-admin-nav-link ops-admin-sign-out"
+      disabled={signingOut}
+      onClick={() => void signOut()}
+      type="button"
+    >
       {signingOut ? 'Signing out…' : 'Sign out'}
     </button>
   );
