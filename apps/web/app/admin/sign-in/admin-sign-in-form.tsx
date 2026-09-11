@@ -4,15 +4,23 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 type Stage = 'EMAIL' | 'CODE' | 'COMPLETE';
-type ApiError = { error?: string };
+type AuthResponse = {
+  developmentAccessUnavailable?: boolean;
+  developmentCode?: string;
+  error?: string;
+};
 
-export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
+export function AdminSignInForm({
+  developmentAdminEmail,
+  returnTo,
+}: Readonly<{ developmentAdminEmail: string | undefined; returnTo: string }>) {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(developmentAdminEmail ?? '');
   const [code, setCode] = useState('');
   const [stage, setStage] = useState<Stage>('EMAIL');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [developmentCode, setDevelopmentCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
@@ -31,8 +39,14 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
     setError('');
     setNotice('');
     try {
-      await request('/api/admin/auth/request-code', { email });
+      const response = await request('/api/admin/auth/request-code', { email });
+      if (response.developmentAccessUnavailable) {
+        setDevelopmentCode('');
+        setError('No local code was created. Use the local development admin email.');
+        return;
+      }
       setCode('');
+      setDevelopmentCode(response.developmentCode ?? '');
       setStage('CODE');
     } catch (reason) {
       setError(messageFor(reason));
@@ -52,6 +66,7 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
     setNotice('');
     try {
       await request('/api/admin/auth/verify-code', { email, code });
+      setDevelopmentCode('');
       setStage('COMPLETE');
       window.setTimeout(() => router.replace(returnTo), 450);
     } catch (reason) {
@@ -66,8 +81,9 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
     setError('');
     setNotice('');
     try {
-      await request('/api/admin/auth/request-code', { email });
+      const response = await request('/api/admin/auth/request-code', { email });
       setCode('');
+      setDevelopmentCode(response.developmentCode ?? '');
       setNotice('A new code was sent.');
     } catch (reason) {
       setError(messageFor(reason));
@@ -130,6 +146,20 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
               type="email"
               value={email}
             />
+            {developmentAdminEmail ? (
+              <p className="auth-local-access-note">
+                <span>Local development account</span>
+                <button
+                  onClick={() => {
+                    setEmail(developmentAdminEmail);
+                    setError('');
+                  }}
+                  type="button"
+                >
+                  {developmentAdminEmail}
+                </button>
+              </p>
+            ) : null}
             {error ? <Feedback>{error}</Feedback> : null}
             <button
               className="auth-create-button auth-account-submit"
@@ -153,6 +183,7 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
                 setCode('');
                 setError('');
                 setNotice('');
+                setDevelopmentCode('');
               }}
               type="button"
             >
@@ -193,6 +224,13 @@ export function AdminSignInForm({ returnTo }: Readonly<{ returnTo: string }>) {
                 value={code}
               />
             </div>
+            {developmentCode ? (
+              <aside className="auth-development-code" aria-live="polite">
+                <span>Local development code</span>
+                <strong>{developmentCode}</strong>
+                <small>Visible only in this local environment.</small>
+              </aside>
+            ) : null}
             {error ? <Feedback>{error}</Feedback> : null}
             <button
               className="auth-create-button auth-account-submit"
@@ -231,14 +269,15 @@ function Feedback({ children }: Readonly<{ children: string }>) {
     </p>
   );
 }
-async function request(path: string, body: Record<string, string>): Promise<void> {
+async function request(path: string, body: Record<string, string>): Promise<AuthResponse> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const payload = (await response.json()) as ApiError;
+  const payload = (await response.json()) as AuthResponse;
   if (!response.ok) throw new Error(payload.error ?? 'Something went wrong. Please try again.');
+  return payload;
 }
 function messageFor(reason: unknown): string {
   return reason instanceof Error ? reason.message : 'Something went wrong. Please try again.';

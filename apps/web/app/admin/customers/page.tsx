@@ -1,5 +1,5 @@
-import { OperationsCustomerList } from '../../ops/customers/operations-customer-list';
+import { AdminCustomersClient } from './_components/admin-customers-client';
 
 export default function AdminCustomersPage() {
-  return <OperationsCustomerList apiBase="/api/admin/customers" pageBase="/admin/customers" />;
+  return <AdminCustomersClient />;
 }

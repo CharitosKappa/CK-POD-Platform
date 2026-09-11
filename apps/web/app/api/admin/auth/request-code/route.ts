@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server';
 
 import { normalizeEmail } from '@let-it-be/domain';
 
+import { mayExposeLocalDevelopmentCode } from '../../../../../lib/development-auth';
 import { handleRouteError } from '../../../../../lib/http';
-import { enforceRateLimit } from '../../../../../lib/security';
 import { staffIdentityRuntime } from '../../../../../lib/platform';
+import { serverEnvironment } from '../../../../../lib/runtime-environment';
+import { enforceRateLimit } from '../../../../../lib/security';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,8 +25,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       maxRequests: 3,
       windowMs: 15 * 60_000,
     });
-    await staffIdentityRuntime().requestCode(email);
+    const code = await staffIdentityRuntime().requestCode(email);
+    const environment = serverEnvironment();
     // This response intentionally does not reveal whether the address has staff access.
+    if (mayExposeLocalDevelopmentCode(environment)) {
+      return code
+        ? NextResponse.json({ ok: true, developmentCode: code })
+        : NextResponse.json({ ok: true, developmentAccessUnavailable: true });
+    }
     return NextResponse.json({ ok: true });
   } catch (error) {
     return handleRouteError(error);

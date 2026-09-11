@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import { integrityViolationCounts } from '@let-it-be/db/integrity';
@@ -702,6 +702,18 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       'correct-horse-battery-staple',
     );
     await pool.query(`UPDATE app.users SET role = 'ADMIN' WHERE id = $1`, [account.userId]);
+    const staff = await pool.query<{ id: string; normalized_email: string }>(
+      `INSERT INTO app.staff_members (normalized_email, role, status, activated_at)
+       VALUES ($1, 'OPERATIONS', 'ACTIVE', now()) RETURNING id, normalized_email`,
+      [`staff-ops-${randomBytes(6).toString('hex')}@example.test`],
+    );
+    const staffSession = {
+      id: randomUUID(),
+      staffMemberId: staff.rows[0]!.id,
+      email: staff.rows[0]!.normalized_email,
+      role: 'OPERATIONS' as const,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
     const fulfillment = new OperationsFulfillment();
     const operations = new OrderOperationsService(pool, storage, fulfillment, {
       fulfillmentAdapter: 'fake',
@@ -728,6 +740,10 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       status: 'PAID',
       fulfillmentGroups: [{ adapterType: 'PRINTIFY', status: 'PENDING' }],
     });
+    expect(await operations.getOperationalOrder(staffSession, orderNumber)).toMatchObject({
+      orderNumber,
+      status: 'PAID',
+    });
     const fulfillmentGroups = await operations.listFulfillmentGroups(account, orderNumber);
     expect(fulfillmentGroups).toMatchObject([
       {
@@ -741,19 +757,43 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(operations.startPrepressReview(ready.guest, orderNumber)).rejects.toBeInstanceOf(
       OrderOperationsAccessError,
     );
-    await operations.startPrepressReview(account, orderNumber);
+    await operations.startPrepressReview(staffSession, orderNumber);
+    expect(
+      (
+        await pool.query<{ actor_staff_member_id: string | null }>(
+          `SELECT actor_staff_member_id FROM app.order_state_history
+           WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
+             AND to_state = 'PREPRESS_REVIEW'
+           ORDER BY created_at DESC LIMIT 1`,
+          [orderNumber],
+        )
+      ).rows[0]?.actor_staff_member_id,
+    ).toBe(staffSession.staffMemberId);
     await operations.decideReview(account, {
       orderNumber,
       stage: 'PREPRESS',
       outcome: 'APPROVED',
       reasonCode: 'PRINTABILITY_CONCERN',
     });
-    await operations.decideReview(account, {
+    await operations.decideReview(staffSession, {
       orderNumber,
       stage: 'COMPLIANCE',
       outcome: 'APPROVED',
       reasonCode: 'MODERATION_REVIEW',
     });
+    expect(
+      (
+        await pool.query<{ actor_staff_member_id: string | null }>(
+          `SELECT decision.actor_staff_member_id
+           FROM app.policy_human_decisions decision
+           JOIN app.policy_evaluations evaluation ON evaluation.id = decision.evaluation_id
+           JOIN app.orders orders ON orders.id = evaluation.order_id
+           WHERE orders.order_number = $1
+           ORDER BY decision.created_at DESC LIMIT 1`,
+          [orderNumber],
+        )
+      ).rows[0]?.actor_staff_member_id,
+    ).toBe(staffSession.staffMemberId);
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe(
       'READY_FOR_PRODUCTION',
     );

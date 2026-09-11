@@ -5,6 +5,7 @@ import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   AssetService,
   AccountService,
+  AdminCommerceService,
   CatalogSyncService,
   CommerceService,
   createFulfillmentAdapter,
@@ -144,6 +145,10 @@ export function cxOperationsRuntime() {
 
 export function customerOperationsRuntime() {
   return new CustomerOperationsService(databasePool());
+}
+
+export function adminCommerceRuntime() {
+  return new AdminCommerceService(databasePool());
 }
 
 export function staffIdentityRuntime() {

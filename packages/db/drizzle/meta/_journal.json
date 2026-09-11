@@ -246,6 +246,20 @@
       "when": 1789312000000,
       "tag": "0035_customer_timeline_staff_actor",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789313000000,
+      "tag": "0036_order_operations_staff_actor",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789314000000,
+      "tag": "0037_customer_management",
+      "breakpoints": true
     }
   ]
 }

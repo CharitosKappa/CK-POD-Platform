@@ -11,6 +11,7 @@ import {
   OrderOperationsAccessError,
   OrderTransitionError,
   CustomerOperationsAccessError,
+  CustomerOperationsConflictError,
   CustomerOperationsValidationError,
   StaffAuthenticationError,
   ProjectConflictError,
@@ -40,6 +41,12 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json(
       { error: 'You do not have access to customer operations.' },
       { status: 403 },
+    );
+  }
+  if (error instanceof CustomerOperationsConflictError) {
+    return NextResponse.json(
+      { error: error.message, customerId: error.customerId },
+      { status: 409 },
     );
   }
   if (error instanceof FulfillmentAccessError || error instanceof OrderOperationsAccessError) {

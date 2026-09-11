@@ -36,7 +36,30 @@ type OperationalOrderDetail = {
   policyFindingCodes: string[];
   policyRulesetId: string | null;
   fulfillmentGroups: FulfillmentGroup[];
+  customerName?: string;
+  totalCents?: number;
+  paymentStatus?: string;
+  shippingAddress?: Record<string, unknown>;
+  billingAddress?: Record<string, unknown>;
+  items?: Array<{ productName: string; color: string; size: string; quantity: number }>;
 };
+
+const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+
+function addressLines(address?: Record<string, unknown>): string[] {
+  if (!address) return [];
+  const line = [address.line1, address.line2]
+    .filter((value) => typeof value === 'string' && value)
+    .join(', ');
+  const locality = [address.city, address.stateCode, address.postalCode]
+    .filter((value) => typeof value === 'string' && value)
+    .join(', ');
+  return [
+    line,
+    locality,
+    typeof address.countryCode === 'string' ? address.countryCode : '',
+  ].filter(Boolean);
+}
 
 function label(value: string): string {
   return value.toLowerCase().replaceAll('_', ' ');
@@ -54,7 +77,17 @@ function reviewDialog(status: string): OperationsDialog | null {
   return null;
 }
 
-export function OperationsOrderDetail({ orderNumber }: Readonly<{ orderNumber: string }>) {
+export function OperationsOrderDetail({
+  orderNumber,
+  apiBase = '/api/ops/orders',
+  pageBase = '/ops/orders',
+  commerceFirst = false,
+}: Readonly<{
+  orderNumber: string;
+  apiBase?: string;
+  pageBase?: string;
+  commerceFirst?: boolean;
+}>) {
   const [order, setOrder] = useState<OperationalOrderDetail>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -62,12 +95,12 @@ export function OperationsOrderDetail({ orderNumber }: Readonly<{ orderNumber: s
   const [dialog, setDialog] = useState<OperationsDialog>();
 
   const load = useCallback(async () => {
-    const response = await fetch(`/api/ops/orders/${encodeURIComponent(orderNumber)}`);
+    const response = await fetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
     const payload = (await response.json()) as { order?: OperationalOrderDetail; error?: string };
     if (!response.ok || !payload.order)
       throw new Error(payload.error ?? 'Could not load this order.');
     setOrder(payload.order);
-  }, [orderNumber]);
+  }, [apiBase, orderNumber]);
 
   useEffect(() => {
     setError(undefined);
@@ -85,7 +118,7 @@ export function OperationsOrderDetail({ orderNumber }: Readonly<{ orderNumber: s
     setError(undefined);
     setNotice(undefined);
     try {
-      const response = await fetch(`/api/ops/orders/${encodeURIComponent(orderNumber)}/actions`, {
+      const response = await fetch(`${apiBase}/${encodeURIComponent(orderNumber)}/actions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action, ...payload }),
@@ -114,7 +147,7 @@ export function OperationsOrderDetail({ orderNumber }: Readonly<{ orderNumber: s
   const reviewAction = order ? reviewDialog(order.status) : null;
   return (
     <main className="ops-admin-page ops-order-detail-page">
-      <Link className="ops-order-breadcrumb" href="/ops/orders">
+      <Link className="ops-order-breadcrumb" href={pageBase}>
         ← Orders
       </Link>
       {error ? (
@@ -184,130 +217,183 @@ export function OperationsOrderDetail({ orderNumber }: Readonly<{ orderNumber: s
               ) : null}
             </div>
           </header>
-          <section className="ops-order-summary-card">
-            <div>
-              <span>Product</span>
-              <strong>{order.productName}</strong>
-            </div>
-            <div>
-              <span>Color</span>
-              <strong>{order.colorCode}</strong>
-            </div>
-            <div>
-              <span>Quantity</span>
-              <strong>{order.quantity}</strong>
-            </div>
-            <div>
-              <span>Customer</span>
-              <strong>{order.customerEmail}</strong>
-            </div>
-          </section>
-          <section className="ops-detail-card">
-            <header>
-              <h2>Review</h2>
-              <span>
-                {order.policyOutcome ? `Policy: ${order.policyOutcome}` : 'Awaiting review'}
-              </span>
-            </header>
-            {order.latestReason || order.policyFindingCodes.length ? (
-              <p className="ops-review-callout">
-                {order.latestReason?.replaceAll('_', ' ') ??
-                  order.policyFindingCodes.map((code) => code.replaceAll('_', ' ')).join(', ')}
-              </p>
-            ) : (
-              <p className="ops-muted-copy">No review finding is currently recorded.</p>
-            )}
-          </section>
-          <section className="ops-detail-card">
-            <header>
-              <h2>Fulfillment groups</h2>
-              <span>
-                {order.fulfillmentGroups.length} group
-                {order.fulfillmentGroups.length === 1 ? '' : 's'}
-              </span>
-            </header>
-            <div className="ops-group-list">
-              {order.fulfillmentGroups.map((group) => (
-                <article key={group.id} className="ops-group-card">
-                  <div className="ops-group-heading">
-                    <div>
-                      <h3>{group.providerName}</h3>
-                      <p>
-                        {group.groupKey} · {group.itemCount} item{group.itemCount === 1 ? '' : 's'}
-                      </p>
-                    </div>
-                    <span className="ops-status-chip neutral">{label(group.status)}</span>
+          {commerceFirst ? (
+            <section className="commerce-order-overview">
+              <article className="commerce-admin-card commerce-order-items">
+                <header>
+                  <div>
+                    <p>Purchase</p>
+                    <h2>Items</h2>
                   </div>
-                  <dl className="ops-group-facts">
-                    <div>
-                      <dt>Readiness</dt>
-                      <dd>
-                        {group.status === 'READY_FOR_PRODUCTION' ? 'Ready' : label(group.status)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>External order</dt>
-                      <dd>{group.externalOrderId ?? 'Not submitted'}</dd>
-                    </div>
-                  </dl>
-                  <div className="ops-group-actions">
-                    {group.status === 'PENDING' ? (
-                      <button
-                        type="button"
-                        className="ops-admin-secondary"
-                        disabled={Boolean(busy)}
-                        onClick={() =>
-                          void act(
-                            'EVALUATE_FULFILLMENT_GROUP',
-                            { fulfillmentGroupId: group.id },
-                            `evaluate:${group.id}`,
-                          )
-                        }
-                      >
-                        {busy === `evaluate:${group.id}` ? 'Evaluating…' : 'Evaluate readiness'}
-                      </button>
-                    ) : null}
-                    {group.status === 'READY_FOR_PRODUCTION' ? (
-                      <button
-                        type="button"
-                        className="ops-admin-primary"
-                        disabled={Boolean(busy)}
-                        onClick={() =>
-                          void act(
-                            'SUBMIT_FULFILLMENT_GROUP',
-                            { fulfillmentGroupId: group.id },
-                            `submit:${group.id}`,
-                          )
-                        }
-                      >
-                        {busy === `submit:${group.id}` ? 'Submitting…' : 'Submit group'}
-                      </button>
-                    ) : null}
+                  <strong>{money.format((order.totalCents ?? 0) / 100)}</strong>
+                </header>
+                {(order.items ?? []).map((item, index) => (
+                  <div key={`${item.productName}-${index}`}>
+                    <span aria-hidden="true">{item.quantity}</span>
+                    <p>
+                      <strong>{item.productName}</strong>
+                      <small>
+                        {item.color} · {item.size}
+                      </small>
+                    </p>
+                    <b>× {item.quantity}</b>
                   </div>
-                  {group.shipments.length ? (
-                    <div className="ops-shipment-list">
-                      {group.shipments.map((shipment, index) => (
-                        <div key={`${shipment.trackingNumber ?? 'shipment'}-${index}`}>
-                          <strong>{shipment.carrier ?? 'Shipment'}</strong>
-                          <span>{shipment.service ?? shipment.status}</span>
-                          {shipment.trackingUrl ? (
-                            <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
-                              {shipment.trackingNumber ?? 'Track shipment'}
-                            </a>
-                          ) : (
-                            <span>{shipment.trackingNumber ?? 'Tracking pending'}</span>
-                          )}
-                        </div>
-                      ))}
+                ))}
+              </article>
+              <aside>
+                <article className="commerce-admin-card commerce-order-customer">
+                  <header>
+                    <div>
+                      <p>Customer</p>
+                      <h2>{order.customerName ?? order.customerEmail}</h2>
                     </div>
-                  ) : null}
+                  </header>
+                  <a href={`mailto:${order.customerEmail}`}>{order.customerEmail}</a>
                 </article>
-              ))}
-              {!order.fulfillmentGroups.length ? (
-                <p className="ops-admin-empty">No fulfillment groups have been created yet.</p>
-              ) : null}
-            </div>
-          </section>
+                <article className="commerce-admin-card commerce-order-address">
+                  <header>
+                    <div>
+                      <p>Delivery</p>
+                      <h2>Shipping address</h2>
+                    </div>
+                  </header>
+                  <address>
+                    {addressLines(order.shippingAddress).map((line) => (
+                      <span key={line}>{line}</span>
+                    ))}
+                  </address>
+                </article>
+              </aside>
+            </section>
+          ) : null}
+          <details className="ops-technical-details" open={!commerceFirst}>
+            <summary>Production and review details</summary>
+            <section className="ops-order-summary-card">
+              <div>
+                <span>Product</span>
+                <strong>{order.productName}</strong>
+              </div>
+              <div>
+                <span>Color</span>
+                <strong>{order.colorCode}</strong>
+              </div>
+              <div>
+                <span>Quantity</span>
+                <strong>{order.quantity}</strong>
+              </div>
+              <div>
+                <span>Customer</span>
+                <strong>{order.customerEmail}</strong>
+              </div>
+            </section>
+            <section className="ops-detail-card">
+              <header>
+                <h2>Review</h2>
+                <span>
+                  {order.policyOutcome ? `Policy: ${order.policyOutcome}` : 'Awaiting review'}
+                </span>
+              </header>
+              {order.latestReason || order.policyFindingCodes.length ? (
+                <p className="ops-review-callout">
+                  {order.latestReason?.replaceAll('_', ' ') ??
+                    order.policyFindingCodes.map((code) => code.replaceAll('_', ' ')).join(', ')}
+                </p>
+              ) : (
+                <p className="ops-muted-copy">No review finding is currently recorded.</p>
+              )}
+            </section>
+            <section className="ops-detail-card">
+              <header>
+                <h2>Fulfillment groups</h2>
+                <span>
+                  {order.fulfillmentGroups.length} group
+                  {order.fulfillmentGroups.length === 1 ? '' : 's'}
+                </span>
+              </header>
+              <div className="ops-group-list">
+                {order.fulfillmentGroups.map((group) => (
+                  <article key={group.id} className="ops-group-card">
+                    <div className="ops-group-heading">
+                      <div>
+                        <h3>{group.providerName}</h3>
+                        <p>
+                          {group.groupKey} · {group.itemCount} item
+                          {group.itemCount === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <span className="ops-status-chip neutral">{label(group.status)}</span>
+                    </div>
+                    <dl className="ops-group-facts">
+                      <div>
+                        <dt>Readiness</dt>
+                        <dd>
+                          {group.status === 'READY_FOR_PRODUCTION' ? 'Ready' : label(group.status)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>External order</dt>
+                        <dd>{group.externalOrderId ?? 'Not submitted'}</dd>
+                      </div>
+                    </dl>
+                    <div className="ops-group-actions">
+                      {group.status === 'PENDING' ? (
+                        <button
+                          type="button"
+                          className="ops-admin-secondary"
+                          disabled={Boolean(busy)}
+                          onClick={() =>
+                            void act(
+                              'EVALUATE_FULFILLMENT_GROUP',
+                              { fulfillmentGroupId: group.id },
+                              `evaluate:${group.id}`,
+                            )
+                          }
+                        >
+                          {busy === `evaluate:${group.id}` ? 'Evaluating…' : 'Evaluate readiness'}
+                        </button>
+                      ) : null}
+                      {group.status === 'READY_FOR_PRODUCTION' ? (
+                        <button
+                          type="button"
+                          className="ops-admin-primary"
+                          disabled={Boolean(busy)}
+                          onClick={() =>
+                            void act(
+                              'SUBMIT_FULFILLMENT_GROUP',
+                              { fulfillmentGroupId: group.id },
+                              `submit:${group.id}`,
+                            )
+                          }
+                        >
+                          {busy === `submit:${group.id}` ? 'Submitting…' : 'Submit group'}
+                        </button>
+                      ) : null}
+                    </div>
+                    {group.shipments.length ? (
+                      <div className="ops-shipment-list">
+                        {group.shipments.map((shipment, index) => (
+                          <div key={`${shipment.trackingNumber ?? 'shipment'}-${index}`}>
+                            <strong>{shipment.carrier ?? 'Shipment'}</strong>
+                            <span>{shipment.service ?? shipment.status}</span>
+                            {shipment.trackingUrl ? (
+                              <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
+                                {shipment.trackingNumber ?? 'Track shipment'}
+                              </a>
+                            ) : (
+                              <span>{shipment.trackingNumber ?? 'Tracking pending'}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+                {!order.fulfillmentGroups.length ? (
+                  <p className="ops-admin-empty">No fulfillment groups have been created yet.</p>
+                ) : null}
+              </div>
+            </section>
+          </details>
         </>
       ) : null}
       {dialog ? (

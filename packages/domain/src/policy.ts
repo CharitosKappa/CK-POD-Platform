@@ -236,14 +236,17 @@ export class PolicyService {
   async recordHumanDecision(input: {
     evaluationId: string;
     orderId?: string;
-    actorUserId: string;
+    actorUserId: string | null;
+    actorStaffMemberId?: string | null;
     decision: PolicyHumanDecision;
     reasonCode: string;
     notes?: string;
   }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO app.policy_human_decisions (evaluation_id, order_id, decision, reason_code, notes, actor_user_id)
-       VALUES ($1, $2::uuid, $3, $4, $5, $6::uuid)`,
+      `INSERT INTO app.policy_human_decisions (
+         evaluation_id, order_id, decision, reason_code, notes,
+         actor_user_id, actor_staff_member_id
+       ) VALUES ($1, $2::uuid, $3, $4, $5, $6::uuid, $7::uuid)`,
       [
         input.evaluationId,
         input.orderId ?? null,
@@ -251,6 +254,7 @@ export class PolicyService {
         input.reasonCode,
         input.notes ?? null,
         input.actorUserId,
+        input.actorStaffMemberId ?? null,
       ],
     );
   }

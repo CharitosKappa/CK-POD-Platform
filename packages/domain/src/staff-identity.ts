@@ -19,14 +19,14 @@ export class StaffIdentityService {
     private readonly pool: SqlPool,
     private readonly options: { pepper: string; initialOwnerEmail?: string },
   ) {}
-  async requestCode(email: string): Promise<void> {
+  async requestCode(email: string): Promise<string | null> {
     const normalized = normalize(email);
     const hash = digest(normalized);
     const eligible = await this.pool.query<{ id: string }>(
       `SELECT id FROM app.staff_members WHERE normalized_email=$1 AND status IN ('INVITED','ACTIVE')`,
       [normalized],
     );
-    if (!eligible.rows[0] && normalized !== this.options.initialOwnerEmail) return;
+    if (!eligible.rows[0] && normalized !== this.options.initialOwnerEmail) return null;
     const code = String(randomInt(100_000, 1_000_000));
     const expiresAt = new Date(Date.now() + ttlMs);
     await this.pool.query(
@@ -45,6 +45,7 @@ export class StaffIdentityService {
         expiresAt: expiresAt.toISOString(),
       }),
     );
+    return code;
   }
   async verifyCode(email: string, code: string): Promise<StaffSession> {
     const normalized = normalize(email);

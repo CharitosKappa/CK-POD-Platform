@@ -2,6 +2,7 @@ import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 import type { PrivateObjectStorage } from '@let-it-be/storage';
 
 import type { ActiveSession } from './identity';
+import type { StaffSession } from './staff-identity';
 import {
   normalizeFulfillmentError,
   type FulfillmentIntegrationError,
@@ -39,6 +40,7 @@ export type CanonicalOrderState = (typeof canonicalOrderStates)[number];
 export type ReviewStage = 'PREPRESS' | 'COMPLIANCE';
 export type ReviewOutcome = 'APPROVED' | 'HELD' | 'REJECTED';
 export type OperationalRole = 'ADMIN' | 'CX_OPS' | 'PREPRESS_REVIEWER';
+export type OrderOperationsActor = ActiveSession | Omit<StaffSession, 'token'>;
 
 export const operationalReasonCodes = [
   'LOW_RESOLUTION',
@@ -181,7 +183,7 @@ export class OrderOperationsService {
   }
 
   async listReviewQueue(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     filters: {
       state?: CanonicalOrderState;
       reason?: string;
@@ -190,7 +192,7 @@ export class OrderOperationsService {
       sort?: 'ASC' | 'DESC';
     } = {},
   ): Promise<ReviewQueueItem[]> {
-    await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
+    await this.requireReadRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     const values: unknown[] = [];
     const where: string[] = [];
     if (filters.state) {
@@ -266,8 +268,8 @@ export class OrderOperationsService {
     }));
   }
 
-  async getOperationsDashboard(session: ActiveSession): Promise<OperationsDashboardSummary> {
-    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+  async getOperationsDashboard(session: OrderOperationsActor): Promise<OperationsDashboardSummary> {
+    await this.requireReadRole(session, ['ADMIN', 'CX_OPS']);
     const [counts, recentOrders] = await Promise.all([
       this.pool.query<{
         needs_review: string;
@@ -306,10 +308,10 @@ export class OrderOperationsService {
   }
 
   async getOperationalOrder(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
   ): Promise<OperationalOrderDetail | null> {
-    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await this.requireReadRole(session, ['ADMIN', 'CX_OPS']);
     const result = await this.pool.query<{
       order_number: string;
       status: CanonicalOrderState;
@@ -364,10 +366,10 @@ export class OrderOperationsService {
    * customer order response.
    */
   async listFulfillmentGroups(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
   ): Promise<FulfillmentGroupOperationItem[]> {
-    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await this.requireReadRole(session, ['ADMIN', 'CX_OPS']);
     const result = await this.pool.query<{
       id: string;
       group_key: string;
@@ -432,7 +434,7 @@ export class OrderOperationsService {
    * invalidate the frozen shipping and cost snapshots.
    */
   async evaluateFulfillmentGroupReadiness(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     input: { orderNumber: string; fulfillmentGroupId: string },
   ): Promise<{ ready: boolean; blockers: string[] }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
@@ -512,8 +514,8 @@ export class OrderOperationsService {
     await withTransaction(this.pool, async (client) => {
       await client.query(
         `INSERT INTO app.order_fulfillment_group_readiness_evaluations (
-           fulfillment_group_id, ready, blockers, snapshot, created_by_user_id
-         ) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)`,
+           fulfillment_group_id, ready, blockers, snapshot, created_by_user_id, created_by_staff_member_id
+         ) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)`,
         [
           first.fulfillment_group_id,
           ready,
@@ -530,7 +532,8 @@ export class OrderOperationsService {
             itemCount: rows.length,
             destinationCountry: first.destination_country,
           }),
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       await client.query(
@@ -565,7 +568,7 @@ export class OrderOperationsService {
     return { ready, blockers: uniqueBlockers };
   }
 
-  async startPrepressReview(session: ActiveSession, orderNumber: string): Promise<void> {
+  async startPrepressReview(session: OrderOperationsActor, orderNumber: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     await this.transitionByNumber(orderNumber, 'PREPRESS_REVIEW', {
       actor: session,
@@ -575,7 +578,7 @@ export class OrderOperationsService {
   }
 
   async decideReview(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     input: {
       orderNumber: string;
       stage: ReviewStage;
@@ -592,10 +595,11 @@ export class OrderOperationsService {
       const evaluation = await this.policy.evaluateFinalArtworkForOrder(input.orderNumber);
       if (evaluation.outcome === 'BLOCK' && input.outcome !== 'REJECTED')
         throw new OrderTransitionError('Final artwork policy blocked production eligibility.');
-      if (!session.userId) throw new OrderOperationsAccessError('Operations access is restricted.');
+      const actor = actorIds(session);
       await this.policy.recordHumanDecision({
         evaluationId: evaluation.id,
-        actorUserId: session.userId,
+        actorUserId: actor.userId,
+        actorStaffMemberId: actor.staffMemberId,
         decision: input.outcome,
         reasonCode: input.reasonCode,
         ...(input.notes ? { notes: input.notes } : {}),
@@ -608,15 +612,17 @@ export class OrderOperationsService {
       if (order.status !== required)
         throw new OrderTransitionError('This order is not awaiting that review.');
       await client.query(
-        `INSERT INTO app.order_reviews (order_id, stage, outcome, reason_code, notes, actor_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO app.order_reviews (
+           order_id, stage, outcome, reason_code, notes, actor_user_id, actor_staff_member_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           order.id,
           input.stage,
           input.outcome,
           input.reasonCode,
           input.notes ?? null,
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       if (target === 'ON_HOLD') {
@@ -634,7 +640,7 @@ export class OrderOperationsService {
   }
 
   async hold(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
     reasonCode: OperationalReasonCode,
     notes?: string,
@@ -651,7 +657,7 @@ export class OrderOperationsService {
     });
   }
 
-  async resume(session: ActiveSession, orderNumber: string, notes?: string): Promise<void> {
+  async resume(session: OrderOperationsActor, orderNumber: string, notes?: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     let next: CanonicalOrderState | undefined;
     await withTransaction(this.pool, async (client) => {
@@ -669,10 +675,12 @@ export class OrderOperationsService {
       next = resumeTarget(previous);
       await client.query(
         `UPDATE app.order_holds SET resumed_at = now(), resumed_by_user_id = $2,
-         resume_metadata = $3::jsonb WHERE order_id = $1 AND resumed_at IS NULL`,
+         resumed_by_staff_member_id = $3, resume_metadata = $4::jsonb
+         WHERE order_id = $1 AND resumed_at IS NULL`,
         [
           order.id,
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
           JSON.stringify({ notes: notes ?? null, resumedFrom: previous, target: next }),
         ],
       );
@@ -681,7 +689,11 @@ export class OrderOperationsService {
     if (next === 'ROUTING') await this.route(session, orderNumber, true);
   }
 
-  async route(session: ActiveSession, orderNumber: string, alreadyRouting = false): Promise<void> {
+  async route(
+    session: OrderOperationsActor,
+    orderNumber: string,
+    alreadyRouting = false,
+  ): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
     const context = await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
@@ -708,7 +720,7 @@ export class OrderOperationsService {
   }
 
   async overrideProvider(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     input: {
       orderNumber: string;
       qualificationId: string;
@@ -740,8 +752,9 @@ export class OrderOperationsService {
         throw new OrderTransitionError('A provider override cannot bypass production eligibility.');
       await client.query(
         `INSERT INTO app.order_provider_overrides (
-           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id, reason_code, notes, actor_user_id
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id,
+           reason_code, notes, actor_user_id, actor_staff_member_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           order.id,
           routing.routing_evaluation_id,
@@ -749,20 +762,23 @@ export class OrderOperationsService {
           input.qualificationId,
           input.reasonCode,
           input.notes ?? null,
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       await client.query(
         `INSERT INTO app.order_final_routing (
-           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id, status, snapshot, created_by_user_id
-         ) VALUES ($1, $2, $3, $4, 'OVERRIDDEN', $5::jsonb, $6)`,
+           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id,
+           status, snapshot, created_by_user_id, created_by_staff_member_id
+         ) VALUES ($1, $2, $3, $4, 'OVERRIDDEN', $5::jsonb, $6, $7)`,
         [
           order.id,
           routing.routing_evaluation_id,
           routing.recommended_qualification_id,
           input.qualificationId,
           JSON.stringify(routing.snapshot),
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       await this.audit(client, order.id, 'provider_override', session, input.reasonCode, {
@@ -782,7 +798,7 @@ export class OrderOperationsService {
   }
 
   async evaluateReadiness(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
   ): Promise<{ ready: boolean; blockers: string[] }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
@@ -790,14 +806,16 @@ export class OrderOperationsService {
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
       await client.query(
-        `INSERT INTO app.order_readiness_evaluations (order_id, ready, blockers, snapshot, created_by_user_id)
-         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)`,
+        `INSERT INTO app.order_readiness_evaluations (
+           order_id, ready, blockers, snapshot, created_by_user_id, created_by_staff_member_id
+         ) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)`,
         [
           order.id,
           snapshot.blockers.length === 0,
           JSON.stringify(snapshot.blockers),
           JSON.stringify(snapshot),
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       await this.audit(
@@ -822,7 +840,7 @@ export class OrderOperationsService {
   }
 
   async submitProduction(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
   ): Promise<{ externalOrderId: string; duplicate: boolean }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
@@ -886,7 +904,7 @@ export class OrderOperationsService {
    * fulfillment group. Other groups on the platform order remain unaffected.
    */
   async submitFulfillmentGroup(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     input: { orderNumber: string; fulfillmentGroupId: string },
   ): Promise<{ externalOrderId: string; duplicate: boolean }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
@@ -1148,7 +1166,7 @@ export class OrderOperationsService {
     return { accepted: true };
   }
 
-  async pollStatus(session: ActiveSession, orderNumber: string): Promise<void> {
+  async pollStatus(session: OrderOperationsActor, orderNumber: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
     const result = await this.pool.query<{ external_order_id: string }>(
       `SELECT external_order.external_order_id
@@ -1171,7 +1189,7 @@ export class OrderOperationsService {
   }
 
   private async persistRoutingDecision(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
     context: RouteContext,
     decision: RoutingDecision,
@@ -1181,8 +1199,9 @@ export class OrderOperationsService {
       if (order.status !== 'ROUTING') return;
       await client.query(
         `INSERT INTO app.order_final_routing (
-           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id, status, snapshot, created_by_user_id
-         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           order_id, routing_evaluation_id, recommended_qualification_id, selected_qualification_id,
+           status, snapshot, created_by_user_id, created_by_staff_member_id
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
         [
           order.id,
           decision.id,
@@ -1190,7 +1209,8 @@ export class OrderOperationsService {
           decision.selectedQualificationId,
           decision.status,
           JSON.stringify(decision),
-          session.userId,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
         ],
       );
       await this.audit(
@@ -1229,7 +1249,7 @@ export class OrderOperationsService {
   }
 
   private async createExternalOrder(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     orderNumber: string,
     readiness: ReadinessSnapshot,
   ): Promise<{ externalOrderId: string }> {
@@ -1281,7 +1301,7 @@ export class OrderOperationsService {
   }
 
   private async createExternalOrderForGroup(
-    session: ActiveSession,
+    session: OrderOperationsActor,
     group: FulfillmentGroupSubmissionContext,
   ): Promise<{ externalOrderId: string }> {
     if (group.externalOrderId) return { externalOrderId: group.externalOrderId };
@@ -1394,7 +1414,7 @@ export class OrderOperationsService {
     orderNumber: string,
     fulfillmentGroupId: string,
     action: 'CREATE_EXTERNAL_ORDER' | 'SUBMIT_TO_PRODUCTION',
-    session: ActiveSession,
+    session: OrderOperationsActor,
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
@@ -1468,9 +1488,17 @@ export class OrderOperationsService {
       }
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO app.order_fulfillment_actions (
-           order_id, fulfillment_group_id, action, idempotency_key, status, attempt_count, requested_by_user_id
-         ) VALUES ($1, $2, $3, $4, 'PROCESSING', 1, $5) RETURNING id`,
-        [order.id, fulfillmentGroupId, action, idempotencyKey, session.userId],
+           order_id, fulfillment_group_id, action, idempotency_key, status, attempt_count,
+           requested_by_user_id, requested_by_staff_member_id
+         ) VALUES ($1, $2, $3, $4, 'PROCESSING', 1, $5, $6) RETURNING id`,
+        [
+          order.id,
+          fulfillmentGroupId,
+          action,
+          idempotencyKey,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
+        ],
       );
       return {
         id: required(inserted.rows[0], 'Could not begin fulfillment group action.').id,
@@ -1504,7 +1532,7 @@ export class OrderOperationsService {
   private async beginAction(
     orderNumber: string,
     action: 'CREATE_EXTERNAL_ORDER' | 'SUBMIT_TO_PRODUCTION',
-    session: ActiveSession,
+    session: OrderOperationsActor,
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
@@ -1574,9 +1602,17 @@ export class OrderOperationsService {
         };
       }
       const inserted = await client.query<{ id: string }>(
-        `INSERT INTO app.order_fulfillment_actions (order_id, action, idempotency_key, status, attempt_count, requested_by_user_id)
-         VALUES ($1, $2, $3, 'PROCESSING', 1, $4) RETURNING id`,
-        [order.id, action, idempotencyKey, session.userId],
+        `INSERT INTO app.order_fulfillment_actions (
+           order_id, action, idempotency_key, status, attempt_count,
+           requested_by_user_id, requested_by_staff_member_id
+         ) VALUES ($1, $2, $3, 'PROCESSING', 1, $4, $5) RETURNING id`,
+        [
+          order.id,
+          action,
+          idempotencyKey,
+          actorIds(session).userId,
+          actorIds(session).staffMemberId,
+        ],
       );
       return {
         id: required(inserted.rows[0], 'Could not begin fulfillment action.').id,
@@ -1705,7 +1741,7 @@ export class OrderOperationsService {
     client: SqlClient,
     order: LockedOrder,
     target: CanonicalOrderState,
-    actor: ActiveSession | null,
+    actor: OrderOperationsActor | null,
     reasonCode: string | null,
     reason?: string,
     actorType: 'SYSTEM' | 'OPS' | 'WEBHOOK' | 'POLLING' = actor ? 'OPS' : 'SYSTEM',
@@ -1717,14 +1753,18 @@ export class OrderOperationsService {
       target,
     ]);
     await client.query(
-      `INSERT INTO app.order_state_history (order_id, from_state, to_state, reason, actor_type, actor_user_id, reason_code, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+      `INSERT INTO app.order_state_history (
+         order_id, from_state, to_state, reason, actor_type, actor_user_id,
+         actor_staff_member_id, reason_code, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
       [
         order.id,
         order.status,
         target,
         reason ?? target,
         actorType === 'OPS' ? 'OPS' : 'SYSTEM',
-        actor?.userId ?? null,
+        actorIds(actor).userId,
+        actorIds(actor).staffMemberId,
         reasonCode,
         JSON.stringify({}),
       ],
@@ -1742,7 +1782,7 @@ export class OrderOperationsService {
   private async holdLocked(
     client: SqlClient,
     order: LockedOrder,
-    session: ActiveSession,
+    session: OrderOperationsActor,
     reasonCode: OperationalReasonCode,
     notes?: string,
   ) {
@@ -1759,8 +1799,17 @@ export class OrderOperationsService {
       );
     }
     await client.query(
-      `INSERT INTO app.order_holds (order_id, previous_state, reason_code, notes, held_by_user_id) VALUES ($1, $2, $3, $4, $5)`,
-      [order.id, order.status, reasonCode, notes ?? null, session.userId],
+      `INSERT INTO app.order_holds (
+         order_id, previous_state, reason_code, notes, held_by_user_id, held_by_staff_member_id
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        order.id,
+        order.status,
+        reasonCode,
+        notes ?? null,
+        actorIds(session).userId,
+        actorIds(session).staffMemberId,
+      ],
     );
     await this.transitionLocked(client, order, 'ON_HOLD', session, reasonCode, notes);
   }
@@ -1768,17 +1817,39 @@ export class OrderOperationsService {
     client: SqlClient,
     orderId: string,
     action: string,
-    actor: ActiveSession | null,
+    actor: OrderOperationsActor | null,
     reasonCode: string | null,
     metadata: Record<string, unknown>,
     source: 'SYSTEM' | 'OPS' | 'WEBHOOK' | 'POLLING' = actor ? 'OPS' : 'SYSTEM',
   ) {
     await client.query(
-      `INSERT INTO app.order_operational_audits (order_id, action, actor_type, actor_user_id, reason_code, metadata) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-      [orderId, action, source, actor?.userId ?? null, reasonCode, JSON.stringify(metadata)],
+      `INSERT INTO app.order_operational_audits (
+         order_id, action, actor_type, actor_user_id, actor_staff_member_id, reason_code, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+      [
+        orderId,
+        action,
+        source,
+        actorIds(actor).userId,
+        actorIds(actor).staffMemberId,
+        reasonCode,
+        JSON.stringify(metadata),
+      ],
     );
   }
-  private async requireRole(session: ActiveSession, allowed: OperationalRole[]) {
+  private async requireRole(session: OrderOperationsActor, allowed: OperationalRole[]) {
+    if ('staffMemberId' in session) {
+      const role = {
+        OWNER: 'ADMIN',
+        OPERATIONS: 'CX_OPS',
+        PREPRESS: 'PREPRESS_REVIEWER',
+        READ_ONLY: 'READ_ONLY',
+      } as const satisfies Record<StaffSession['role'], OperationalRole | 'READ_ONLY'>;
+      const mappedRole = role[session.role];
+      if (!allowed.includes(mappedRole as OperationalRole))
+        throw new OrderOperationsAccessError('Operations access is restricted.');
+      return;
+    }
     if (!session.userId) throw new OrderOperationsAccessError('Operations access is restricted.');
     const result = await this.pool.query<{ role: string }>(
       `SELECT role FROM app.users WHERE id = $1`,
@@ -1788,6 +1859,11 @@ export class OrderOperationsService {
     if (!role || !allowed.includes(role as OperationalRole))
       throw new OrderOperationsAccessError('Operations access is restricted.');
   }
+
+  private async requireReadRole(session: OrderOperationsActor, allowed: OperationalRole[]) {
+    if ('staffMemberId' in session && session.role === 'READ_ONLY') return;
+    await this.requireRole(session, allowed);
+  }
 }
 
 interface LockedOrder {
@@ -1795,9 +1871,16 @@ interface LockedOrder {
   status: CanonicalOrderState;
 }
 interface TransitionInput {
-  actor: ActiveSession;
+  actor: OrderOperationsActor;
   reason: string;
   reasonCode: OperationalReasonCode;
+}
+
+function actorIds(actor: OrderOperationsActor | null) {
+  return {
+    userId: actor && 'userId' in actor ? actor.userId : null,
+    staffMemberId: actor && 'staffMemberId' in actor ? actor.staffMemberId : null,
+  };
 }
 interface RouteContext {
   projectId: string;
