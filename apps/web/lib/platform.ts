@@ -147,6 +147,10 @@ export function customerOperationsRuntime() {
   return new CustomerOperationsService(databasePool());
 }
 
+export async function customerExportRuntime() {
+  return (await generationRuntime()).customerExports;
+}
+
 export function adminCommerceRuntime() {
   return new AdminCommerceService(databasePool());
 }

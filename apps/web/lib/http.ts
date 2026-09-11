@@ -13,6 +13,8 @@ import {
   CustomerOperationsAccessError,
   CustomerOperationsConflictError,
   CustomerOperationsValidationError,
+  CustomerExportAccessError,
+  CustomerExportValidationError,
   StaffAuthenticationError,
   ProjectConflictError,
   ProjectValidationError,
@@ -41,6 +43,18 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json(
       { error: 'You do not have access to customer operations.' },
       { status: 403 },
+    );
+  }
+  if (error instanceof CustomerExportAccessError) {
+    return NextResponse.json(
+      { error: 'You do not have access to customer exports.' },
+      { status: 403 },
+    );
+  }
+  if (error instanceof CustomerExportValidationError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: /not found/i.test(error.message) ? 404 : 400 },
     );
   }
   if (error instanceof CustomerOperationsConflictError) {

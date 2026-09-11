@@ -1,7 +1,9 @@
 import type { ServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
+  CustomerExportService,
   createGenerationRuntime,
+  startCustomerExportConsumer,
   startGenerationConsumer,
   startPrepressConsumer,
 } from '@let-it-be/domain';
@@ -17,6 +19,7 @@ import { serverEnvironment } from './runtime-environment';
 
 interface WebGenerationRuntime {
   runtime: ReturnType<typeof createGenerationRuntime>;
+  customerExports: CustomerExportService;
   queue: BackgroundJobQueue;
   storage: PrivateObjectStorage;
 }
@@ -27,6 +30,10 @@ declare global {
 
 export async function generationRuntime(): Promise<WebGenerationRuntime> {
   if (!globalThis.letItBeGenerationRuntime) {
+    globalThis.letItBeGenerationRuntime = createRuntime();
+  }
+  const current = await globalThis.letItBeGenerationRuntime;
+  if (!current.customerExports) {
     globalThis.letItBeGenerationRuntime = createRuntime();
   }
   return globalThis.letItBeGenerationRuntime;
@@ -47,11 +54,13 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
     registeredFreeCredits: environment.AI_REGISTERED_FREE_CREDITS,
     maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,
   });
+  const customerExports = new CustomerExportService(pool, queue, storage);
   if (environment.QUEUE_DRIVER === 'memory') {
     await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
     await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
+    await startCustomerExportConsumer(queue, (exportId) => customerExports.process(exportId));
   }
-  return { runtime, queue, storage };
+  return { runtime, customerExports, queue, storage };
 }
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {

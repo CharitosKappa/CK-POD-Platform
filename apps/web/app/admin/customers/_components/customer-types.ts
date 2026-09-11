@@ -1,6 +1,27 @@
 export type MarketingStatus = 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
 export type CustomerView = 'ALL' | 'NEW' | 'RETURNING' | 'HIGH_VALUE' | 'EMAIL_SUBSCRIBERS';
-export type CustomerSort = 'LAST_SEEN_DESC' | 'TOTAL_SPENT_DESC' | 'ORDER_COUNT_DESC' | 'NAME_ASC';
+export type CustomerSort =
+  | 'LAST_SEEN_DESC'
+  | 'NAME_ASC'
+  | 'NAME_DESC'
+  | 'EMAIL_ASC'
+  | 'EMAIL_DESC'
+  | 'EMAIL_MARKETING_ASC'
+  | 'EMAIL_MARKETING_DESC'
+  | 'LOCATION_ASC'
+  | 'LOCATION_DESC'
+  | 'ORDER_COUNT_ASC'
+  | 'ORDER_COUNT_DESC'
+  | 'TOTAL_SPENT_ASC'
+  | 'TOTAL_SPENT_DESC'
+  | 'LAST_ORDER_ASC'
+  | 'LAST_ORDER_DESC'
+  | 'TAGS_ASC'
+  | 'TAGS_DESC'
+  | 'CUSTOMER_ADDED_ASC'
+  | 'CUSTOMER_ADDED_DESC'
+  | 'CUSTOMER_UPDATED_ASC'
+  | 'CUSTOMER_UPDATED_DESC';
 
 export type CustomerListItem = {
   id: string;
@@ -15,6 +36,8 @@ export type CustomerListItem = {
   creditBalance: number;
   lastOrderAt: string | null;
   lastSeenAt: string;
+  createdAt: string;
+  updatedAt: string;
   tags: string[];
 };
 
@@ -29,6 +52,18 @@ export type CustomerListResponse = {
     averageLifetimeSpendCents: number;
     emailSubscribers: number;
   };
+};
+
+export type CustomerExportSummary = {
+  id: string;
+  status: 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED' | 'EXPIRED';
+  totalCount: number;
+  processedCount: number;
+  fileName: string;
+  failureReason: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  completedAt: string | null;
 };
 
 export type CustomerDetail = {

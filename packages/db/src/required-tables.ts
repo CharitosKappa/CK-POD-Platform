@@ -14,6 +14,7 @@ export const requiredApplicationTables = [
   'credit_ledger',
   'customer_notes',
   'customer_addresses',
+  'customer_exports',
   'customer_profile_tags',
   'customer_profiles',
   'customer_tags',

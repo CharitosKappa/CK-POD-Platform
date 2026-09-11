@@ -21,6 +21,8 @@ export type CustomerOperationsActor =
   ActiveSession | { staffMemberId: string; role: StaffRole; email: string };
 export type CustomerTouchpoint = 'ACCOUNT' | 'CHECKOUT' | 'ORDER' | 'NEWSLETTER';
 
+const MAX_CUSTOMER_BULK_SELECTION = 10_000;
+
 export class CustomerOperationsAccessError extends Error {}
 export class CustomerOperationsValidationError extends Error {}
 export class CustomerOperationsConflictError extends Error {
@@ -45,6 +47,8 @@ export interface OperationsCustomerListItem {
   creditBalance: number;
   lastOrderAt: Date | null;
   lastSeenAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
   tags: string[];
 }
 
@@ -159,7 +163,13 @@ export async function reconcileCustomerProfiles(pool: SqlPool): Promise<void> {
      SET user_id = COALESCE(app.customer_profiles.user_id, EXCLUDED.user_id),
          first_seen_at = LEAST(app.customer_profiles.first_seen_at, EXCLUDED.first_seen_at),
          last_seen_at = GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at),
-         updated_at = now()`,
+         updated_at = now()
+     WHERE app.customer_profiles.user_id IS DISTINCT FROM
+             COALESCE(app.customer_profiles.user_id, EXCLUDED.user_id)
+        OR app.customer_profiles.first_seen_at IS DISTINCT FROM
+             LEAST(app.customer_profiles.first_seen_at, EXCLUDED.first_seen_at)
+        OR app.customer_profiles.last_seen_at IS DISTINCT FROM
+             GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at)`,
   );
   await pool.query(
     `INSERT INTO app.customer_profiles (
@@ -173,7 +183,13 @@ export async function reconcileCustomerProfiles(pool: SqlPool): Promise<void> {
      SET user_id = COALESCE(app.customer_profiles.user_id, EXCLUDED.user_id),
          first_seen_at = LEAST(app.customer_profiles.first_seen_at, EXCLUDED.first_seen_at),
          last_seen_at = GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at),
-         updated_at = now()`,
+         updated_at = now()
+     WHERE app.customer_profiles.user_id IS DISTINCT FROM
+             COALESCE(app.customer_profiles.user_id, EXCLUDED.user_id)
+        OR app.customer_profiles.first_seen_at IS DISTINCT FROM
+             LEAST(app.customer_profiles.first_seen_at, EXCLUDED.first_seen_at)
+        OR app.customer_profiles.last_seen_at IS DISTINCT FROM
+             GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at)`,
   );
 }
 
@@ -247,8 +263,9 @@ export class CustomerOperationsService {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     values.push(limit, (page - 1) * limit);
     const result = await this.pool.query<CustomerListRow>(
-      `SELECT cp.id, cp.normalized_email AS email, cp.last_seen_at,
-              display.customer_name AS name, coalesce(cp.phone, saved_address.phone) AS phone,
+      `SELECT cp.id, cp.normalized_email AS email, cp.last_seen_at, cp.created_at, cp.updated_at,
+              coalesce(display.customer_name, cp.normalized_email) AS name,
+              coalesce(cp.phone, saved_address.phone) AS phone,
               coalesce(customer_address.location, saved_address.location, order_address.location) AS location,
               cp.email_marketing_status, cp.sms_marketing_status,
               order_summary.order_count, order_summary.total_spent_cents, order_summary.last_order_at,
@@ -268,7 +285,7 @@ export class CustomerOperationsService {
          SELECT coalesce(nullif(trim(concat_ws(' ', cp.first_name, cp.last_name)), ''),
                          nullif(trim(concat_ws(' ', profile.first_name, profile.last_name)), ''),
                          customer_address.recipient_name, saved_address.recipient_name,
-                         order_address.recipient_name, cp.normalized_email) AS customer_name
+                         order_address.recipient_name) AS customer_name
        ) display
        ${whereSql}
        ORDER BY ${customerSortSql(sort)}
@@ -624,7 +641,7 @@ export class CustomerOperationsService {
     operation: 'ADD' | 'REMOVE',
   ): Promise<number> {
     const actor = await this.requireStaff(session);
-    const ids = normalizeCustomerIds(customerIds);
+    const ids = normalizeCustomerIds(customerIds, MAX_CUSTOMER_BULK_SELECTION);
     const tags = normalizeTags(values);
     if (!tags.length)
       throw new CustomerOperationsValidationError('Choose at least one customer tag.');
@@ -660,7 +677,7 @@ export class CustomerOperationsService {
 
   async exportCustomers(session: CustomerOperationsActor, customerIds: string[]): Promise<string> {
     const actor = await this.requireStaff(session);
-    const ids = normalizeCustomerIds(customerIds);
+    const ids = normalizeCustomerIds(customerIds, MAX_CUSTOMER_BULK_SELECTION);
     const result = await this.pool.query<CustomerExportRow>(
       `SELECT cp.id,
               coalesce(nullif(trim(concat_ws(' ',cp.first_name,cp.last_name)),''),cp.normalized_email) AS name,
@@ -914,6 +931,8 @@ interface CustomerListRow {
   credit_balance: number;
   last_order_at: Date | null;
   last_seen_at: Date;
+  created_at: Date;
+  updated_at: Date;
   tags: string[];
   total_count: number;
 }
@@ -1005,6 +1024,8 @@ function mapListRow(row: CustomerListRow): OperationsCustomerListItem {
     creditBalance: row.credit_balance,
     lastOrderAt: row.last_order_at,
     lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
     tags: row.tags,
   };
 }
@@ -1046,10 +1067,12 @@ function normalizeTags(values: string[]) {
   if (tags.length > 20) throw new CustomerOperationsValidationError('Use up to 20 customer tags.');
   return tags;
 }
-function normalizeCustomerIds(values: string[]) {
+function normalizeCustomerIds(values: string[], maximum: number) {
   const ids = [...new Set(values.map(requireCustomerId))];
-  if (!ids.length || ids.length > 100)
-    throw new CustomerOperationsValidationError('Choose between 1 and 100 customers.');
+  if (!ids.length || ids.length > maximum)
+    throw new CustomerOperationsValidationError(
+      `Choose between 1 and ${maximum.toLocaleString('en-US')} customers.`,
+    );
   return ids;
 }
 function normalizeNote(value: string) {
@@ -1099,9 +1122,32 @@ function requireCustomerId(value: string) {
   return value;
 }
 function customerSortSql(sort: CustomerSort) {
+  const tieBreak = ',cp.last_seen_at DESC,cp.id ASC';
+  if (sort === 'NAME_ASC') return `lower(display.customer_name) ASC NULLS LAST${tieBreak}`;
+  if (sort === 'NAME_DESC') return `lower(display.customer_name) DESC NULLS LAST${tieBreak}`;
+  if (sort === 'EMAIL_ASC') return `cp.normalized_email ASC${tieBreak}`;
+  if (sort === 'EMAIL_DESC') return `cp.normalized_email DESC${tieBreak}`;
+  if (sort === 'EMAIL_MARKETING_ASC') return `cp.email_marketing_status ASC${tieBreak}`;
+  if (sort === 'EMAIL_MARKETING_DESC') return `cp.email_marketing_status DESC${tieBreak}`;
+  if (sort === 'LOCATION_ASC')
+    return `lower(coalesce(customer_address.location, saved_address.location, order_address.location)) ASC NULLS LAST${tieBreak}`;
+  if (sort === 'LOCATION_DESC')
+    return `lower(coalesce(customer_address.location, saved_address.location, order_address.location)) DESC NULLS LAST${tieBreak}`;
+  if (sort === 'ORDER_COUNT_ASC') return `order_summary.order_count ASC NULLS LAST${tieBreak}`;
+  if (sort === 'ORDER_COUNT_DESC') return `order_summary.order_count DESC NULLS LAST${tieBreak}`;
+  if (sort === 'TOTAL_SPENT_ASC')
+    return `order_summary.total_spent_cents ASC NULLS LAST${tieBreak}`;
   if (sort === 'TOTAL_SPENT_DESC')
-    return 'order_summary.total_spent_cents DESC,cp.last_seen_at DESC';
-  if (sort === 'ORDER_COUNT_DESC') return 'order_summary.order_count DESC,cp.last_seen_at DESC';
-  if (sort === 'NAME_ASC') return 'name ASC,cp.id ASC';
+    return `order_summary.total_spent_cents DESC NULLS LAST${tieBreak}`;
+  if (sort === 'LAST_ORDER_ASC') return `order_summary.last_order_at ASC NULLS LAST${tieBreak}`;
+  if (sort === 'LAST_ORDER_DESC') return `order_summary.last_order_at DESC NULLS LAST${tieBreak}`;
+  if (sort === 'TAGS_ASC')
+    return `lower(nullif(array_to_string(tags.values, ','), '')) ASC NULLS LAST${tieBreak}`;
+  if (sort === 'TAGS_DESC')
+    return `lower(nullif(array_to_string(tags.values, ','), '')) DESC NULLS LAST${tieBreak}`;
+  if (sort === 'CUSTOMER_ADDED_ASC') return `cp.created_at ASC NULLS LAST${tieBreak}`;
+  if (sort === 'CUSTOMER_ADDED_DESC') return `cp.created_at DESC NULLS LAST${tieBreak}`;
+  if (sort === 'CUSTOMER_UPDATED_ASC') return `cp.updated_at ASC NULLS LAST${tieBreak}`;
+  if (sort === 'CUSTOMER_UPDATED_DESC') return `cp.updated_at DESC NULLS LAST${tieBreak}`;
   return 'cp.last_seen_at DESC,cp.id DESC';
 }

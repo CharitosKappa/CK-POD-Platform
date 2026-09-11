@@ -9,9 +9,26 @@ export type CustomerView = (typeof customerViews)[number];
 
 export const customerSorts = [
   'LAST_SEEN_DESC',
-  'TOTAL_SPENT_DESC',
-  'ORDER_COUNT_DESC',
   'NAME_ASC',
+  'NAME_DESC',
+  'EMAIL_ASC',
+  'EMAIL_DESC',
+  'EMAIL_MARKETING_ASC',
+  'EMAIL_MARKETING_DESC',
+  'LOCATION_ASC',
+  'LOCATION_DESC',
+  'ORDER_COUNT_ASC',
+  'ORDER_COUNT_DESC',
+  'TOTAL_SPENT_ASC',
+  'TOTAL_SPENT_DESC',
+  'LAST_ORDER_ASC',
+  'LAST_ORDER_DESC',
+  'TAGS_ASC',
+  'TAGS_DESC',
+  'CUSTOMER_ADDED_ASC',
+  'CUSTOMER_ADDED_DESC',
+  'CUSTOMER_UPDATED_ASC',
+  'CUSTOMER_UPDATED_DESC',
 ] as const;
 export type CustomerSort = (typeof customerSorts)[number];
 

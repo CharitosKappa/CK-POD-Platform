@@ -42,4 +42,23 @@ describe('MemoryObjectStorage', () => {
       }),
     ).rejects.toThrow(/relative paths/);
   });
+
+  it('accepts streamed writes and exposes streamed reads', async () => {
+    const storage = new MemoryObjectStorage();
+    async function* chunks() {
+      yield new TextEncoder().encode('first ');
+      yield new TextEncoder().encode('second');
+    }
+
+    await storage.put({
+      key: 'admin/customer-exports/example.csv',
+      body: chunks(),
+      contentType: 'text/csv',
+    });
+    const opened = await storage.open('admin/customer-exports/example.csv');
+    const values: Uint8Array[] = [];
+    for await (const chunk of opened!.body) values.push(chunk);
+
+    expect(new TextDecoder().decode(values[0])).toBe('first second');
+  });
 });

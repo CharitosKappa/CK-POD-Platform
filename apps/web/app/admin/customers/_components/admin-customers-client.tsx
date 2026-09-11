@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   customerColumns as allCustomerColumns,
@@ -10,6 +10,7 @@ import {
   type CustomerColumn,
 } from '../../../../lib/admin-preferences';
 import type {
+  CustomerExportSummary,
   CustomerListItem,
   CustomerListResponse,
   CustomerSort,
@@ -18,6 +19,11 @@ import type {
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const date = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const time = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
 const views: Array<[CustomerView, string]> = [
   ['ALL', 'All'],
   ['NEW', 'New'],
@@ -32,7 +38,32 @@ const columnLabels: Record<CustomerColumn, string> = {
   spent: 'Amount spent',
   lastOrder: 'Last order',
   tags: 'Tags',
+  dateAdded: 'Date customer added',
+  dateUpdated: 'Date customer updated',
 };
+const sortOptions: Array<[CustomerSort, string]> = [
+  ['LAST_SEEN_DESC', 'Recently active'],
+  ['NAME_ASC', 'Customer name A–Z'],
+  ['NAME_DESC', 'Customer name Z–A'],
+  ['EMAIL_ASC', 'Email A–Z'],
+  ['EMAIL_DESC', 'Email Z–A'],
+  ['EMAIL_MARKETING_ASC', 'Email subscription A–Z'],
+  ['EMAIL_MARKETING_DESC', 'Email subscription Z–A'],
+  ['LOCATION_ASC', 'Location A–Z'],
+  ['LOCATION_DESC', 'Location Z–A'],
+  ['ORDER_COUNT_ASC', 'Orders: low to high'],
+  ['ORDER_COUNT_DESC', 'Orders: high to low'],
+  ['TOTAL_SPENT_ASC', 'Amount spent: low to high'],
+  ['TOTAL_SPENT_DESC', 'Amount spent: high to low'],
+  ['LAST_ORDER_ASC', 'Last order: oldest first'],
+  ['LAST_ORDER_DESC', 'Last order: newest first'],
+  ['TAGS_ASC', 'Tags A–Z'],
+  ['TAGS_DESC', 'Tags Z–A'],
+  ['CUSTOMER_ADDED_ASC', 'Date customer added: oldest first'],
+  ['CUSTOMER_ADDED_DESC', 'Date customer added: newest first'],
+  ['CUSTOMER_UPDATED_ASC', 'Date customer updated: oldest first'],
+  ['CUSTOMER_UPDATED_DESC', 'Date customer updated: newest first'],
+];
 
 export function AdminCustomersClient() {
   const [result, setResult] = useState<CustomerListResponse>();
@@ -46,12 +77,16 @@ export function AdminCustomersClient() {
   const [location, setLocation] = useState('');
   const [columns, setColumns] = useState<CustomerColumn[]>([...allCustomerColumns]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [exportJobs, setExportJobs] = useState<CustomerExportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
   const [bulkOpen, setBulkOpen] = useState<'ADD' | 'REMOVE'>();
   const [bulkTags, setBulkTags] = useState('');
   const [busy, setBusy] = useState(false);
+  const exportInFlight = useRef(false);
 
   useEffect(() => {
     const saved = readAdminPreferences(window.localStorage);
@@ -65,6 +100,8 @@ export function AdminCustomersClient() {
   useEffect(() => {
     setPage(1);
     setSelected(new Set());
+    setAllMatchingSelected(false);
+    setExcluded(new Set());
   }, [debouncedQuery, view, sort, hasOrders, subscription, location]);
 
   const load = useCallback(
@@ -99,6 +136,30 @@ export function AdminCustomersClient() {
     return () => controller.abort();
   }, [load]);
 
+  const loadExports = useCallback(async () => {
+    try {
+      const response = await fetch('/api/admin/customer-exports');
+      const payload = (await response.json()) as {
+        exports?: CustomerExportSummary[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error ?? 'Could not load exports.');
+      setExportJobs(payload.exports ?? []);
+    } catch {
+      // Customer loading remains usable if export-status refresh is temporarily unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadExports();
+  }, [loadExports]);
+
+  useEffect(() => {
+    if (!exportJobs.some((job) => ['QUEUED', 'PROCESSING'].includes(job.status))) return;
+    const timer = window.setInterval(() => void loadExports(), 3_000);
+    return () => window.clearInterval(timer);
+  }, [exportJobs, loadExports]);
+
   function changeView(next: CustomerView) {
     setView(next);
     const preferences = readAdminPreferences(window.localStorage);
@@ -113,6 +174,15 @@ export function AdminCustomersClient() {
     writeAdminPreferences(window.localStorage, { ...preferences, customerColumns: next });
   }
   function toggleCustomer(id: string) {
+    if (allMatchingSelected) {
+      setExcluded((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      return;
+    }
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -122,19 +192,81 @@ export function AdminCustomersClient() {
   }
   function togglePage() {
     const ids = result?.customers.map((customer) => customer.id) ?? [];
-    const allSelected = ids.length > 0 && ids.every((id) => selected.has(id));
-    setSelected(allSelected ? new Set() : new Set(ids));
+    if (allMatchingSelected) {
+      setExcluded((current) => {
+        const next = new Set(current);
+        const allSelected = ids.length > 0 && ids.every((id) => !next.has(id));
+        for (const id of ids) {
+          if (allSelected) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+      return;
+    }
+    setSelected((current) => {
+      const next = new Set(current);
+      const allSelected = ids.length > 0 && ids.every((id) => next.has(id));
+      for (const id of ids) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
   }
-  async function exportCustomers(customerIds: string[] = [...selected]) {
-    if (!customerIds.length) return;
+  function selectAllMatchingCustomers() {
+    if (!result?.total) return;
+    setAllMatchingSelected(true);
+    setSelected(new Set());
+    setExcluded(new Set());
+  }
+  function activeSelection(customerIds?: string[]) {
+    if (customerIds) return { type: 'IDS' as const, customerIds };
+    if (allMatchingSelected)
+      return {
+        type: 'FILTER' as const,
+        filters: {
+          view,
+          ...(debouncedQuery ? { query: debouncedQuery } : {}),
+          ...(hasOrders ? { minOrders: 1 } : {}),
+          ...(subscription
+            ? { emailMarketingStatus: subscription as 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED' }
+            : {}),
+          ...(location.trim() ? { location: location.trim() } : {}),
+        },
+        ...(excluded.size ? { excludedCustomerIds: [...excluded] } : {}),
+      };
+    return { type: 'IDS' as const, customerIds: [...selected] };
+  }
+  async function exportCustomers(customerIds?: string[]) {
+    if (exportInFlight.current) return;
+    const selection = activeSelection(customerIds);
+    const requestedCount = customerIds?.length ?? selectedCount;
+    if (!requestedCount) return;
+    exportInFlight.current = true;
     setBusy(true);
     setFeedback(undefined);
     try {
       const response = await fetch('/api/admin/customers/export', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ customerIds }),
+        body: JSON.stringify({ selection }),
       });
+      if (response.status === 202) {
+        const payload = (await response.json()) as {
+          export?: CustomerExportSummary;
+          error?: string;
+        };
+        if (!payload.export) throw new Error(payload.error ?? 'Could not queue customer export.');
+        setExportJobs((current) => [
+          payload.export!,
+          ...current.filter((job) => job.id !== payload.export!.id),
+        ]);
+        setFeedback(
+          `Export started for ${payload.export.totalCount.toLocaleString('en-US')} customers. You can safely leave this page.`,
+        );
+        return;
+      }
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? 'Could not export customers.');
@@ -146,10 +278,11 @@ export function AdminCustomersClient() {
       anchor.download = `customers-${new Date().toISOString().slice(0, 10)}.csv`;
       anchor.click();
       URL.revokeObjectURL(href);
-      setFeedback(`${customerIds.length} customers exported.`);
+      setFeedback(`${requestedCount.toLocaleString('en-US')} customers exported.`);
     } catch (reason) {
       setFeedback(reason instanceof Error ? reason.message : 'Could not export customers.');
     } finally {
+      exportInFlight.current = false;
       setBusy(false);
     }
   }
@@ -165,13 +298,14 @@ export function AdminCustomersClient() {
       const response = await fetch('/api/admin/customers/bulk-tags', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ customerIds: [...selected], tags, operation: bulkOpen }),
+        body: JSON.stringify({ selection: activeSelection(), tags, operation: bulkOpen }),
       });
       const payload = (await response.json()) as { updated?: number; error?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Could not update tags.');
-      setFeedback(`Tags updated for ${payload.updated ?? selected.size} customers.`);
+      setFeedback(`Tags updated for ${payload.updated ?? selectedCount} customers.`);
       setBulkOpen(undefined);
       setBulkTags('');
+      clearSelection();
       await load();
     } catch (reason) {
       setFeedback(reason instanceof Error ? reason.message : 'Could not update tags.');
@@ -182,10 +316,22 @@ export function AdminCustomersClient() {
 
   const allOnPageSelected = useMemo(
     () =>
-      !!result?.customers.length && result.customers.every((customer) => selected.has(customer.id)),
-    [result, selected],
+      !!result?.customers.length &&
+      result.customers.every((customer) =>
+        allMatchingSelected ? !excluded.has(customer.id) : selected.has(customer.id),
+      ),
+    [allMatchingSelected, excluded, result, selected],
   );
+  const selectedCount = allMatchingSelected
+    ? Math.max(0, (result?.total ?? 0) - excluded.size)
+    : selected.size;
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.limit)) : 1;
+
+  function clearSelection() {
+    setSelected(new Set());
+    setAllMatchingSelected(false);
+    setExcluded(new Set());
+  }
 
   return (
     <main className="customer-admin-page">
@@ -305,10 +451,11 @@ export function AdminCustomersClient() {
           <label className="customer-select-control">
             <span className="sr-only">Sort customers</span>
             <select value={sort} onChange={(event) => setSort(event.target.value as CustomerSort)}>
-              <option value="LAST_SEEN_DESC">Recently active</option>
-              <option value="TOTAL_SPENT_DESC">Amount spent</option>
-              <option value="ORDER_COUNT_DESC">Order count</option>
-              <option value="NAME_ASC">Name A–Z</option>
+              {sortOptions.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </label>
           <details className="customer-popover">
@@ -326,21 +473,43 @@ export function AdminCustomersClient() {
               ))}
             </div>
           </details>
+          <details className="customer-popover customer-exports-popover">
+            <summary>
+              Exports
+              {exportJobs.some((job) => job.status === 'READY') ? (
+                <span aria-hidden="true" />
+              ) : null}
+            </summary>
+            <ExportJobsPanel jobs={exportJobs} />
+          </details>
         </div>
 
-        {selected.size ? (
+        {selectedCount ? (
           <div className="customer-bulk-bar" role="region" aria-label="Bulk customer actions">
-            <strong>{selected.size} selected</strong>
-            <button type="button" onClick={() => setBulkOpen('ADD')}>
+            <strong>{selectedCount.toLocaleString('en-US')} selected</strong>
+            {allOnPageSelected && result && !allMatchingSelected && selectedCount < result.total ? (
+              <button
+                className="select-all"
+                type="button"
+                disabled={busy}
+                onClick={selectAllMatchingCustomers}
+              >
+                {`Select all (${result.total.toLocaleString('en-US')})`}
+              </button>
+            ) : null}
+            {allMatchingSelected && result && selectedCount === result.total ? (
+              <span className="all-selected">All customers in this view are selected</span>
+            ) : null}
+            <button type="button" disabled={busy} onClick={() => setBulkOpen('ADD')}>
               Add tags
             </button>
-            <button type="button" onClick={() => setBulkOpen('REMOVE')}>
+            <button type="button" disabled={busy} onClick={() => setBulkOpen('REMOVE')}>
               Remove tags
             </button>
             <button type="button" disabled={busy} onClick={() => void exportCustomers()}>
               Export selected
             </button>
-            <button className="quiet" type="button" onClick={() => setSelected(new Set())}>
+            <button className="quiet" type="button" disabled={busy} onClick={clearSelection}>
               Clear
             </button>
           </div>
@@ -371,13 +540,102 @@ export function AdminCustomersClient() {
                     onChange={togglePage}
                   />
                 </th>
-                <th>Customer</th>
-                {columns.includes('subscription') ? <th>Email subscription</th> : null}
-                {columns.includes('location') ? <th>Location</th> : null}
-                {columns.includes('orders') ? <th>Orders</th> : null}
-                {columns.includes('spent') ? <th>Amount spent</th> : null}
-                {columns.includes('lastOrder') ? <th>Last order</th> : null}
-                {columns.includes('tags') ? <th>Tags</th> : null}
+                <SortableHeader
+                  className="customer-name-column"
+                  label="Customer name"
+                  ascending="NAME_ASC"
+                  descending="NAME_DESC"
+                  sort={sort}
+                  onSort={setSort}
+                />
+                <SortableHeader
+                  className="customer-email-column"
+                  label="Email"
+                  ascending="EMAIL_ASC"
+                  descending="EMAIL_DESC"
+                  sort={sort}
+                  onSort={setSort}
+                />
+                {columns.includes('subscription') ? (
+                  <SortableHeader
+                    className="customer-subscription-column"
+                    label="Email subscription"
+                    ascending="EMAIL_MARKETING_ASC"
+                    descending="EMAIL_MARKETING_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('location') ? (
+                  <SortableHeader
+                    className="customer-location-column"
+                    label="Location"
+                    ascending="LOCATION_ASC"
+                    descending="LOCATION_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('orders') ? (
+                  <SortableHeader
+                    className="customer-orders-column"
+                    label="Orders"
+                    ascending="ORDER_COUNT_ASC"
+                    descending="ORDER_COUNT_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('spent') ? (
+                  <SortableHeader
+                    className="customer-spent-column"
+                    label="Amount spent"
+                    ascending="TOTAL_SPENT_ASC"
+                    descending="TOTAL_SPENT_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('lastOrder') ? (
+                  <SortableHeader
+                    className="customer-last-order-column"
+                    label="Last order"
+                    ascending="LAST_ORDER_ASC"
+                    descending="LAST_ORDER_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('tags') ? (
+                  <SortableHeader
+                    className="customer-tags-column"
+                    label="Tags"
+                    ascending="TAGS_ASC"
+                    descending="TAGS_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('dateAdded') ? (
+                  <SortableHeader
+                    className="customer-date-added-column"
+                    label="Date customer added"
+                    ascending="CUSTOMER_ADDED_ASC"
+                    descending="CUSTOMER_ADDED_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
+                {columns.includes('dateUpdated') ? (
+                  <SortableHeader
+                    className="customer-date-updated-column"
+                    label="Date customer updated"
+                    ascending="CUSTOMER_UPDATED_ASC"
+                    descending="CUSTOMER_UPDATED_DESC"
+                    sort={sort}
+                    onSort={setSort}
+                  />
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -386,7 +644,9 @@ export function AdminCustomersClient() {
                   key={customer.id}
                   customer={customer}
                   columns={columns}
-                  checked={selected.has(customer.id)}
+                  checked={
+                    allMatchingSelected ? !excluded.has(customer.id) : selected.has(customer.id)
+                  }
                   onToggle={() => toggleCustomer(customer.id)}
                 />
               ))}
@@ -459,7 +719,8 @@ export function AdminCustomersClient() {
           >
             <h2 id="bulk-title">{bulkOpen === 'ADD' ? 'Add tags' : 'Remove tags'}</h2>
             <p>
-              Apply to {selected.size} selected customer{selected.size === 1 ? '' : 's'}.
+              Apply to {selectedCount.toLocaleString('en-US')} selected customer
+              {selectedCount === 1 ? '' : 's'}.
             </p>
             <label>
               Tags
@@ -508,6 +769,107 @@ function Metric({
   );
 }
 
+function ExportJobsPanel({ jobs }: Readonly<{ jobs: CustomerExportSummary[] }>) {
+  return (
+    <div className="customer-popover-panel customer-export-panel">
+      <header>
+        <strong>Recent exports</strong>
+        <span>Ready files remain available for 7 days.</span>
+      </header>
+      {jobs.length ? (
+        <div className="customer-export-list">
+          {jobs.map((job) => {
+            const progress = job.totalCount
+              ? Math.min(100, Math.round((job.processedCount / job.totalCount) * 100))
+              : 0;
+            return (
+              <article key={job.id}>
+                <div>
+                  <strong>{job.fileName}</strong>
+                  <span>
+                    {job.totalCount.toLocaleString('en-US')} customers ·{' '}
+                    {formatCustomerTimestamp(job.createdAt)}
+                  </span>
+                </div>
+                <span className={`customer-export-status ${job.status.toLowerCase()}`}>
+                  {exportStatusLabel(job.status)}
+                </span>
+                {job.status === 'PROCESSING' || job.status === 'QUEUED' ? (
+                  <div
+                    className="customer-export-progress"
+                    role="progressbar"
+                    aria-label={`${job.fileName} progress`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progress}
+                  >
+                    <span style={{ width: `${progress}%` }} />
+                  </div>
+                ) : null}
+                {job.status === 'READY' ? (
+                  <a href={`/api/admin/customer-exports/${encodeURIComponent(job.id)}/download`}>
+                    Download CSV
+                  </a>
+                ) : null}
+                {job.status === 'FAILED' && job.failureReason ? (
+                  <small>{job.failureReason}</small>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p>No background exports yet.</p>
+      )}
+    </div>
+  );
+}
+
+function exportStatusLabel(status: CustomerExportSummary['status']) {
+  if (status === 'QUEUED') return 'Queued';
+  if (status === 'PROCESSING') return 'Processing';
+  if (status === 'READY') return 'Ready';
+  if (status === 'FAILED') return 'Failed';
+  return 'Expired';
+}
+
+function SortableHeader({
+  className,
+  label,
+  ascending,
+  descending,
+  sort,
+  onSort,
+}: Readonly<{
+  className: string;
+  label: string;
+  ascending: CustomerSort;
+  descending: CustomerSort;
+  sort: CustomerSort;
+  onSort: (sort: CustomerSort) => void;
+}>) {
+  const direction =
+    sort === ascending ? 'ascending' : sort === descending ? 'descending' : undefined;
+  const nextSort = sort === ascending ? descending : ascending;
+  return (
+    <th className={className} aria-sort={direction}>
+      <button
+        className="customer-sort-button"
+        type="button"
+        onClick={() => onSort(nextSort)}
+        aria-label={`Sort by ${label}, ${nextSort === ascending ? 'ascending' : 'descending'}`}
+      >
+        <span>{label}</span>
+        {direction ? (
+          <span className="customer-sort-arrow" aria-hidden="true">
+            {direction === 'ascending' ? '↑' : '↓'}
+          </span>
+        ) : null}
+      </button>
+    </th>
+  );
+}
+
 function CustomerRow({
   customer,
   columns,
@@ -519,22 +881,30 @@ function CustomerRow({
   checked: boolean;
   onToggle: () => void;
 }>) {
+  const customerName = customer.name === customer.email ? null : customer.name;
+  const customerHref = `/admin/customers/${encodeURIComponent(customer.id)}`;
   return (
     <tr>
       <td className="select">
         <input
-          aria-label={`Select ${customer.name}`}
+          aria-label={`Select ${customerName ?? customer.email}`}
           type="checkbox"
           checked={checked}
           onChange={onToggle}
         />
       </td>
-      <td className="customer-identity-cell" data-label="Customer">
-        <Link href={`/admin/customers/${encodeURIComponent(customer.id)}`}>{customer.name}</Link>
-        <span>{customer.email}</span>
+      <td className="customer-identity-cell customer-name-column" data-label="Customer name">
+        {customerName ? (
+          <Link href={customerHref}>{customerName}</Link>
+        ) : (
+          <span className="customer-name-missing">—</span>
+        )}
+      </td>
+      <td className="customer-email-cell customer-email-column" data-label="Email">
+        <Link href={customerHref}>{customer.email}</Link>
       </td>
       {columns.includes('subscription') ? (
-        <td data-label="Email subscription">
+        <td className="customer-subscription-column" data-label="Email subscription">
           <span
             className={`customer-subscription ${customer.emailMarketingStatus === 'SUBSCRIBED' ? 'subscribed' : ''}`}
           >
@@ -543,26 +913,42 @@ function CustomerRow({
         </td>
       ) : null}
       {columns.includes('location') ? (
-        <td data-label="Location">{customer.location || '—'}</td>
+        <td className="customer-location-column" data-label="Location">
+          {customer.location || '—'}
+        </td>
       ) : null}
-      {columns.includes('orders') ? <td data-label="Orders">{customer.orderCount}</td> : null}
+      {columns.includes('orders') ? (
+        <td className="customer-orders-column" data-label="Orders">
+          {customer.orderCount}
+        </td>
+      ) : null}
       {columns.includes('spent') ? (
-        <td data-label="Amount spent">
+        <td className="customer-spent-column" data-label="Amount spent">
           <strong>{money.format(customer.totalSpentCents / 100)}</strong>
         </td>
       ) : null}
       {columns.includes('lastOrder') ? (
-        <td data-label="Last order">
+        <td className="customer-last-order-column" data-label="Last order">
           {customer.lastOrderAt ? date.format(new Date(customer.lastOrderAt)) : '—'}
         </td>
       ) : null}
       {columns.includes('tags') ? (
-        <td data-label="Tags">
+        <td className="customer-tags-column" data-label="Tags">
           <div className="customer-tags">
             {customer.tags.length
               ? customer.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)
               : '—'}
           </div>
+        </td>
+      ) : null}
+      {columns.includes('dateAdded') ? (
+        <td className="customer-date-added-column" data-label="Date customer added">
+          {formatCustomerTimestamp(customer.createdAt)}
+        </td>
+      ) : null}
+      {columns.includes('dateUpdated') ? (
+        <td className="customer-date-updated-column" data-label="Date customer updated">
+          {formatCustomerTimestamp(customer.updatedAt)}
         </td>
       ) : null}
     </tr>
@@ -573,4 +959,9 @@ function statusLabel(status: string) {
   if (status === 'SUBSCRIBED') return 'Subscribed';
   if (status === 'NOT_SUBSCRIBED') return 'Not subscribed';
   return 'Unknown';
+}
+
+function formatCustomerTimestamp(value: string) {
+  const timestamp = new Date(value);
+  return `${date.format(timestamp)} - ${time.format(timestamp)}`;
 }

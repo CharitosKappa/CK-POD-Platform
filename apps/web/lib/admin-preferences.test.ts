@@ -18,11 +18,13 @@ describe('admin preferences', () => {
 
   it('accepts explicit expanded and collapsed values', () => {
     expect(parseAdminPreferences('{"sidebarCollapsed":false}')).toEqual({
+      customerColumnsVersion: 2,
       sidebarCollapsed: false,
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
     });
     expect(parseAdminPreferences('{"sidebarCollapsed":true}')).toEqual({
+      customerColumnsVersion: 2,
       sidebarCollapsed: true,
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
@@ -41,6 +43,7 @@ describe('admin preferences', () => {
     };
 
     const saved: AdminPreferences = {
+      customerColumnsVersion: 2,
       sidebarCollapsed: true,
       customerColumns: ['orders', 'spent'],
       customerView: 'HIGH_VALUE',
@@ -63,11 +66,29 @@ describe('admin preferences', () => {
     expect(writeAdminPreferences(unavailable, defaultAdminPreferences)).toBe(false);
   });
 
-  it('drops unknown customer columns and views while keeping valid preferences', () => {
+  it('drops unknown customer columns and views while migrating newly introduced columns', () => {
     expect(
       parseAdminPreferences(
         '{"sidebarCollapsed":true,"customerColumns":["orders","unknown","orders"],"customerView":"NOPE"}',
       ),
-    ).toEqual({ sidebarCollapsed: true, customerColumns: ['orders'], customerView: 'ALL' });
+    ).toEqual({
+      customerColumnsVersion: 2,
+      sidebarCollapsed: true,
+      customerColumns: ['orders', 'dateAdded', 'dateUpdated'],
+      customerView: 'ALL',
+    });
+  });
+
+  it('preserves hidden date columns after the column preferences migrate', () => {
+    expect(
+      parseAdminPreferences(
+        '{"customerColumnsVersion":2,"sidebarCollapsed":true,"customerColumns":["orders"],"customerView":"ALL"}',
+      ),
+    ).toEqual({
+      customerColumnsVersion: 2,
+      sidebarCollapsed: true,
+      customerColumns: ['orders'],
+      customerView: 'ALL',
+    });
   });
 });

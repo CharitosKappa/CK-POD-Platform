@@ -1,6 +1,7 @@
 export const adminPreferencesStorageKey = 'let-it-be:admin-preferences:v1';
 
 export type AdminPreferences = Readonly<{
+  customerColumnsVersion: 2;
   sidebarCollapsed: boolean;
   customerColumns: CustomerColumn[];
   customerView: CustomerViewPreference;
@@ -13,12 +14,15 @@ export const customerColumns = [
   'spent',
   'lastOrder',
   'tags',
+  'dateAdded',
+  'dateUpdated',
 ] as const;
 export type CustomerColumn = (typeof customerColumns)[number];
 export type CustomerViewPreference =
   'ALL' | 'NEW' | 'RETURNING' | 'HIGH_VALUE' | 'EMAIL_SUBSCRIBERS';
 
 export const defaultAdminPreferences: AdminPreferences = Object.freeze({
+  customerColumnsVersion: 2,
   sidebarCollapsed: false,
   customerColumns: [...customerColumns],
   customerView: 'ALL',
@@ -40,10 +44,15 @@ export function parseAdminPreferences(value: string | null): AdminPreferences {
           customerColumns.includes(column as CustomerColumn),
         )
       : [...customerColumns];
+    const migratedColumns =
+      parsed.customerColumnsVersion === 2
+        ? parsedColumns
+        : [...parsedColumns, 'dateAdded' as const, 'dateUpdated' as const];
     const parsedView = isCustomerView(parsed.customerView) ? parsed.customerView : 'ALL';
     return {
+      customerColumnsVersion: 2,
       sidebarCollapsed: parsed.sidebarCollapsed,
-      customerColumns: [...new Set(parsedColumns)],
+      customerColumns: [...new Set(migratedColumns)],
       customerView: parsedView,
     };
   } catch {

@@ -6,12 +6,14 @@ import {
   S3Client,
   type S3ClientConfig,
 } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
+import { Readable } from 'node:stream';
 
 export type PrivateObjectKey = string;
 
 export interface PutPrivateObjectInput {
   key: PrivateObjectKey;
-  body: Uint8Array;
+  body: Uint8Array | AsyncIterable<Uint8Array>;
   contentType: string;
   metadata?: Record<string, string>;
 }
@@ -23,6 +25,13 @@ export interface StoredPrivateObject {
   metadata: Record<string, string>;
 }
 
+export interface OpenedPrivateObject {
+  key: PrivateObjectKey;
+  body: AsyncIterable<Uint8Array>;
+  contentType: string;
+  metadata: Record<string, string>;
+}
+
 /**
  * The only asset-storage contract exposed to application code. It has no
  * permanent public URL operation by design, protecting future production masters.
@@ -30,6 +39,7 @@ export interface StoredPrivateObject {
 export interface PrivateObjectStorage {
   put(input: PutPrivateObjectInput): Promise<void>;
   get(key: PrivateObjectKey): Promise<StoredPrivateObject | null>;
+  open(key: PrivateObjectKey): Promise<OpenedPrivateObject | null>;
   exists(key: PrivateObjectKey): Promise<boolean>;
   delete(key: PrivateObjectKey): Promise<void>;
 }
@@ -46,12 +56,24 @@ export class MemoryObjectStorage implements PrivateObjectStorage {
 
   async put(input: PutPrivateObjectInput): Promise<void> {
     assertSafeKey(input.key);
+    const body = await collectBytes(input.body);
     this.objects.set(input.key, {
       key: input.key,
-      body: new Uint8Array(input.body),
+      body,
       contentType: input.contentType,
       metadata: { ...input.metadata },
     });
+  }
+
+  async open(key: PrivateObjectKey): Promise<OpenedPrivateObject | null> {
+    const object = await this.get(key);
+    if (!object) return null;
+    return {
+      key: object.key,
+      body: bytesAsStream(object.body),
+      contentType: object.contentType,
+      metadata: object.metadata,
+    };
   }
 
   async get(key: PrivateObjectKey): Promise<StoredPrivateObject | null> {
@@ -93,15 +115,47 @@ export class S3PrivateObjectStorage implements PrivateObjectStorage {
 
   async put(input: PutPrivateObjectInput): Promise<void> {
     assertSafeKey(input.key);
-    await this.client.send(
-      new PutObjectCommand({
+    if (input.body instanceof Uint8Array) {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.options.bucket,
+          Key: input.key,
+          Body: input.body,
+          ContentType: input.contentType,
+          Metadata: input.metadata,
+        }),
+      );
+      return;
+    }
+    await new Upload({
+      client: this.client,
+      params: {
         Bucket: this.options.bucket,
         Key: input.key,
-        Body: input.body,
+        Body: Readable.from(input.body),
         ContentType: input.contentType,
         Metadata: input.metadata,
-      }),
-    );
+      },
+    }).done();
+  }
+
+  async open(key: PrivateObjectKey): Promise<OpenedPrivateObject | null> {
+    assertSafeKey(key);
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
+      );
+      if (!response.Body) return null;
+      return {
+        key,
+        body: response.Body as AsyncIterable<Uint8Array>,
+        contentType: response.ContentType ?? 'application/octet-stream',
+        metadata: response.Metadata ?? {},
+      };
+    } catch (error) {
+      if (isObjectNotFound(error)) return null;
+      throw error;
+    }
   }
 
   async get(key: PrivateObjectKey): Promise<StoredPrivateObject | null> {
@@ -159,4 +213,25 @@ function isObjectNotFound(error: unknown): boolean {
     'name' in error &&
     (error.name === 'NoSuchKey' || error.name === 'NotFound')
   );
+}
+
+async function collectBytes(body: Uint8Array | AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  if (body instanceof Uint8Array) return new Uint8Array(body);
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for await (const chunk of body) {
+    chunks.push(chunk);
+    length += chunk.byteLength;
+  }
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+async function* bytesAsStream(body: Uint8Array): AsyncIterable<Uint8Array> {
+  yield new Uint8Array(body);
 }
