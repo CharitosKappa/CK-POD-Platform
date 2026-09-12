@@ -4,7 +4,10 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import type { CustomerDetail } from './customer-types';
 
-export type CustomerSidebarAction = 'customer' | 'address' | 'marketing' | 'tags' | 'note';
+export type CustomerSidebarAction =
+  'customer' | 'address' | 'marketing' | 'tags' | 'note' | 'storeCredit';
+
+const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
 export function CustomerDetailSidebar({
   customer,
@@ -82,7 +85,7 @@ export function CustomerDetailSidebar({
               <span>Not provided</span>
             )}
           </div>
-          <p className="customer-notification-language">
+          <p className="customer-notification-language customer-sidebar-copy">
             Will receive notifications in {languageName(customer.preferredLocale)}
           </p>
 
@@ -98,26 +101,40 @@ export function CustomerDetailSidebar({
                 {address.phone ? <span>{address.phone}</span> : null}
               </address>
             ) : (
-              <p className="customer-sidebar-empty">No address saved.</p>
+              <p className="customer-sidebar-empty customer-sidebar-copy">No address saved.</p>
             )}
           </SidebarSection>
 
           <SidebarSection title="Marketing subscriptions">
-            <p>{marketingSubscriptions(customer)}</p>
+            <p className="customer-sidebar-copy">{marketingSubscriptions(customer)}</p>
           </SidebarSection>
 
           <SidebarSection title="Tax details">
-            <p>VAT number: Not provided</p>
-            <p>Collect tax</p>
+            <p className="customer-sidebar-copy">VAT number: Not provided</p>
+            <p className="customer-sidebar-copy">Collect tax</p>
           </SidebarSection>
         </div>
       </section>
 
       <section className="customer-card customer-sidebar-card">
         <header className="customer-sidebar-card-header">
-          <h2>Store credit</h2>
+          <h2>Design credits</h2>
         </header>
-        <p className="customer-sidebar-card-value">None</p>
+        <p className="customer-sidebar-card-value">{customer.creditBalance} credits</p>
+      </section>
+
+      <section className="customer-card customer-sidebar-card">
+        <header className="customer-sidebar-card-header">
+          <h2>Store credit</h2>
+          <IconButton
+            label="Adjust store credit"
+            onClick={() => choose('storeCredit')}
+            type="edit"
+          />
+        </header>
+        <p className="customer-sidebar-card-value">
+          {usd.format(customer.storeCreditBalanceCents / 100)} USD
+        </p>
       </section>
 
       <section className="customer-card customer-sidebar-card customer-sidebar-tags-card">

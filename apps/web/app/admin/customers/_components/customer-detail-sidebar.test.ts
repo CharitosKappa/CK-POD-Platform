@@ -21,7 +21,7 @@ const customer: CustomerDetail = {
   averageOrderValueCents: 3999,
   returnRate: 0,
   creditBalance: 4,
-  storeCreditBalanceCents: 0,
+  storeCreditBalanceCents: 2550,
   storeCreditCurrency: 'USD',
   lastOrderAt: '2026-09-11T18:57:00Z',
   savedDesignCount: 3,
@@ -80,6 +80,21 @@ describe('customer detail sidebar', () => {
     expect(markup).toContain('Tax details');
     expect(markup).toContain('VAT number: Not provided');
     expect(markup).toContain('Store credit');
+    expect(markup).toContain('4 credits');
+    expect(markup).toContain('$25.50 USD');
+    expect(markup).toContain('aria-label="Adjust store credit"');
+    const sections = ['Contact information', 'Design credits', 'Store credit', 'Tags', 'Notes'];
+    for (let index = 1; index < sections.length; index++) {
+      expect(markup.indexOf(sections[index - 1]!)).toBeLessThan(markup.indexOf(sections[index]!));
+    }
+    for (const text of [
+      'Will receive notifications in English',
+      'Email, SMS',
+      'VAT number: Not provided',
+      'Collect tax',
+    ]) {
+      expect(markup).toMatch(new RegExp(`<p class="[^"]*customer-sidebar-copy[^"]*">${text}</p>`));
+    }
     expect(markup).toContain('Big Spender');
     expect(markup).toContain('Prefers delivery after 17:00.');
     expect(markup).not.toContain('Design activity');
@@ -96,12 +111,15 @@ describe('customer detail sidebar', () => {
       smsMarketingStatus: 'NOT_SUBSCRIBED',
       tags: [],
       timeline: [],
+      storeCreditBalanceCents: 0,
     });
 
     expect(markup).toContain('Not provided');
     expect(markup).toContain('No address saved.');
     expect(markup).toContain('Marketing subscriptions');
     expect(markup).toContain('None');
+    expect(markup).toContain('$0.00 USD');
+    expect(markup).toContain('class="customer-sidebar-copy">None</p>');
   });
 });
 

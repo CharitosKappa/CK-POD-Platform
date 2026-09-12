@@ -3041,7 +3041,7 @@ select:focus-visible {
 }
 .customer-detail-metrics {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
 }
 .customer-detail-metrics > div {
@@ -3553,6 +3553,19 @@ select:focus-visible {
   cursor: default;
   color: #a0a39b;
 }
+.customer-contact-card {
+  --customer-sidebar-meta-size: 0.7rem;
+}
+.customer-contact-card .customer-sidebar-copy {
+  margin: 0;
+  color: #363832;
+  font-size: var(--customer-sidebar-meta-size);
+  font-weight: 400;
+  line-height: 1.35;
+}
+.customer-contact-card .customer-notification-language {
+  margin-top: -14px;
+}
 .customer-contact-card-body {
   display: grid;
   gap: 21px;
@@ -3598,7 +3611,7 @@ select:focus-visible {
 .customer-sidebar-subsection h3 {
   margin: 0;
   color: #292b26;
-  font-size: 0.6rem;
+  font-size: var(--customer-sidebar-meta-size);
   font-weight: 700;
 }
 .customer-sidebar-empty {
@@ -3810,6 +3823,73 @@ select:focus-visible {
   margin-top: 16px;
 }
 
+.customer-store-credit-direction {
+  display: flex;
+  gap: 3px;
+  width: fit-content;
+  margin-bottom: 18px;
+  padding: 3px;
+  border: 1px solid #d7d8d2;
+  border-radius: 9px;
+  background: #f0f1ed;
+}
+.customer-store-credit-direction button {
+  min-width: 88px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #363832;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.customer-store-credit-direction button[aria-pressed='true'] {
+  border-color: #d7d8d2;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(24, 27, 23, 0.08);
+}
+.customer-store-credit-modal button:focus-visible {
+  outline: 2px solid #5a785e;
+  outline-offset: 2px;
+}
+.customer-store-credit-modal input:disabled,
+.customer-store-credit-modal select:disabled,
+.customer-store-credit-modal textarea:disabled {
+  background: #f0f1ed;
+  color: #65685f;
+}
+.customer-store-credit-modal .customer-store-credit-field-error {
+  color: #a82a26;
+}
+.customer-store-credit-summary {
+  display: grid;
+  gap: 10px;
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid #e2e3dd;
+  color: #363832;
+  font-size: 0.75rem;
+}
+.customer-store-credit-summary > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.customer-store-credit-summary dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+.customer-button.customer-store-credit-deduct {
+  border-color: #a82a26;
+  background: #a82a26;
+  color: #fff;
+}
+.customer-store-credit-modal button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
 .customer-modal-backdrop {
   position: fixed;
   z-index: 1200;
@@ -4217,12 +4297,8 @@ select:focus-visible {
   .customer-detail-metrics > div:nth-child(even) {
     border-right: 0;
   }
-  .customer-detail-metrics > div:nth-child(-n + 4) {
+  .customer-detail-metrics > div:nth-child(-n + 2) {
     border-bottom: 1px solid var(--admin-line);
-  }
-  .customer-detail-metrics > div:last-child {
-    grid-column: 1 / -1;
-    border-right: 0;
   }
   .customer-modal-backdrop {
     align-items: end;

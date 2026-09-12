@@ -7,6 +7,7 @@ import { customerDisplayName, customerDuration } from './customer-detail-format'
 import { CustomerDetailModal, type CustomerDetailModalName } from './customer-detail-modals';
 import { CustomerDetailSidebar } from './customer-detail-sidebar';
 import { CustomerTimeline } from './customer-detail-timeline';
+import { StoreCreditAdjustmentModal } from './store-credit-adjustment-modal';
 import type { CustomerDetail } from './customer-types';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -24,7 +25,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
-  const [modal, setModal] = useState<CustomerDetailModalName>();
+  const [modal, setModal] = useState<CustomerDetailModalName | 'storeCredit'>();
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -130,7 +131,6 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
               label="Average order"
               value={money.format(customer.averageOrderValueCents / 100)}
             />
-            <Metric label="Credits" value={String(customer.creditBalance)} />
             <Metric label="Return rate" value={`${customer.returnRate}%`} />
           </section>
           <section className="customer-card customer-latest-order-card">
@@ -222,7 +222,14 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
         </div>
         <CustomerDetailSidebar customer={customer} onAction={setModal} />
       </div>
-      {modal ? (
+      {modal === 'storeCredit' ? (
+        <StoreCreditAdjustmentModal
+          customerId={customer.id}
+          balanceCents={customer.storeCreditBalanceCents}
+          onClose={() => setModal(undefined)}
+          onSaved={handleModalSaved}
+        />
+      ) : modal ? (
         <CustomerDetailModal
           key={modal}
           customer={customer}
