@@ -22,3 +22,6 @@ redis-data/
 
 # Brainstorming companion sessions
 .superpowers/
+
+# Isolated feature worktrees
+.worktrees/
