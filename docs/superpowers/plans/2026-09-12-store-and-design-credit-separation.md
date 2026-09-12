@@ -181,12 +181,7 @@ Expected: FAIL because the Store Credit domain module does not exist.
 In `packages/domain/src/store-credit.ts`, define:
 
 ```ts
-export const storeCreditReasons = [
-  'REFUND',
-  'PROMOTION',
-  'CUSTOMER_SERVICE',
-  'OTHER',
-] as const;
+export const storeCreditReasons = ['REFUND', 'PROMOTION', 'CUSTOMER_SERVICE', 'OTHER'] as const;
 
 export type StoreCreditReason = (typeof storeCreditReasons)[number];
 export type StoreCreditDirection = 'CREDIT' | 'DEBIT';
@@ -598,7 +593,9 @@ In `store-credit-adjustment.test.ts`, test the pure helpers that the modal will 
 it('builds a credit payload without losing decimal precision');
 it('builds a debit payload and trims its optional note');
 it('requires an amount and reason before submission');
-it('creates a new idempotency key for a new submit intent but reuses it while retrying the same request');
+it(
+  'creates a new idempotency key for a new submit intent but reuses it while retrying the same request',
+);
 ```
 
 The payload helper must preserve `amount` as a string:
