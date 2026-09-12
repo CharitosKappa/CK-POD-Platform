@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import type { CustomerDetail } from './customer-types';
+import type { CustomerLocale } from './customer-types';
 
 type FormState = {
   firstName: string;
@@ -19,6 +20,7 @@ type FormState = {
   postalCode: string;
   emailConsent: boolean;
   smsConsent: boolean;
+  preferredLocale: CustomerLocale;
   tags: string;
   note: string;
 };
@@ -36,6 +38,7 @@ const empty: FormState = {
   postalCode: '',
   emailConsent: false,
   smsConsent: false,
+  preferredLocale: 'en',
   tags: '',
   note: '',
 };
@@ -73,6 +76,7 @@ export function CustomerForm({ customerId }: Readonly<{ customerId?: string }>) 
           postalCode: address?.postalCode ?? '',
           emailConsent: customer.emailMarketingStatus === 'SUBSCRIBED',
           smsConsent: customer.smsMarketingStatus === 'SUBSCRIBED',
+          preferredLocale: customer.preferredLocale,
           tags: customer.tags.join(', '),
           note: '',
         });
@@ -110,6 +114,7 @@ export function CustomerForm({ customerId }: Readonly<{ customerId?: string }>) 
             phone: form.phone,
             emailMarketingStatus: form.emailConsent ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
             smsMarketingStatus: form.smsConsent ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
+            preferredLocale: form.preferredLocale,
             address: {
               countryCode: form.countryCode,
               line1: form.line1,
@@ -216,6 +221,16 @@ export function CustomerForm({ customerId }: Readonly<{ customerId?: string }>) 
                     value={form.phone}
                     onChange={(event) => update('phone', event.target.value)}
                   />
+                </Field>
+                <Field label="Notification language" full>
+                  <select
+                    value={form.preferredLocale}
+                    onChange={(event) =>
+                      update('preferredLocale', event.target.value as CustomerLocale)
+                    }
+                  >
+                    <option value="en">English</option>
+                  </select>
                 </Field>
               </div>
             </section>

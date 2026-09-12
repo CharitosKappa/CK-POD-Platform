@@ -298,6 +298,58 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     });
   });
 
+  it('captures checkout language while preserving an explicit admin override', async () => {
+    const ready = await readyProject(pool, identity, projects, storage);
+    const cart = await commerce.createCart(ready.guest, {
+      projectId: ready.projectId,
+      size: 'M',
+      quantity: 1,
+    });
+    const email = `locale-${randomBytes(6).toString('hex')}@example.test`;
+
+    await commerce.saveShippingAddress(ready.guest, cart.id, {
+      ...address(),
+      email,
+      preferredLocale: 'en',
+    });
+    const detected = await pool.query<{
+      preferred_locale: string;
+      preferred_locale_source: string;
+    }>(
+      `SELECT preferred_locale, preferred_locale_source
+       FROM app.customer_profiles WHERE normalized_email=$1`,
+      [email],
+    );
+    expect(detected.rows[0]).toEqual({
+      preferred_locale: 'en',
+      preferred_locale_source: 'BROWSER',
+    });
+
+    await pool.query(
+      `UPDATE app.customer_profiles
+       SET preferred_locale='en', preferred_locale_source='ADMIN'
+       WHERE normalized_email=$1`,
+      [email],
+    );
+    await commerce.saveShippingAddress(ready.guest, cart.id, {
+      ...address(),
+      email,
+      preferredLocale: 'en',
+    });
+    const overridden = await pool.query<{
+      preferred_locale: string;
+      preferred_locale_source: string;
+    }>(
+      `SELECT preferred_locale, preferred_locale_source
+       FROM app.customer_profiles WHERE normalized_email=$1`,
+      [email],
+    );
+    expect(overridden.rows[0]).toEqual({
+      preferred_locale: 'en',
+      preferred_locale_source: 'ADMIN',
+    });
+  });
+
   it('supports safe guest checkout, verified idempotent payment events, and canonical PAID order state only', async () => {
     const ready = await readyProject(pool, identity, projects, storage);
     const cart = await commerce.createCart(ready.guest, {

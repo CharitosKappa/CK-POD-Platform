@@ -8,8 +8,11 @@ import {
   escapeCustomerCsv,
   marketingStatuses,
   normalizeCustomerEmail as normalizeEmailContract,
+  normalizeCustomerLocale,
   normalizeCustomerTag,
   type CustomerProfileInput,
+  type CustomerLocale,
+  type CustomerLocaleSource,
   type CustomerSort,
   type CustomerView,
   type MarketingStatus,
@@ -85,6 +88,8 @@ export interface OperationsCustomerDetail {
   lastDesignAt: Date | null;
   emailMarketingStatus: MarketingStatus;
   smsMarketingStatus: MarketingStatus;
+  preferredLocale: CustomerLocale;
+  preferredLocaleSource: CustomerLocaleSource;
   /** Compatibility field for the legacy operations customer page. */
   marketingConsent: MarketingStatus;
   addresses: Array<{
@@ -150,17 +155,48 @@ export interface CustomerListOptions {
 
 export async function recordCustomerTouchpoint(
   client: Pick<SqlClient, 'query'>,
-  input: { email: string; source: CustomerTouchpoint; userId?: string | null },
+  input: {
+    email: string;
+    source: CustomerTouchpoint;
+    userId?: string | null;
+    preferredLocale?: CustomerLocale;
+  },
 ): Promise<void> {
   const email = normalizeCustomerEmail(input.email);
+  const preferredLocale = input.preferredLocale ?? 'en';
+  const preferredLocaleSource = input.preferredLocale ? 'BROWSER' : 'DEFAULT';
   await client.query(
-    `INSERT INTO app.customer_profiles (normalized_email, user_id, first_seen_source, first_seen_at, last_seen_at)
-     VALUES ($1, (SELECT id FROM app.users WHERE id = $2::uuid AND lower(trim(email)) = $1), $3, now(), now())
+    `INSERT INTO app.customer_profiles (
+       normalized_email, user_id, first_seen_source, first_seen_at, last_seen_at,
+       preferred_locale, preferred_locale_source, preferred_locale_updated_at
+     )
+     VALUES (
+       $1, (SELECT id FROM app.users WHERE id = $2::uuid AND lower(trim(email)) = $1),
+       $3, now(), now(), $4, $5, CASE WHEN $5 = 'BROWSER' THEN now() ELSE NULL END
+     )
      ON CONFLICT (normalized_email) DO UPDATE
      SET user_id = COALESCE(app.customer_profiles.user_id, EXCLUDED.user_id),
          last_seen_at = GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at),
+         preferred_locale = CASE
+           WHEN app.customer_profiles.preferred_locale_source IN ('ADMIN', 'CUSTOMER')
+             THEN app.customer_profiles.preferred_locale
+           WHEN EXCLUDED.preferred_locale_source = 'BROWSER' THEN EXCLUDED.preferred_locale
+           ELSE app.customer_profiles.preferred_locale
+         END,
+         preferred_locale_source = CASE
+           WHEN app.customer_profiles.preferred_locale_source IN ('ADMIN', 'CUSTOMER')
+             THEN app.customer_profiles.preferred_locale_source
+           WHEN EXCLUDED.preferred_locale_source = 'BROWSER' THEN 'BROWSER'
+           ELSE app.customer_profiles.preferred_locale_source
+         END,
+         preferred_locale_updated_at = CASE
+           WHEN app.customer_profiles.preferred_locale_source IN ('ADMIN', 'CUSTOMER')
+             THEN app.customer_profiles.preferred_locale_updated_at
+           WHEN EXCLUDED.preferred_locale_source = 'BROWSER' THEN now()
+           ELSE app.customer_profiles.preferred_locale_updated_at
+         END,
          updated_at = now()`,
-    [email, input.userId ?? null, input.source],
+    [email, input.userId ?? null, input.source, preferredLocale, preferredLocaleSource],
   );
 }
 
@@ -207,6 +243,14 @@ export async function reconcileCustomerProfiles(pool: SqlPool): Promise<void> {
 
 export class CustomerOperationsService {
   public constructor(private readonly pool: SqlPool) {}
+
+  async listTags(session: CustomerOperationsActor): Promise<string[]> {
+    await this.requireReadStaff(session);
+    const result = await this.pool.query<{ value: string }>(
+      `SELECT value FROM app.customer_tags ORDER BY lower(value), value`,
+    );
+    return result.rows.map((row) => row.value);
+  }
 
   async listCustomers(
     session: CustomerOperationsActor,
@@ -343,6 +387,7 @@ export class CustomerOperationsService {
               coalesce(cp.last_name, profile.last_name, '') AS last_name,
               coalesce(cp.phone, saved_address.phone) AS phone,
               cp.email_marketing_status, cp.sms_marketing_status,
+              cp.preferred_locale, cp.preferred_locale_source,
               coalesce(nullif(trim(concat_ws(' ', cp.first_name, cp.last_name)), ''),
                        nullif(trim(concat_ws(' ', profile.first_name, profile.last_name)), ''),
                        profile_address.recipient_name, saved_address.recipient_name,
@@ -459,6 +504,8 @@ export class CustomerOperationsService {
       lastDesignAt: customer.last_design_at,
       emailMarketingStatus: customer.email_marketing_status,
       smsMarketingStatus: customer.sms_marketing_status,
+      preferredLocale: customer.preferred_locale,
+      preferredLocaleSource: customer.preferred_locale_source,
       marketingConsent: customer.email_marketing_status,
       addresses: addresses.rows.map(mapAddress),
       orders: orders.rows.map((row) => ({
@@ -509,8 +556,9 @@ export class CustomerOperationsService {
         `INSERT INTO app.customer_profiles (
            normalized_email, first_name, last_name, phone, first_seen_source,
            email_marketing_status, email_marketing_updated_at,
-           sms_marketing_status, sms_marketing_updated_at
-         ) VALUES ($1,$2,$3,$4,'ACCOUNT',$5,now(),$6,now()) RETURNING id`,
+           sms_marketing_status, sms_marketing_updated_at,
+           preferred_locale, preferred_locale_source, preferred_locale_updated_at
+         ) VALUES ($1,$2,$3,$4,'ACCOUNT',$5,now(),$6,now(),$7,'ADMIN',now()) RETURNING id`,
         [
           profile.email,
           profile.firstName,
@@ -518,6 +566,7 @@ export class CustomerOperationsService {
           profile.phone,
           profile.emailMarketingStatus,
           profile.smsMarketingStatus,
+          profile.preferredLocale ?? 'en',
         ],
       );
       const id = created.rows[0]!.id;
@@ -558,6 +607,7 @@ export class CustomerOperationsService {
         phone: string | null;
         email_marketing_status: MarketingStatus;
         sms_marketing_status: MarketingStatus;
+        preferred_locale: CustomerLocale;
         line1: string | null;
         line2: string | null;
         city: string | null;
@@ -567,7 +617,7 @@ export class CustomerOperationsService {
       }>(
         `SELECT profile.id,profile.user_id,profile.normalized_email,profile.first_name,
                 profile.last_name,profile.phone,profile.email_marketing_status,
-                profile.sms_marketing_status,address.line1,address.line2,address.city,
+                profile.sms_marketing_status,profile.preferred_locale,address.line1,address.line2,address.city,
                 address.state_code,address.postal_code,address.country_code
          FROM app.customer_profiles profile
          LEFT JOIN LATERAL (
@@ -607,7 +657,11 @@ export class CustomerOperationsService {
         `UPDATE app.customer_profiles
          SET normalized_email=$2,first_name=$3,last_name=$4,phone=$5,
              email_marketing_status=$6,email_marketing_updated_at=now(),
-             sms_marketing_status=$7,sms_marketing_updated_at=now(),updated_at=now()
+             sms_marketing_status=$7,sms_marketing_updated_at=now(),
+             preferred_locale=coalesce($8,preferred_locale),
+             preferred_locale_source=CASE WHEN $8::text IS NULL THEN preferred_locale_source ELSE 'ADMIN' END,
+             preferred_locale_updated_at=CASE WHEN $8::text IS NULL THEN preferred_locale_updated_at ELSE now() END,
+             updated_at=now()
          WHERE id=$1`,
         [
           id,
@@ -617,6 +671,7 @@ export class CustomerOperationsService {
           profile.phone,
           profile.emailMarketingStatus,
           profile.smsMarketingStatus,
+          profile.preferredLocale,
         ],
       );
       const consentChanged =
@@ -881,6 +936,7 @@ type ValidatedProfile = {
   phone: string | null;
   emailMarketingStatus: MarketingStatus;
   smsMarketingStatus: MarketingStatus;
+  preferredLocale: CustomerLocale | null;
   address: {
     line1: string;
     line2: string | null;
@@ -1061,6 +1117,7 @@ function profileChangedFields(
     first_name: string | null;
     last_name: string | null;
     phone: string | null;
+    preferred_locale: CustomerLocale;
     line1: string | null;
     line2: string | null;
     city: string | null;
@@ -1075,6 +1132,8 @@ function profileChangedFields(
   if (current.first_name !== profile.firstName) changed.push('first name');
   if (current.last_name !== profile.lastName) changed.push('last name');
   if (current.phone !== profile.phone) changed.push('phone');
+  if (profile.preferredLocale && current.preferred_locale !== profile.preferredLocale)
+    changed.push('preferred language');
   const previousAddress = [
     current.line1,
     current.line2,
@@ -1105,6 +1164,9 @@ function validateProfileInput(input: CustomerProfileInput): ValidatedProfile {
     throw new CustomerOperationsValidationError('Enter a valid phone number.');
   const emailMarketingStatus = input.emailMarketingStatus ?? 'NOT_SUBSCRIBED';
   const smsMarketingStatus = input.smsMarketingStatus ?? 'NOT_SUBSCRIBED';
+  const preferredLocale = input.preferredLocale
+    ? normalizeCustomerLocale(input.preferredLocale)
+    : null;
   requireMarketingStatus(emailMarketingStatus);
   requireMarketingStatus(smsMarketingStatus);
   const raw = input.address;
@@ -1134,6 +1196,7 @@ function validateProfileInput(input: CustomerProfileInput): ValidatedProfile {
     phone,
     emailMarketingStatus,
     smsMarketingStatus,
+    preferredLocale,
     address,
     tags: normalizeTags(input.tags ?? []),
     note: input.note ? normalizeNote(input.note) : null,
@@ -1224,6 +1287,8 @@ interface CustomerIdentityRow {
   last_design_at: Date | null;
   email_marketing_status: MarketingStatus;
   sms_marketing_status: MarketingStatus;
+  preferred_locale: CustomerLocale;
+  preferred_locale_source: CustomerLocaleSource;
 }
 interface CustomerOrderRow {
   order_number: string;

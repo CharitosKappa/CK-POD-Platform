@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 import {
   addressDraftFrom,
@@ -10,9 +10,10 @@ import {
   type AddressDraft,
   type ContactDraft,
 } from './customer-detail-editing';
+import { filterTagOptions } from './customer-detail-sidebar';
 import type { CustomerDetail } from './customer-types';
 
-export type CustomerDetailModalName = 'customer' | 'address';
+export type CustomerDetailModalName = 'customer' | 'address' | 'marketing' | 'tags' | 'note';
 
 export function CustomerDetailModal({
   customer,
@@ -29,6 +30,12 @@ export function CustomerDetailModal({
   const firstField = useRef<HTMLInputElement>(null);
   const [contact, setContact] = useState(() => contactDraftFrom(customer));
   const [address, setAddress] = useState(() => addressDraftFrom(customer));
+  const [selectedTags, setSelectedTags] = useState(() => customer.tags);
+  const [tagCatalog, setTagCatalog] = useState(() => customer.tags);
+  const [tagQuery, setTagQuery] = useState('');
+  const [tagCatalogLoading, setTagCatalogLoading] = useState(modal === 'tags');
+  const [tagCatalogError, setTagCatalogError] = useState<string>();
+  const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -46,29 +53,79 @@ export function CustomerDetailModal({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    if (modal !== 'tags') return;
+    const controller = new AbortController();
+    async function loadTagCatalog() {
+      setTagCatalogLoading(true);
+      setTagCatalogError(undefined);
+      try {
+        const response = await fetch('/api/admin/customer-tags', { signal: controller.signal });
+        const payload = (await response.json()) as { tags?: string[]; error?: string };
+        if (!response.ok || !payload.tags)
+          throw new Error(payload.error ?? 'Could not load customer tags.');
+        setTagCatalog([...new Set([...payload.tags, ...customer.tags])]);
+      } catch (reason) {
+        if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        setTagCatalogError(
+          reason instanceof Error ? reason.message : 'Could not load customer tags.',
+        );
+      } finally {
+        if (!controller.signal.aborted) setTagCatalogLoading(false);
+      }
+    }
+    void loadTagCatalog();
+    return () => controller.abort();
+  }, [customer.tags, modal]);
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}`, {
-        method: 'PATCH',
+      const endpoint =
+        modal === 'tags'
+          ? `/api/admin/customers/${encodeURIComponent(customer.id)}/tags`
+          : modal === 'note'
+            ? `/api/admin/customers/${encodeURIComponent(customer.id)}/notes`
+            : `/api/admin/customers/${encodeURIComponent(customer.id)}`;
+      const body =
+        modal === 'tags'
+          ? { tags: selectedTags }
+          : modal === 'note'
+            ? { body: note.trim() }
+            : modal === 'address'
+              ? addressUpdatePayload(customer, address)
+              : contactUpdatePayload(customer, contact);
+      const response = await fetch(endpoint, {
+        method: modal === 'tags' || modal === 'note' ? 'POST' : 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(
-          modal === 'customer'
-            ? contactUpdatePayload(customer, contact)
-            : addressUpdatePayload(customer, address),
-        ),
+        body: JSON.stringify(body),
       });
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Could not update customer.');
-      await onSaved(modal === 'customer' ? 'Customer updated.' : 'Default address updated.');
+      await onSaved(successMessage(modal));
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not update customer.');
     } finally {
       setSaving(false);
     }
+  }
+
+  function toggleTag(tag: string) {
+    setSelectedTags((current) =>
+      current.some((value) => value.toLocaleLowerCase() === tag.toLocaleLowerCase())
+        ? current.filter((value) => value.toLocaleLowerCase() !== tag.toLocaleLowerCase())
+        : [...current, tag],
+    );
+  }
+
+  function addTag(tag: string) {
+    if (selectedTags.length >= 20 || tag.length > 48) return;
+    setTagCatalog((current) => [...new Set([...current, tag])]);
+    setSelectedTags((current) => [...current, tag]);
+    setTagQuery('');
   }
 
   function keepFocusInside(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -90,7 +147,7 @@ export function CustomerDetailModal({
     }
   }
 
-  const title = modal === 'customer' ? 'Edit customer' : 'Manage default address';
+  const title = modalTitle(modal);
   return (
     <div
       className="customer-modal-backdrop"
@@ -117,8 +174,35 @@ export function CustomerDetailModal({
           <div className="customer-modal-body">
             {modal === 'customer' ? (
               <CustomerFields contact={contact} firstField={firstField} setContact={setContact} />
-            ) : (
+            ) : modal === 'address' ? (
               <AddressFields address={address} firstField={firstField} setAddress={setAddress} />
+            ) : modal === 'marketing' ? (
+              <MarketingFields contact={contact} setContact={setContact} />
+            ) : modal === 'tags' ? (
+              <CustomerTagPicker
+                catalog={tagCatalog}
+                loading={tagCatalogLoading}
+                onAdd={addTag}
+                onQueryChange={setTagQuery}
+                onToggle={toggleTag}
+                query={tagQuery}
+                selectedTags={selectedTags}
+                {...(tagCatalogError ? { error: tagCatalogError } : {})}
+              />
+            ) : (
+              <div className="customer-modal-grid">
+                <ModalField full label="Internal note">
+                  <textarea
+                    autoFocus
+                    maxLength={2000}
+                    placeholder="Add context for your team…"
+                    rows={5}
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                  />
+                </ModalField>
+                <p className="customer-modal-field-hint">Only staff can see customer notes.</p>
+              </div>
             )}
             {error ? (
               <p className="customer-modal-error" id="customer-modal-error" role="alert">
@@ -130,7 +214,11 @@ export function CustomerDetailModal({
             <button className="customer-button secondary" onClick={onClose} type="button">
               Cancel
             </button>
-            <button className="customer-button primary" disabled={saving} type="submit">
+            <button
+              className="customer-button primary"
+              disabled={saving || (modal === 'note' && !note.trim())}
+              type="submit"
+            >
               {saving ? 'Saving…' : 'Save'}
             </button>
           </footer>
@@ -192,37 +280,169 @@ function CustomerFields({
             }
           />
         </ModalField>
+        <ModalField full label="Language">
+          <select
+            value={contact.preferredLocale}
+            onChange={(event) =>
+              setContact((current) => ({
+                ...current,
+                preferredLocale: event.target.value as ContactDraft['preferredLocale'],
+              }))
+            }
+          >
+            <option value="en">English</option>
+          </select>
+          <small>Transactional and promotional messages use this language.</small>
+        </ModalField>
       </div>
-      <fieldset className="customer-modal-marketing">
-        <legend>Marketing subscriptions</legend>
-        <label>
-          <input
-            checked={contact.emailMarketingStatus === 'SUBSCRIBED'}
-            onChange={(event) =>
-              setContact((current) => ({
-                ...current,
-                emailMarketingStatus: event.target.checked ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
-              }))
-            }
-            type="checkbox"
-          />
-          Email marketing
-        </label>
-        <label>
-          <input
-            checked={contact.smsMarketingStatus === 'SUBSCRIBED'}
-            onChange={(event) =>
-              setContact((current) => ({
-                ...current,
-                smsMarketingStatus: event.target.checked ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
-              }))
-            }
-            type="checkbox"
-          />
-          SMS marketing
-        </label>
-      </fieldset>
     </>
+  );
+}
+
+function MarketingFields({
+  contact,
+  setContact,
+}: Readonly<{
+  contact: ContactDraft;
+  setContact: React.Dispatch<React.SetStateAction<ContactDraft>>;
+}>) {
+  return (
+    <fieldset className="customer-modal-marketing">
+      <legend>Marketing subscriptions</legend>
+      <label>
+        <input
+          autoFocus
+          checked={contact.emailMarketingStatus === 'SUBSCRIBED'}
+          onChange={(event) =>
+            setContact((current) => ({
+              ...current,
+              emailMarketingStatus: event.target.checked ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
+            }))
+          }
+          type="checkbox"
+        />
+        Email marketing
+      </label>
+      <label>
+        <input
+          checked={contact.smsMarketingStatus === 'SUBSCRIBED'}
+          onChange={(event) =>
+            setContact((current) => ({
+              ...current,
+              smsMarketingStatus: event.target.checked ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED',
+            }))
+          }
+          type="checkbox"
+        />
+        SMS marketing
+      </label>
+    </fieldset>
+  );
+}
+
+function CustomerTagPicker({
+  catalog,
+  error,
+  loading,
+  onAdd,
+  onQueryChange,
+  onToggle,
+  query,
+  selectedTags,
+}: Readonly<{
+  catalog: string[];
+  error?: string;
+  loading: boolean;
+  onAdd: (tag: string) => void;
+  onQueryChange: (query: string) => void;
+  onToggle: (tag: string) => void;
+  query: string;
+  selectedTags: string[];
+}>) {
+  const options = filterTagOptions(catalog, selectedTags, query);
+  const resultCount = options.selected.length + options.available.length;
+  return (
+    <div className="customer-tag-picker">
+      <label htmlFor="customer-tag-search">Tags</label>
+      <div className="customer-tag-search-row">
+        <SearchIcon />
+        <input
+          autoComplete="off"
+          autoFocus
+          id="customer-tag-search"
+          maxLength={48}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Search or add tags"
+          type="search"
+          value={query}
+        />
+        {query ? (
+          <button aria-label="Clear tag search" onClick={() => onQueryChange('')} type="button">
+            ×
+          </button>
+        ) : null}
+      </div>
+      <div className="customer-tag-results">
+        {query ? (
+          <p className="customer-tag-result-count">
+            {resultCount} {resultCount === 1 ? 'result' : 'results'}
+          </p>
+        ) : null}
+        {loading ? <p className="customer-tag-picker-status">Loading customer tags…</p> : null}
+        {error ? (
+          <p className="customer-tag-picker-status error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {options.selected.map((tag) => (
+          <TagOption checked key={`selected-${tag}`} onChange={() => onToggle(tag)} tag={tag} />
+        ))}
+        {options.available.map((tag) => (
+          <TagOption
+            checked={false}
+            key={`available-${tag}`}
+            onChange={() => onToggle(tag)}
+            tag={tag}
+          />
+        ))}
+        {options.addable ? (
+          <button
+            className="customer-tag-add-option"
+            disabled={selectedTags.length >= 20 || options.addable.length > 48}
+            onClick={() => onAdd(options.addable!)}
+            type="button"
+          >
+            <span aria-hidden="true">＋</span> Add “{options.addable}”
+          </button>
+        ) : null}
+        {!loading && !error && !resultCount && !options.addable ? (
+          <p className="customer-tag-picker-status">No customer tags found.</p>
+        ) : null}
+      </div>
+      <small>{selectedTags.length} of 20 tags selected</small>
+    </div>
+  );
+}
+
+function TagOption({
+  checked,
+  onChange,
+  tag,
+}: Readonly<{ checked: boolean; onChange: () => void; tag: string }>) {
+  return (
+    <label className={checked ? 'selected' : undefined}>
+      <input checked={checked} onChange={onChange} type="checkbox" />
+      <span>{tag}</span>
+    </label>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <circle cx="8.5" cy="8.5" r="5.2" />
+      <path d="m12.4 12.4 4 4" />
+    </svg>
   );
 }
 
@@ -308,4 +528,20 @@ function ModalField({
       {children}
     </label>
   );
+}
+
+function modalTitle(modal: CustomerDetailModalName) {
+  if (modal === 'customer') return 'Edit contact information';
+  if (modal === 'address') return 'Manage default address';
+  if (modal === 'marketing') return 'Edit marketing settings';
+  if (modal === 'tags') return 'Edit customer tags';
+  return 'Add customer note';
+}
+
+function successMessage(modal: CustomerDetailModalName) {
+  if (modal === 'customer') return 'Customer updated.';
+  if (modal === 'address') return 'Default address updated.';
+  if (modal === 'marketing') return 'Marketing preferences updated.';
+  if (modal === 'tags') return 'Customer tags updated.';
+  return 'Internal note added.';
 }

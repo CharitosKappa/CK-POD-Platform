@@ -1,4 +1,6 @@
 export type MarketingStatus = 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
+export type CustomerLocale = 'en';
+export type CustomerLocaleSource = 'DEFAULT' | 'BROWSER' | 'CUSTOMER' | 'ADMIN';
 export type CustomerView =
   | 'ALL'
   | 'RECENTLY_ADDED'
@@ -93,6 +95,8 @@ export type CustomerDetail = {
   lastDesignAt: string | null;
   emailMarketingStatus: MarketingStatus;
   smsMarketingStatus: MarketingStatus;
+  preferredLocale: CustomerLocale;
+  preferredLocaleSource: CustomerLocaleSource;
   addresses: Array<{
     id: string;
     recipientName: string;

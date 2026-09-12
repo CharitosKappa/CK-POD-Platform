@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { detectCustomerLocale } from '@let-it-be/domain';
 
 import { handleRouteError } from '../../../../../lib/http';
 import { commerceRuntime, requireSession } from '../../../../../lib/platform';
@@ -25,6 +26,7 @@ export async function POST(
       ...(typeof body.phone === 'string' && body.phone ? { phone: body.phone } : {}),
       ...(typeof body.line2 === 'string' && body.line2 ? { line2: body.line2 } : {}),
       ...(body.saveToAccount === true ? { saveToAccount: true } : {}),
+      preferredLocale: detectCustomerLocale(request.headers.get('accept-language')),
     });
     return NextResponse.json({ addressId }, { status: 201 });
   } catch (error) {

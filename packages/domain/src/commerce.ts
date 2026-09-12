@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
 import { recordCustomerTouchpoint } from './customer-operations';
+import type { CustomerLocale } from './customer-contracts';
 
 import type { ActiveSession } from './identity';
 import type { FulfillmentService, NormalizedShippingQuote } from './fulfillment-contracts';
@@ -56,6 +57,7 @@ export interface ShippingAddressInput {
   postalCode: string;
   countryCode: string;
   saveToAccount?: boolean;
+  preferredLocale?: CustomerLocale;
 }
 
 export interface BillingAddressInput {
@@ -555,25 +557,33 @@ export class CommerceService {
   ): Promise<string> {
     await this.cart(session, cartId);
     validateAddress(input);
-    const result = await this.pool.query<{ id: string }>(
-      `INSERT INTO app.shipping_addresses (
-         cart_id, recipient_name, email, phone, line1, line2, city, state_code, postal_code, country_code, save_to_account
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-      [
-        cartId,
-        input.recipientName.trim(),
-        input.email.trim().toLowerCase(),
-        input.phone?.trim() || null,
-        input.line1.trim(),
-        input.line2?.trim() || null,
-        input.city.trim(),
-        input.stateCode.trim().toUpperCase(),
-        input.postalCode.trim(),
-        input.countryCode.trim().toUpperCase(),
-        input.saveToAccount === true,
-      ],
-    );
-    return requireRow(result.rows[0], 'Could not save your shipping address.').id;
+    return withTransaction(this.pool, async (client) => {
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO app.shipping_addresses (
+           cart_id, recipient_name, email, phone, line1, line2, city, state_code, postal_code, country_code, save_to_account
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+        [
+          cartId,
+          input.recipientName.trim(),
+          input.email.trim().toLowerCase(),
+          input.phone?.trim() || null,
+          input.line1.trim(),
+          input.line2?.trim() || null,
+          input.city.trim(),
+          input.stateCode.trim().toUpperCase(),
+          input.postalCode.trim(),
+          input.countryCode.trim().toUpperCase(),
+          input.saveToAccount === true,
+        ],
+      );
+      await recordCustomerTouchpoint(client, {
+        email: input.email,
+        source: 'CHECKOUT',
+        userId: session.userId,
+        ...(input.preferredLocale ? { preferredLocale: input.preferredLocale } : {}),
+      });
+      return requireRow(result.rows[0], 'Could not save your shipping address.').id;
+    });
   }
 
   async startCheckout(

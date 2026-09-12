@@ -2,6 +2,7 @@ import { type SqlPool, withTransaction } from '@let-it-be/db';
 import type { PaymentService } from './commerce-contracts';
 import type { ActiveSession } from './identity';
 import { hashLifecycleIdentifier } from './privacy-lifecycle';
+import type { CustomerLocale } from './customer-contracts';
 
 export type LifecycleClassification = 'TRANSACTIONAL' | 'MARKETING';
 export type LifecycleMessageType =
@@ -46,6 +47,7 @@ export interface LifecycleMessagingService {
     type: LifecycleMessageType;
     classification: LifecycleClassification;
     recipientEmail: string;
+    preferredLocale: CustomerLocale;
     idempotencyKey: string;
     payload: Record<string, unknown>;
   }): Promise<{ providerMessageId: string }>;
@@ -79,8 +81,16 @@ export class KlaviyoLifecycleMessagingService implements LifecycleMessagingServi
           type: 'event',
           attributes: {
             metric: { data: { type: 'metric', attributes: { name: `let-it-be.${input.type}` } } },
-            profile: { data: { type: 'profile', attributes: { email: input.recipientEmail } } },
-            properties: input.payload,
+            profile: {
+              data: {
+                type: 'profile',
+                attributes: {
+                  email: input.recipientEmail,
+                  properties: { preferred_locale: input.preferredLocale },
+                },
+              },
+            },
+            properties: { ...input.payload, preferredLocale: input.preferredLocale },
           },
         },
       }),
@@ -264,6 +274,13 @@ export class LifecycleOrchestrator {
       );
       if (suppression.rows[0]) return;
     }
+    const localeResult = await this.pool.query<{ preferred_locale: CustomerLocale }>(
+      `SELECT preferred_locale FROM app.customer_profiles
+       WHERE normalized_email = lower(trim($1)) LIMIT 1`,
+      [input.recipientEmail],
+    );
+    const preferredLocale = localeResult.rows[0]?.preferred_locale ?? 'en';
+    const deliveryPayload = { ...input.payload, preferredLocale };
     const pending = await this.pool.query<{ id: string }>(
       `INSERT INTO app.lifecycle_deliveries (message_type, channel, classification, recipient_email, order_id, project_id, idempotency_key, provider, status, payload)
        VALUES ($1, 'EMAIL', $2, $3, $4::uuid, $5::uuid, $6, $7, 'PENDING', $8::jsonb)
@@ -276,13 +293,13 @@ export class LifecycleOrchestrator {
         input.projectId ?? null,
         input.idempotencyKey,
         this.provider,
-        JSON.stringify(input.payload),
+        JSON.stringify(deliveryPayload),
       ],
     );
     const row = pending.rows[0];
     if (!row) return;
     try {
-      const sent = await this.messaging.send(input);
+      const sent = await this.messaging.send({ ...input, preferredLocale });
       await this.pool.query(
         `UPDATE app.lifecycle_deliveries SET status = 'SENT', provider_message_id = $2, sent_at = now(), updated_at = now() WHERE id = $1`,
         [row.id, sent.providerMessageId],

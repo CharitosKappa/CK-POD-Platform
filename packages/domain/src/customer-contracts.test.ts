@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   customerSorts,
   customerViews,
+  detectCustomerLocale,
   escapeCustomerCsv,
+  normalizeCustomerLocale,
   normalizeCustomerEmail,
   normalizeCustomerTag,
 } from './customer-contracts';
@@ -17,6 +19,20 @@ describe('customer contracts', () => {
   it('normalizes bounded tags', () => {
     expect(normalizeCustomerTag('  Repeat   buyer ')).toBe('Repeat buyer');
     expect(() => normalizeCustomerTag('')).toThrow('customer tag');
+  });
+
+  it('normalizes supported customer locales and rejects unsupported values', () => {
+    expect(normalizeCustomerLocale('EN_us')).toBe('en');
+    expect(() => normalizeCustomerLocale('el-GR')).toThrow('supported customer language');
+    expect(() => normalizeCustomerLocale('fr-FR')).toThrow('supported customer language');
+  });
+
+  it('detects the highest-priority supported locale from Accept-Language', () => {
+    expect(detectCustomerLocale('fr-FR;q=0.9, el-GR;q=0.8, en-US;q=0.7')).toBe('en');
+    expect(detectCustomerLocale('en-US,en;q=0.9,el;q=0.8')).toBe('en');
+    expect(detectCustomerLocale('el-GR,el;q=0.9')).toBe('en');
+    expect(detectCustomerLocale('fr-FR,de-DE;q=0.9')).toBe('en');
+    expect(detectCustomerLocale(null)).toBe('en');
   });
 
   it('escapes CSV values safely', () => {

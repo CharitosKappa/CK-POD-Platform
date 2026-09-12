@@ -80,6 +80,12 @@ integrationSuite('M9 analytics and lifecycle integration', () => {
       .mockResolvedValue({ providerMessageId: 'fake-m9' });
     const lifecycle = new LifecycleOrchestrator(pool, { send }, 'FAKE');
     const recipientEmail = `m9-${randomBytes(6).toString('hex')}@example.test`;
+    await pool.query(
+      `INSERT INTO app.customer_profiles (
+         normalized_email, first_seen_source, preferred_locale, preferred_locale_source
+       ) VALUES ($1, 'CHECKOUT', 'en', 'BROWSER')`,
+      [recipientEmail],
+    );
     const sentKey = `welcome-${randomBytes(6).toString('hex')}`;
     await Promise.all([
       lifecycle.trigger({
@@ -98,7 +104,13 @@ integrationSuite('M9 analytics and lifecycle integration', () => {
       }),
     ]);
     expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ preferredLocale: 'en' }));
     expect(JSON.stringify(send.mock.calls[0])).not.toContain('prompt');
+    const sentDelivery = await pool.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM app.lifecycle_deliveries WHERE idempotency_key=$1`,
+      [sentKey],
+    );
+    expect(sentDelivery.rows[0]?.payload).toMatchObject({ preferredLocale: 'en' });
     const pendingKey = `cart-${randomBytes(6).toString('hex')}`;
     await pool.query(
       `INSERT INTO app.lifecycle_deliveries (message_type, channel, classification, recipient_email, idempotency_key, provider, status, payload) VALUES ('CART_ABANDONMENT','EMAIL','MARKETING',$1,$2,'FAKE','PENDING','{}'::jsonb)`,

@@ -1,3 +1,7 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+
 import type { CustomerDetail } from './customer-types';
 
 const day = new Intl.DateTimeFormat('en-US', {
@@ -9,38 +13,89 @@ const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digi
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
 type TimelineEntry = CustomerDetail['timeline'][number];
+const timelinePageSize = 10;
 
 export function CustomerTimeline({ entries }: Readonly<{ entries: CustomerDetail['timeline'] }>) {
+  const [requestedPage, setRequestedPage] = useState(1);
+  const latestEntryId = entries[0]?.id;
+  useEffect(() => setRequestedPage(1), [entries.length, latestEntryId]);
+
   if (!entries.length) return <p className="customer-empty-inline">No customer activity yet.</p>;
-  const groups = groupByDay(entries);
+  const visiblePage = timelinePage(entries, requestedPage);
   return (
-    <div className="customer-timeline customer-detailed-timeline">
-      {groups.map((group) => (
-        <section key={group.label}>
-          <h3>{group.label}</h3>
-          {group.entries.map((entry) => {
-            const content = timelineContent(entry);
-            return (
-              <article key={entry.id}>
-                <span aria-hidden="true" />
-                <div>
-                  <strong>{content.title}</strong>
-                  {content.description ? <p>{content.description}</p> : null}
-                  {entry.body && showsBodyAsDetail(entry.eventType) ? (
-                    <blockquote>{entry.body}</blockquote>
-                  ) : null}
-                  <small>
-                    {entry.actorLabel ? `By ${entry.actorLabel}` : 'Automated activity'}
-                  </small>
-                </div>
-                <time dateTime={entry.createdAt}>{time.format(new Date(entry.createdAt))}</time>
-              </article>
-            );
-          })}
-        </section>
-      ))}
-    </div>
+    <>
+      <div className="customer-timeline customer-detailed-timeline" id="customer-timeline-events">
+        {visiblePage.groups.map((group) => (
+          <section key={group.label}>
+            <h3>{group.label}</h3>
+            {group.entries.map((entry) => {
+              const content = timelineContent(entry);
+              return (
+                <article key={entry.id}>
+                  <span aria-hidden="true" />
+                  <div>
+                    <strong>{content.title}</strong>
+                    {content.description ? <p>{content.description}</p> : null}
+                    {entry.body && showsBodyAsDetail(entry.eventType) ? (
+                      <blockquote>{entry.body}</blockquote>
+                    ) : null}
+                    <small>
+                      {entry.actorLabel ? `By ${entry.actorLabel}` : 'Automated activity'}
+                    </small>
+                  </div>
+                  <time dateTime={entry.createdAt}>{time.format(new Date(entry.createdAt))}</time>
+                </article>
+              );
+            })}
+          </section>
+        ))}
+      </div>
+      {visiblePage.totalPages > 1 ? (
+        <nav aria-label="Timeline pagination" className="customer-timeline-pagination">
+          <button
+            aria-controls="customer-timeline-events"
+            disabled={visiblePage.page === 1}
+            onClick={() => setRequestedPage(visiblePage.page - 1)}
+            type="button"
+          >
+            ← Previous
+          </button>
+          <span>
+            <strong>
+              Page {visiblePage.page} of {visiblePage.totalPages}
+            </strong>
+            <small>
+              {visiblePage.start}–{visiblePage.end} of {visiblePage.total}
+            </small>
+          </span>
+          <button
+            aria-controls="customer-timeline-events"
+            disabled={visiblePage.page === visiblePage.totalPages}
+            onClick={() => setRequestedPage(visiblePage.page + 1)}
+            type="button"
+          >
+            Next →
+          </button>
+        </nav>
+      ) : null}
+    </>
   );
+}
+
+export function timelinePage(entries: CustomerDetail['timeline'], requestedPage: number) {
+  const total = entries.length;
+  const totalPages = Math.max(1, Math.ceil(total / timelinePageSize));
+  const page = Math.min(Math.max(1, Math.trunc(requestedPage) || 1), totalPages);
+  const startIndex = (page - 1) * timelinePageSize;
+  const pageEntries = entries.slice(startIndex, startIndex + timelinePageSize);
+  return {
+    page,
+    totalPages,
+    start: total ? startIndex + 1 : 0,
+    end: Math.min(startIndex + timelinePageSize, total),
+    total,
+    groups: groupByDay(pageEntries),
+  };
 }
 
 export function timelineContent(entry: TimelineEntry): {

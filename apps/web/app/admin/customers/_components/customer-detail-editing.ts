@@ -1,4 +1,4 @@
-import type { CustomerDetail, MarketingStatus } from './customer-types';
+import type { CustomerDetail, CustomerLocale, MarketingStatus } from './customer-types';
 
 export type ContactDraft = {
   firstName: string;
@@ -7,6 +7,7 @@ export type ContactDraft = {
   phone: string;
   emailMarketingStatus: MarketingStatus;
   smsMarketingStatus: MarketingStatus;
+  preferredLocale: CustomerLocale;
 };
 
 export type AddressDraft = {
@@ -26,6 +27,7 @@ export function contactDraftFrom(customer: CustomerDetail): ContactDraft {
     phone: customer.phone ?? '',
     emailMarketingStatus: customer.emailMarketingStatus,
     smsMarketingStatus: customer.smsMarketingStatus,
+    preferredLocale: customer.preferredLocale,
   };
 }
 
@@ -56,6 +58,7 @@ export function addressUpdatePayload(customer: CustomerDetail, draft: AddressDra
     phone: customer.phone ?? '',
     emailMarketingStatus: customer.emailMarketingStatus,
     smsMarketingStatus: customer.smsMarketingStatus,
+    preferredLocale: customer.preferredLocale,
     address: draft,
   };
 }

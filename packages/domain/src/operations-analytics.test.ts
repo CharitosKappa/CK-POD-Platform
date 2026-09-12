@@ -14,6 +14,7 @@ describe('lifecycle messaging adapters', () => {
       type: 'ORDER_CONFIRMATION',
       classification: 'TRANSACTIONAL',
       recipientEmail: 'customer@example.test',
+      preferredLocale: 'en',
       idempotencyKey: 'order-confirmation:order-1',
       payload: { orderNumber: 'LIB-1' },
     });
@@ -35,17 +36,21 @@ describe('lifecycle messaging adapters', () => {
         type: 'WELCOME',
         classification: 'MARKETING',
         recipientEmail: 'customer@example.test',
+        preferredLocale: 'en',
         idempotencyKey: 'welcome:1',
         payload: { projectId: 'project-1' },
       }),
     ).resolves.toEqual({ providerMessageId: 'req-1' });
     expect(String(fetch.mock.calls[0]?.[1]?.body)).not.toContain('production');
     expect(String(fetch.mock.calls[0]?.[1]?.body)).not.toContain('prompt');
+    expect(String(fetch.mock.calls[0]?.[1]?.body)).toContain('preferred_locale');
+    expect(String(fetch.mock.calls[0]?.[1]?.body)).toContain('en');
   });
 
   it('suppresses marketing with the kill switch without suppressing transactional delivery', async () => {
     const query = vi
       .fn()
+      .mockResolvedValueOnce({ rows: [{ preferred_locale: 'en' }] })
       .mockResolvedValueOnce({ rows: [{ id: 'delivery-1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
     const send = vi.fn().mockResolvedValue({ providerMessageId: 'transactional-1' });
@@ -68,6 +73,9 @@ describe('lifecycle messaging adapters', () => {
       payload: { orderNumber: 'LIB-1' },
     });
     expect(send).toHaveBeenCalledOnce();
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ preferredLocale: 'en', payload: { orderNumber: 'LIB-1' } }),
+    );
   });
 });

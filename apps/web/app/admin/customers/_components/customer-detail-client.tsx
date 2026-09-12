@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { customerDisplayName, customerDuration } from './customer-detail-format';
 import { CustomerDetailModal, type CustomerDetailModalName } from './customer-detail-modals';
+import { CustomerDetailSidebar } from './customer-detail-sidebar';
 import { CustomerTimeline } from './customer-detail-timeline';
 import type { CustomerDetail } from './customer-types';
 
@@ -23,9 +24,6 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
-  const [note, setNote] = useState('');
-  const [tagDraft, setTagDraft] = useState('');
-  const [saving, setSaving] = useState<'note' | 'tags'>();
   const [modal, setModal] = useState<CustomerDetailModalName>();
 
   const load = useCallback(
@@ -40,7 +38,6 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
         if (!response.ok || !payload.customer)
           throw new Error(payload.error ?? 'Could not load customer.');
         setCustomer(payload.customer);
-        setTagDraft(payload.customer.tags.join(', '));
       } catch (reason) {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
         setError(reason instanceof Error ? reason.message : 'Could not load customer.');
@@ -59,51 +56,6 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('saved')) setFeedback('Customer saved.');
   }, []);
-
-  async function saveNote() {
-    if (!note.trim()) return;
-    setSaving('note');
-    setFeedback(undefined);
-    try {
-      const response = await fetch(`/api/admin/customers/${customerId}/notes`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ body: note }),
-      });
-      const payload = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? 'Could not add note.');
-      setNote('');
-      setFeedback('Internal note added.');
-      await load();
-    } catch (reason) {
-      setFeedback(reason instanceof Error ? reason.message : 'Could not add note.');
-    } finally {
-      setSaving(undefined);
-    }
-  }
-  async function saveTags() {
-    setSaving('tags');
-    setFeedback(undefined);
-    try {
-      const tags = tagDraft
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      const response = await fetch(`/api/admin/customers/${customerId}/tags`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tags }),
-      });
-      const payload = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? 'Could not update tags.');
-      setFeedback('Customer tags updated.');
-      await load();
-    } catch (reason) {
-      setFeedback(reason instanceof Error ? reason.message : 'Could not update tags.');
-    } finally {
-      setSaving(undefined);
-    }
-  }
 
   async function handleModalSaved(message: string) {
     setFeedback(message);
@@ -268,120 +220,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
             </details>
           ) : null}
         </div>
-        <aside className="customer-detail-side">
-          <section className="customer-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Profile</p>
-                <h2>Customer</h2>
-              </div>
-              <button onClick={() => setModal('customer')} type="button">
-                Edit
-              </button>
-            </header>
-            <dl className="customer-info-list">
-              <Info label="Email" value={customer.email} />
-              <Info label="Phone" value={customer.phone ?? 'Not provided'} />
-              <Info label="Email marketing" value={marketingLabel(customer.emailMarketingStatus)} />
-              <Info label="SMS marketing" value={marketingLabel(customer.smsMarketingStatus)} />
-            </dl>
-          </section>
-          <section className="customer-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Shipping</p>
-                <h2>Default address</h2>
-              </div>
-              <button onClick={() => setModal('address')} type="button">
-                Manage
-              </button>
-            </header>
-            {address ? (
-              <address className="customer-address">
-                <strong>{address.recipientName}</strong>
-                <span>{address.line1}</span>
-                {address.line2 ? <span>{address.line2}</span> : null}
-                <span>
-                  {address.city}
-                  {address.stateCode ? `, ${address.stateCode}` : ''} {address.postalCode}
-                </span>
-                <span>{address.countryCode}</span>
-              </address>
-            ) : (
-              <p className="customer-empty-inline">No address saved.</p>
-            )}
-          </section>
-          <section className="customer-card customer-note-side-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Private to staff</p>
-                <h2>Note</h2>
-              </div>
-            </header>
-            <div>
-              <label className="sr-only" htmlFor="customer-note">
-                Internal note
-              </label>
-              <textarea
-                id="customer-note"
-                maxLength={2000}
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                placeholder="Add context for your team…"
-              />
-              <button
-                className="customer-button secondary"
-                disabled={!note.trim() || saving === 'note'}
-                onClick={() => void saveNote()}
-                type="button"
-              >
-                {saving === 'note' ? 'Adding…' : 'Add note'}
-              </button>
-            </div>
-          </section>
-          <section className="customer-card customer-tags-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Organization</p>
-                <h2>Tags</h2>
-              </div>
-            </header>
-            <label htmlFor="customer-tags">Comma-separated tags</label>
-            <input
-              id="customer-tags"
-              value={tagDraft}
-              onChange={(event) => setTagDraft(event.target.value)}
-              placeholder="VIP, creator"
-            />
-            <button
-              className="customer-button secondary"
-              type="button"
-              disabled={saving === 'tags'}
-              onClick={() => void saveTags()}
-            >
-              {saving === 'tags' ? 'Saving…' : 'Save tags'}
-            </button>
-          </section>
-          <section className="customer-card">
-            <header className="customer-card-header">
-              <div>
-                <p>Creative history</p>
-                <h2>Design activity</h2>
-              </div>
-            </header>
-            <dl className="customer-info-list">
-              <Info label="Saved designs" value={String(customer.savedDesignCount)} />
-              <Info
-                label="Last created"
-                value={
-                  customer.lastDesignAt
-                    ? date.format(new Date(customer.lastDesignAt))
-                    : 'No designs yet'
-                }
-              />
-            </dl>
-          </section>
-        </aside>
+        <CustomerDetailSidebar customer={customer} onAction={setModal} />
       </div>
       {modal ? (
         <CustomerDetailModal
@@ -401,14 +240,6 @@ function Metric({ label, value }: Readonly<{ label: string; value: string }>) {
     <div>
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
-  );
-}
-function Info({ label, value }: Readonly<{ label: string; value: string }>) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
     </div>
   );
 }
@@ -455,9 +286,4 @@ function fulfillmentStatusLabel(status: string) {
   )
     return 'Unfulfilled';
   return statusLabel(status);
-}
-function marketingLabel(value: string) {
-  if (value === 'SUBSCRIBED') return 'Subscribed';
-  if (value === 'NOT_SUBSCRIBED') return 'Not subscribed';
-  return 'Not recorded';
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SqlPool } from '@let-it-be/db';
 
-import { CustomerOperationsService } from './customer-operations';
+import { CustomerOperationsService, recordCustomerTouchpoint } from './customer-operations';
 
 const actor = {
   staffMemberId: '00000000-0000-4000-8000-000000000001',
@@ -68,6 +68,35 @@ describe('customer lifecycle views', () => {
   });
 });
 
+describe('customer tag catalog', () => {
+  it('returns the complete customer tag list in case-insensitive alphabetical order', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ value: 'Big Spender' }, { value: 'newsletter' }, { value: 'VIP' }],
+    });
+    const service = new CustomerOperationsService({ query } as unknown as SqlPool);
+
+    await expect(service.listTags(actor)).resolves.toEqual(['Big Spender', 'newsletter', 'VIP']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY lower(value), value'));
+  });
+});
+
+describe('customer preferred language', () => {
+  it('records browser language without allowing it to overwrite an explicit preference', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+
+    await recordCustomerTouchpoint({ query } as never, {
+      email: ' Maria@Example.test ',
+      source: 'CHECKOUT',
+      preferredLocale: 'en',
+    });
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("preferred_locale_source IN ('ADMIN', 'CUSTOMER')"),
+      ['maria@example.test', null, 'CHECKOUT', 'en', 'BROWSER'],
+    );
+  });
+});
+
 describe('customer detail commerce summary', () => {
   it('maps refunded-order rate and latest-order item details', async () => {
     const createdAt = new Date('2026-09-11T18:57:00Z');
@@ -96,6 +125,8 @@ describe('customer detail commerce summary', () => {
               last_design_at: createdAt,
               email_marketing_status: 'SUBSCRIBED',
               sms_marketing_status: 'UNKNOWN',
+              preferred_locale: 'en',
+              preferred_locale_source: 'BROWSER',
             },
           ],
         };
@@ -171,6 +202,8 @@ describe('customer detail commerce summary', () => {
 
     await expect(service.getCustomer(actor, customerId)).resolves.toMatchObject({
       returnRate: 25,
+      preferredLocale: 'en',
+      preferredLocaleSource: 'BROWSER',
       orders: [
         {
           paymentStatus: 'SUCCEEDED',

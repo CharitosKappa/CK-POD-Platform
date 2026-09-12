@@ -15,6 +15,8 @@ const customer = {
   phone: '+1 415 555 1000',
   emailMarketingStatus: 'SUBSCRIBED',
   smsMarketingStatus: 'NOT_SUBSCRIBED',
+  preferredLocale: 'en',
+  preferredLocaleSource: 'BROWSER',
   addresses: [
     {
       countryCode: 'US',
@@ -33,6 +35,7 @@ describe('customer detail modal payloads', () => {
 
     expect(contactUpdatePayload(customer, draft)).toMatchObject({
       phone: '+1 415 555 2000',
+      preferredLocale: 'en',
       address: { line1: '100 Main Street', city: 'San Francisco', countryCode: 'US' },
     });
   });
@@ -44,6 +47,7 @@ describe('customer detail modal payloads', () => {
       firstName: 'Taylor',
       email: 'taylor@example.test',
       emailMarketingStatus: 'SUBSCRIBED',
+      preferredLocale: 'en',
       address: { city: 'Oakland' },
     });
   });
