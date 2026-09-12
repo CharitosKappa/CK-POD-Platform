@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { customerDisplayName, customerDuration } from './customer-detail-format';
+import { loadCustomerDetail, refreshCustomerAfterSave } from './customer-detail-loading';
 import { CustomerDetailModal, type CustomerDetailModalName } from './customer-detail-modals';
 import { CustomerDetailSidebar } from './customer-detail-sidebar';
 import { CustomerTimeline } from './customer-detail-timeline';
@@ -28,24 +29,14 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   const [modal, setModal] = useState<CustomerDetailModalName | 'storeCredit'>();
 
   const load = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true);
-      setError(undefined);
-      try {
-        const response = await fetch(`/api/admin/customers/${encodeURIComponent(customerId)}`, {
-          ...(signal ? { signal } : {}),
-        });
-        const payload = (await response.json()) as { customer?: CustomerDetail; error?: string };
-        if (!response.ok || !payload.customer)
-          throw new Error(payload.error ?? 'Could not load customer.');
-        setCustomer(payload.customer);
-      } catch (reason) {
-        if (reason instanceof DOMException && reason.name === 'AbortError') return;
-        setError(reason instanceof Error ? reason.message : 'Could not load customer.');
-      } finally {
-        if (!signal?.aborted) setLoading(false);
-      }
-    },
+    (signal?: AbortSignal) =>
+      loadCustomerDetail({
+        customerId,
+        ...(signal ? { signal } : {}),
+        setCustomer,
+        setError,
+        setLoading,
+      }),
     [customerId],
   );
 
@@ -59,8 +50,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   }, []);
 
   async function handleModalSaved(message: string) {
-    setFeedback(message);
-    await load();
+    await refreshCustomerAfterSave(message, load, setFeedback);
   }
 
   if (loading && !customer)

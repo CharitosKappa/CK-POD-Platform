@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 import type { CustomerDetail } from './customer-types';
 
@@ -269,5 +269,7 @@ function joinDetails(values: Array<string | null | undefined>) {
   return values.filter(Boolean).join(' · ') || null;
 }
 function showsBodyAsDetail(eventType: string) {
-  return ['NOTE', 'LEGACY_NOTE', 'DESIGN_GENERATION'].includes(eventType);
+  return ['NOTE', 'LEGACY_NOTE', 'DESIGN_GENERATION', 'STORE_CREDIT_ADJUSTMENT'].includes(
+    eventType,
+  );
 }

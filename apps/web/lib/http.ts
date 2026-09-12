@@ -116,7 +116,7 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (error instanceof GenerationCreditError) {
     return NextResponse.json(
-      { error: error.message, code: 'NO_GENERATION_CREDIT' },
+      { error: 'No design credits are currently available.', code: 'NO_GENERATION_CREDIT' },
       { status: 409 },
     );
   }

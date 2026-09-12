@@ -93,7 +93,9 @@ describe('store credit adjustment', () => {
     expect(markup).toContain('inputMode="decimal"');
     expect(markup).not.toContain('type="number"');
     expect(markup).toContain('USD ($)');
-    expect(markup).toContain('disabled=""');
+    const submitAction = markup.match(/<button\b[^>]*type="submit"[^>]*>Add credit<\/button>/)?.[0];
+    expect(submitAction).toBeDefined();
+    expect(submitAction).toContain('disabled=""');
     expect(markup).toContain('$25.50 USD');
     expect(markup).toContain('Add credit');
     expect(markup).toContain('Internal note (optional)');

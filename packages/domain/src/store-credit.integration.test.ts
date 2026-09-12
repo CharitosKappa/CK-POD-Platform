@@ -148,20 +148,57 @@ suite('Store Credit ledger integration', () => {
   });
 
   it('projects a real adjustment into the customer detail balance and timeline', async () => {
-    await service.adjust(
+    const addition = await service.adjust(
       actor,
       customerId,
-      adjustment({ amount: '12.50', reason: 'CUSTOMER_SERVICE' }),
+      adjustment({
+        amount: '12.50',
+        reason: 'CUSTOMER_SERVICE',
+        note: 'Replacement shipping courtesy',
+      }),
+    );
+    const deduction = await service.adjust(
+      actor,
+      customerId,
+      adjustment({
+        direction: 'DEBIT',
+        amount: '3.25',
+        reason: 'OTHER',
+        note: 'Courtesy amount correction',
+      }),
     );
 
     const detail = await customerOperations.getCustomer(actor, customerId);
 
-    expect(detail.storeCreditBalanceCents).toBe(1250);
+    expect(detail.storeCreditBalanceCents).toBe(925);
+    expect(detail.storeCreditCurrency).toBe('USD');
     expect(detail.timeline).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          id: `store-credit:${addition.entryId}`,
           eventType: 'STORE_CREDIT_ADJUSTMENT',
           actorLabel: actor.email,
+          body: 'Replacement shipping courtesy',
+          metadata: {
+            amountCents: 1250,
+            balanceAfterCents: 1250,
+            direction: 'CREDIT',
+            reason: 'CUSTOMER_SERVICE',
+            currency: 'USD',
+          },
+        }),
+        expect.objectContaining({
+          id: `store-credit:${deduction.entryId}`,
+          eventType: 'STORE_CREDIT_ADJUSTMENT',
+          actorLabel: actor.email,
+          body: 'Courtesy amount correction',
+          metadata: {
+            amountCents: -325,
+            balanceAfterCents: 925,
+            direction: 'DEBIT',
+            reason: 'OTHER',
+            currency: 'USD',
+          },
         }),
       ]),
     );

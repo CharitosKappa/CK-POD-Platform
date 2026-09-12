@@ -4,11 +4,10 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import {
   storeCreditAdjustmentErrors,
-  storeCreditAdjustmentPayload,
   storeCreditAmountCents,
-  storeCreditSubmitIntent,
+  submitStoreCreditAdjustment,
   type StoreCreditAdjustmentDraft,
-  type StoreCreditSubmitIntent,
+  type StoreCreditSubmissionState,
 } from './store-credit-adjustment';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -26,8 +25,7 @@ export function StoreCreditAdjustmentModal({
 }>) {
   const dialog = useRef<HTMLDivElement>(null);
   const firstField = useRef<HTMLInputElement>(null);
-  const intent = useRef<StoreCreditSubmitIntent | undefined>(undefined);
-  const submitting = useRef(false);
+  const submission = useRef<StoreCreditSubmissionState>({ submitting: false, intent: undefined });
   const close = useRef(onClose);
   close.current = onClose;
   const [draft, setDraft] = useState<StoreCreditAdjustmentDraft>({
@@ -39,7 +37,8 @@ export function StoreCreditAdjustmentModal({
   const [saving, setSaving] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState<string>();
-  const errors = attempted ? storeCreditAdjustmentErrors(draft) : {};
+  const validation = storeCreditAdjustmentErrors(draft);
+  const errors = attempted ? validation : {};
   const amountCents = storeCreditAmountCents(draft.amount);
   const projected =
     amountCents === null
@@ -52,7 +51,7 @@ export function StoreCreditAdjustmentModal({
     document.body.style.overflow = 'hidden';
     firstField.current?.focus();
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !submitting.current) close.current();
+      if (event.key === 'Escape' && !submission.current.submitting) close.current();
     }
     document.addEventListener('keydown', closeOnEscape);
     return () => {
@@ -66,47 +65,28 @@ export function StoreCreditAdjustmentModal({
     key: Key,
     value: StoreCreditAdjustmentDraft[Key],
   ) {
-    if (submitting.current || draft[key] === value) return;
-    intent.current = undefined;
+    if (submission.current.submitting || draft[key] === value) return;
+    submission.current.intent = undefined;
     setError(undefined);
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting.current) return;
+    if (submission.current.submitting) return;
     setAttempted(true);
-    const validation = storeCreditAdjustmentErrors(draft);
     if (Object.keys(validation).length) {
       dialog.current?.querySelector<HTMLElement>(`[name="${Object.keys(validation)[0]}"]`)?.focus();
       return;
     }
-    submitting.current = true;
-    setSaving(true);
-    setError(undefined);
-    try {
-      intent.current = storeCreditSubmitIntent(draft, intent.current);
-      const response = await fetch(
-        `/api/admin/customers/${encodeURIComponent(customerId)}/store-credit-adjustments`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(storeCreditAdjustmentPayload(draft, intent.current.idempotencyKey)),
-        },
-      );
-      const payload = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? 'Could not update store credit.');
-      await onSaved('Store credit updated.');
-      intent.current = undefined;
-      onClose();
-    } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : 'Could not update store credit. Please retry.',
-      );
-    } finally {
-      submitting.current = false;
-      setSaving(false);
-    }
+    await submitStoreCreditAdjustment(submission.current, {
+      customerId,
+      draft,
+      onSaved,
+      onClose,
+      setSaving,
+      setError,
+    });
   }
 
   function keepFocusInside(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -142,7 +122,7 @@ export function StoreCreditAdjustmentModal({
     <div
       className="customer-modal-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !submitting.current) onClose();
+        if (event.target === event.currentTarget && !submission.current.submitting) onClose();
       }}
     >
       <div
@@ -288,7 +268,7 @@ export function StoreCreditAdjustmentModal({
             </button>
             <button
               className={`customer-button ${draft.direction === 'DEBIT' ? 'customer-store-credit-deduct' : 'primary'}`}
-              disabled={saving}
+              disabled={saving || Object.keys(validation).length > 0}
               type="submit"
             >
               {saving ? 'Saving…' : draft.direction === 'CREDIT' ? 'Add credit' : 'Deduct credit'}

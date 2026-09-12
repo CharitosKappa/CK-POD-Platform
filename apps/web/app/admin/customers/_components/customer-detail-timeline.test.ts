@@ -1,6 +1,8 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { timelineContent, timelinePage } from './customer-detail-timeline';
+import { CustomerTimeline, timelineContent, timelinePage } from './customer-detail-timeline';
 
 type TimelineEntry = Parameters<typeof timelinePage>[0][number];
 
@@ -186,5 +188,29 @@ describe('customer timeline presentation', () => {
       title: 'Store credit deducted',
       description: '-$5.00 · Customer service · Balance $32.50',
     });
+  });
+
+  it('renders the Store Credit note once as detail alongside the monetary summary', () => {
+    const entry: TimelineEntry = {
+      id: 'store-credit:event-6',
+      eventType: 'STORE_CREDIT_ADJUSTMENT',
+      body: 'Replacement shipping courtesy',
+      metadata: {
+        amountCents: 1250,
+        balanceAfterCents: 3750,
+        direction: 'CREDIT',
+        reason: 'CUSTOMER_SERVICE',
+        currency: 'USD',
+      },
+      actorLabel: 'admin@letitbe.local',
+      createdAt: '2026-09-11T18:57:00Z',
+    };
+
+    const markup = renderToStaticMarkup(createElement(CustomerTimeline, { entries: [entry] }));
+
+    expect(markup).toContain('<blockquote>Replacement shipping courtesy</blockquote>');
+    expect(markup.match(/Replacement shipping courtesy/g)).toHaveLength(1);
+    expect(markup).toContain('$12.50 · Customer service · Balance $37.50');
+    expect(timelineContent(entry).description).not.toContain(entry.body);
   });
 });
