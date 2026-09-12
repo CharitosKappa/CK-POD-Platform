@@ -82,6 +82,8 @@ export const requiredApplicationTables = [
   'staff_email_challenges',
   'staff_members',
   'staff_sessions',
+  'store_credit_accounts',
+  'store_credit_ledger',
   'style_families',
   'style_preset_versions',
   'style_presets',

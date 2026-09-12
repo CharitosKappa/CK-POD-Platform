@@ -8,6 +8,11 @@ import { requiredApplicationTables } from './required-tables.js';
 const migrationsDirectory = fileURLToPath(new URL('../drizzle', import.meta.url));
 
 describe('required application tables', () => {
+  it('includes the independent Store Credit tables', () => {
+    expect(requiredApplicationTables).toContain('store_credit_accounts');
+    expect(requiredApplicationTables).toContain('store_credit_ledger');
+  });
+
   it('tracks every table created by the checked-in migrations', async () => {
     const migrationFiles = (await readdir(migrationsDirectory)).filter((fileName) =>
       fileName.endsWith('.sql'),
