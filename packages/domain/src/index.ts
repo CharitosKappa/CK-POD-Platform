@@ -43,6 +43,7 @@ export * from './ai-providers';
 export * from './ai-runtime';
 export * from './benchmark';
 export * from './credits';
+export * from './store-credit';
 export * from './editor';
 export * from './fulfillment';
 export * from './fulfillment-contracts';
