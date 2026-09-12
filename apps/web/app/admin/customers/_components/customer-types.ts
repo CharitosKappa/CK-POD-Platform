@@ -90,6 +90,8 @@ export type CustomerDetail = {
   averageOrderValueCents: number;
   returnRate: number;
   creditBalance: number;
+  storeCreditBalanceCents: number;
+  storeCreditCurrency: 'USD';
   lastOrderAt: string | null;
   savedDesignCount: number;
   lastDesignAt: string | null;

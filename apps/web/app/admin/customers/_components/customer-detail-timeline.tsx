@@ -193,6 +193,19 @@ export function timelineContent(entry: TimelineEntry): {
       ]),
     };
   }
+  if (entry.eventType === 'STORE_CREDIT_ADJUSTMENT') {
+    const direction = textValue(metadata.direction);
+    return {
+      title: direction === 'DEBIT' ? 'Store credit deducted' : 'Store credit added',
+      description: joinDetails([
+        centsValue(metadata.amountCents),
+        statusValue(metadata.reason),
+        numberValue(metadata.balanceAfterCents) === null
+          ? null
+          : `Balance ${centsValue(metadata.balanceAfterCents)}`,
+      ]),
+    };
+  }
   if (entry.eventType === 'EMAIL_DELIVERY')
     return {
       title: `${statusValue(metadata.messageType) ?? 'Lifecycle'} email ${statusValue(metadata.status)?.toLowerCase() ?? 'updated'}`,

@@ -83,6 +83,8 @@ export interface OperationsCustomerDetail {
   averageOrderValueCents: number;
   returnRate: number;
   creditBalance: number;
+  storeCreditBalanceCents: number;
+  storeCreditCurrency: 'USD';
   lastOrderAt: Date | null;
   savedDesignCount: number;
   lastDesignAt: Date | null;
@@ -396,6 +398,8 @@ export class CustomerOperationsService {
               order_summary.order_count, order_summary.total_spent_cents,
               order_summary.returned_order_count,
               order_summary.last_order_at, coalesce(credit.current_balance, 0) AS credit_balance,
+              coalesce(store_credit.current_balance_cents, 0)::int AS store_credit_balance_cents,
+              coalesce(store_credit.currency, 'USD') AS store_credit_currency,
               coalesce(designs.count, 0)::int AS saved_design_count, designs.last_design_at
        FROM app.customer_profiles cp
        LEFT JOIN app.account_profiles profile ON profile.user_id = cp.user_id
@@ -405,6 +409,8 @@ export class CustomerOperationsService {
        LEFT JOIN LATERAL (${orderSummarySql()}) order_summary ON true
        LEFT JOIN app.credit_accounts credit
          ON credit.owner_type = 'USER' AND credit.owner_user_id = cp.user_id
+       LEFT JOIN app.store_credit_accounts store_credit
+         ON store_credit.customer_profile_id = cp.id
        LEFT JOIN LATERAL (
          SELECT count(*)::int AS count, max(updated_at) AS last_design_at FROM app.projects
          WHERE owner_type = 'USER' AND owner_user_id = cp.user_id AND status <> 'ARCHIVED'
@@ -499,6 +505,8 @@ export class CustomerOperationsService {
         ? Math.round((customer.returned_order_count / customer.order_count) * 100)
         : 0,
       creditBalance: customer.credit_balance,
+      storeCreditBalanceCents: customer.store_credit_balance_cents,
+      storeCreditCurrency: customer.store_credit_currency,
       lastOrderAt: customer.last_order_at,
       savedDesignCount: customer.saved_design_count,
       lastDesignAt: customer.last_design_at,
@@ -953,10 +961,19 @@ async function customerTimeline(
   pool: SqlPool,
   customer: Pick<CustomerIdentityRow, 'id' | 'email' | 'user_id'>,
 ): Promise<OperationsCustomerDetail['timeline']> {
-  const [profile, orders, transitions, refunds, reprints, credits, generations, deliveries] =
-    await Promise.all([
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'customer:' || event.id::text AS id, event.event_type, event.body,
+  const [
+    profile,
+    orders,
+    transitions,
+    refunds,
+    reprints,
+    credits,
+    storeCredits,
+    generations,
+    deliveries,
+  ] = await Promise.all([
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'customer:' || event.id::text AS id, event.event_type, event.body,
               event.metadata, coalesce(staff.normalized_email, actor.email) AS actor_label,
               event.created_at
        FROM app.customer_timeline_events event
@@ -971,10 +988,10 @@ async function customerTimeline(
        WHERE lower(trim(note.customer_email))=$2
        ORDER BY created_at DESC
        LIMIT 150`,
-        [customer.id, customer.email],
-      ),
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'order:' || orders.id::text AS id, 'ORDER_PLACED' AS event_type, NULL AS body,
+      [customer.id, customer.email],
+    ),
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'order:' || orders.id::text AS id, 'ORDER_PLACED' AS event_type, NULL AS body,
               jsonb_build_object(
                 'orderNumber', orders.order_number,
                 'totalCents', coalesce((orders.pricing_snapshot->>'totalCents')::int,0),
@@ -985,10 +1002,10 @@ async function customerTimeline(
        WHERE lower(trim(orders.customer_email))=$1
        ORDER BY orders.created_at DESC
        LIMIT 150`,
-        [customer.email],
-      ),
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'order-state:' || history.id::text AS id, 'ORDER_STATUS_CHANGED' AS event_type,
+      [customer.email],
+    ),
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'order-state:' || history.id::text AS id, 'ORDER_STATUS_CHANGED' AS event_type,
               history.reason AS body,
               jsonb_build_object(
                 'orderNumber', orders.order_number,
@@ -1005,10 +1022,10 @@ async function customerTimeline(
        WHERE lower(trim(orders.customer_email))=$1
        ORDER BY history.created_at DESC
        LIMIT 150`,
-        [customer.email],
-      ),
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'refund:' || refund.id::text AS id, 'REFUND' AS event_type, refund.notes AS body,
+      [customer.email],
+    ),
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'refund:' || refund.id::text AS id, 'REFUND' AS event_type, refund.notes AS body,
               jsonb_build_object(
                 'orderNumber', orders.order_number,
                 'amountCents', refund.amount_cents,
@@ -1022,10 +1039,10 @@ async function customerTimeline(
        WHERE lower(trim(orders.customer_email))=$1
        ORDER BY refund.created_at DESC
        LIMIT 150`,
-        [customer.email],
-      ),
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'reprint:' || reprint.id::text AS id, 'REPRINT' AS event_type, reprint.notes AS body,
+      [customer.email],
+    ),
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'reprint:' || reprint.id::text AS id, 'REPRINT' AS event_type, reprint.notes AS body,
               jsonb_build_object(
                 'orderNumber', orders.order_number,
                 'reasonCode', reprint.reason_code,
@@ -1039,11 +1056,11 @@ async function customerTimeline(
        WHERE lower(trim(orders.customer_email))=$1
        ORDER BY reprint.created_at DESC
        LIMIT 150`,
-        [customer.email],
-      ),
-      customer.user_id
-        ? pool.query<CustomerTimelineRow>(
-            `SELECT 'credit:' || ledger.id::text AS id, 'CREDIT_LEDGER' AS event_type,
+      [customer.email],
+    ),
+    customer.user_id
+      ? pool.query<CustomerTimelineRow>(
+          `SELECT 'credit:' || ledger.id::text AS id, 'CREDIT_LEDGER' AS event_type,
                   NULL AS body,
                   jsonb_build_object(
                     'entryType', ledger.entry_type,
@@ -1057,12 +1074,34 @@ async function customerTimeline(
            WHERE account.owner_type='USER' AND account.owner_user_id=$1
            ORDER BY ledger.created_at DESC
            LIMIT 150`,
-            [customer.user_id],
-          )
-        : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
-      customer.user_id
-        ? pool.query<CustomerTimelineRow>(
-            `SELECT 'generation:' || generation.id::text AS id,
+          [customer.user_id],
+        )
+      : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
+    pool.query<CustomerTimelineRow>(
+      `SELECT
+           'store-credit:' || ledger.id::text AS id,
+           'STORE_CREDIT_ADJUSTMENT' AS event_type,
+           ledger.note AS body,
+           jsonb_build_object(
+             'amountCents', ledger.amount_cents,
+             'balanceAfterCents', ledger.balance_after_cents,
+             'direction', ledger.entry_type,
+             'reason', ledger.reason,
+             'currency', account.currency
+           ) AS metadata,
+           staff.normalized_email AS actor_label,
+           ledger.created_at
+         FROM app.store_credit_ledger ledger
+         JOIN app.store_credit_accounts account ON account.id = ledger.store_credit_account_id
+         JOIN app.staff_members staff ON staff.id = ledger.actor_staff_member_id
+         WHERE account.customer_profile_id = $1
+         ORDER BY ledger.created_at DESC
+         LIMIT 150`,
+      [customer.id],
+    ),
+    customer.user_id
+      ? pool.query<CustomerTimelineRow>(
+          `SELECT 'generation:' || generation.id::text AS id,
                     'DESIGN_GENERATION' AS event_type, generation.raw_prompt AS body,
                     jsonb_build_object(
                       'status', generation.status,
@@ -1075,11 +1114,11 @@ async function customerTimeline(
              WHERE generation.requested_by_user_id=$1
              ORDER BY generation.created_at DESC
              LIMIT 150`,
-            [customer.user_id],
-          )
-        : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
-      pool.query<CustomerTimelineRow>(
-        `SELECT 'delivery:' || delivery.id::text AS id, 'EMAIL_DELIVERY' AS event_type,
+          [customer.user_id],
+        )
+      : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
+    pool.query<CustomerTimelineRow>(
+      `SELECT 'delivery:' || delivery.id::text AS id, 'EMAIL_DELIVERY' AS event_type,
               NULL AS body,
               jsonb_build_object(
                 'messageType', delivery.message_type,
@@ -1093,11 +1132,21 @@ async function customerTimeline(
        WHERE lower(trim(delivery.recipient_email))=$1
        ORDER BY delivery.created_at DESC
        LIMIT 150`,
-        [customer.email],
-      ),
-    ]);
+      [customer.email],
+    ),
+  ]);
 
-  return [profile, orders, transitions, refunds, reprints, credits, generations, deliveries]
+  return [
+    profile,
+    orders,
+    transitions,
+    refunds,
+    reprints,
+    credits,
+    storeCredits,
+    generations,
+    deliveries,
+  ]
     .flatMap((result) => result.rows)
     .sort((left, right) => right.created_at.getTime() - left.created_at.getTime())
     .slice(0, 150)
@@ -1282,6 +1331,8 @@ interface CustomerIdentityRow {
   total_spent_cents: number;
   returned_order_count: number;
   credit_balance: number;
+  store_credit_balance_cents: number;
+  store_credit_currency: 'USD';
   last_order_at: Date | null;
   saved_design_count: number;
   last_design_at: Date | null;

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createDatabaseClient } from '@let-it-be/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { CustomerOperationsService } from './customer-operations';
 import {
   StoreCreditConflictError,
   StoreCreditService,
@@ -16,6 +17,7 @@ const suite = process.env.DATABASE_URL ? describe : describe.skip;
 suite('Store Credit ledger integration', () => {
   const database = createDatabaseClient(process.env.DATABASE_URL!);
   const service = new StoreCreditService(database.pool);
+  const customerOperations = new CustomerOperationsService(database.pool);
   const customerIds: string[] = [];
   let customerId: string;
   const actor: StoreCreditStaffActor = {
@@ -143,6 +145,26 @@ suite('Store Credit ledger integration', () => {
         balance_after_cents: 1234,
       },
     ]);
+  });
+
+  it('projects a real adjustment into the customer detail balance and timeline', async () => {
+    await service.adjust(
+      actor,
+      customerId,
+      adjustment({ amount: '12.50', reason: 'CUSTOMER_SERVICE' }),
+    );
+
+    const detail = await customerOperations.getCustomer(actor, customerId);
+
+    expect(detail.storeCreditBalanceCents).toBe(1250);
+    expect(detail.timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'STORE_CREDIT_ADJUSTMENT',
+          actorLabel: actor.email,
+        }),
+      ]),
+    );
   });
 
   it('applies simultaneous retries only once when lazily creating an account', async () => {

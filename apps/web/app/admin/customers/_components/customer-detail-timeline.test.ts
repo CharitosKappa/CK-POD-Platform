@@ -119,4 +119,46 @@ describe('customer timeline presentation', () => {
       description: '$39.99 · Succeeded · Customer request',
     });
   });
+
+  it('describes Store Credit additions in USD with their resulting balance', () => {
+    expect(
+      timelineContent({
+        id: 'store-credit:event-4',
+        eventType: 'STORE_CREDIT_ADJUSTMENT',
+        body: null,
+        metadata: {
+          amountCents: 1250,
+          balanceAfterCents: 3750,
+          direction: 'CREDIT',
+          reason: 'CUSTOMER_SERVICE',
+        },
+        actorLabel: 'admin@letitbe.local',
+        createdAt: '2026-09-11T18:57:00Z',
+      }),
+    ).toEqual({
+      title: 'Store credit added',
+      description: '$12.50 · Customer service · Balance $37.50',
+    });
+  });
+
+  it('describes Store Credit deductions in USD with their resulting balance', () => {
+    expect(
+      timelineContent({
+        id: 'store-credit:event-5',
+        eventType: 'STORE_CREDIT_ADJUSTMENT',
+        body: null,
+        metadata: {
+          amountCents: -500,
+          balanceAfterCents: 3250,
+          direction: 'DEBIT',
+          reason: 'CUSTOMER_SERVICE',
+        },
+        actorLabel: 'admin@letitbe.local',
+        createdAt: '2026-09-11T18:58:00Z',
+      }),
+    ).toEqual({
+      title: 'Store credit deducted',
+      description: '-$5.00 · Customer service · Balance $32.50',
+    });
+  });
 });

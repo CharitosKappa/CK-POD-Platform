@@ -120,6 +120,8 @@ describe('customer detail commerce summary', () => {
               total_spent_cents: 16_000,
               returned_order_count: 1,
               credit_balance: 2,
+              store_credit_balance_cents: 2599,
+              store_credit_currency: 'USD',
               last_order_at: createdAt,
               saved_design_count: 1,
               last_design_at: createdAt,
@@ -202,6 +204,9 @@ describe('customer detail commerce summary', () => {
 
     await expect(service.getCustomer(actor, customerId)).resolves.toMatchObject({
       returnRate: 25,
+      creditBalance: 2,
+      storeCreditBalanceCents: 2599,
+      storeCreditCurrency: 'USD',
       preferredLocale: 'en',
       preferredLocaleSource: 'BROWSER',
       orders: [
@@ -238,5 +243,7 @@ describe('customer detail commerce summary', () => {
     const identitySql = query.mock.calls.find(([sql]) => String(sql).includes('WHERE cp.id = $1'));
     expect(identitySql?.[0]).toContain('order_summary.returned_order_count');
     expect(identitySql?.[0]).toContain("refund.status='SUCCEEDED'");
+    expect(identitySql?.[0]).toContain('LEFT JOIN app.store_credit_accounts store_credit');
+    expect(identitySql?.[0]).toContain('coalesce(store_credit.current_balance_cents, 0)::int');
   });
 });

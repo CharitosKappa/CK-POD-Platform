@@ -21,6 +21,8 @@ const customer: CustomerDetail = {
   averageOrderValueCents: 3999,
   returnRate: 0,
   creditBalance: 4,
+  storeCreditBalanceCents: 0,
+  storeCreditCurrency: 'USD',
   lastOrderAt: '2026-09-11T18:57:00Z',
   savedDesignCount: 3,
   lastDesignAt: '2026-09-11T17:00:00Z',
