@@ -23,6 +23,7 @@ const customer: CustomerDetail = {
   creditBalance: 4,
   storeCreditBalanceCents: 2550,
   storeCreditCurrency: 'USD',
+  storeCreditTransactionCount: 2,
   lastOrderAt: '2026-09-11T18:57:00Z',
   savedDesignCount: 3,
   lastDesignAt: '2026-09-11T17:00:00Z',
@@ -113,14 +114,27 @@ describe('customer detail sidebar', () => {
       tags: [],
       timeline: [],
       storeCreditBalanceCents: 0,
+      storeCreditTransactionCount: 0,
     });
 
     expect(markup).toContain('Not provided');
     expect(markup).toContain('No address saved.');
     expect(markup).toContain('Marketing subscriptions');
     expect(markup).toContain('None');
-    expect(markup).toContain('$0.00 USD');
+    expect(markup).toContain('>-</p>');
+    expect(markup).not.toContain('View store credit activity');
     expect(markup).toContain('class="customer-sidebar-copy">None</p>');
+  });
+
+  it('keeps a zero-dollar balance actionable when Store Credit history exists', () => {
+    const markup = renderSidebar({
+      ...customer,
+      storeCreditBalanceCents: 0,
+      storeCreditTransactionCount: 2,
+    });
+
+    expect(markup).toContain('$0.00 USD');
+    expect(markup).toContain('aria-label="View store credit activity"');
   });
 });
 

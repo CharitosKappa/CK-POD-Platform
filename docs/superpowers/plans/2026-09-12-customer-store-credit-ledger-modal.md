@@ -24,11 +24,13 @@
 ### Task 1: Domain Store Credit history contracts and queries
 
 **Files:**
+
 - Modify: `packages/domain/src/customer-operations.ts`
 - Modify: `packages/domain/src/customer-operations.test.ts`
 - Modify: `packages/domain/src/store-credit.integration.test.ts`
 
 **Interfaces:**
+
 - Produces: `OperationsStoreCreditLedger`, `StoreCreditLedgerOptions`, `CustomerOperationsService.listStoreCreditLedger(session, customerId, options)`.
 - Extends: `OperationsCustomerDetail.storeCreditTransactionCount: number`.
 
@@ -77,7 +79,10 @@ export interface OperationsStoreCreditLedger {
   }>;
 }
 
-export interface StoreCreditLedgerOptions { page?: number; limit?: number }
+export interface StoreCreditLedgerOptions {
+  page?: number;
+  limit?: number;
+}
 ```
 
 Count ledger entries in the customer identity projection for the card and query the dedicated ledger with `LIMIT`/`OFFSET`, a total count, customer scoping, and `ORDER BY ledger.created_at DESC, ledger.id DESC`.
@@ -93,10 +98,12 @@ Run: `pnpm test -- packages/domain/src/customer-operations.test.ts packages/doma
 ### Task 2: Authenticated Store Credit ledger API
 
 **Files:**
+
 - Create: `apps/web/app/api/admin/customers/[customerId]/store-credit-ledger/route.ts`
 - Create: `apps/web/app/api/admin/customers/[customerId]/store-credit-ledger/route.test.ts`
 
 **Interfaces:**
+
 - Consumes: `CustomerOperationsService.listStoreCreditLedger(session, customerId, { page, limit })`.
 - Produces: `GET /api/admin/customers/:customerId/store-credit-ledger?page=1&limit=20` returning `{ ledger }`.
 
@@ -126,6 +133,7 @@ Run: `pnpm test -- apps/web/app/api/admin/customers/[customerId]/store-credit-le
 ### Task 3: Store Credit card state and ledger modal
 
 **Files:**
+
 - Modify: `apps/web/app/admin/customers/_components/customer-types.ts`
 - Modify: `apps/web/app/admin/customers/_components/customer-detail-sidebar.tsx`
 - Modify: `apps/web/app/admin/customers/_components/customer-detail-client.tsx`
@@ -136,6 +144,7 @@ Run: `pnpm test -- apps/web/app/api/admin/customers/[customerId]/store-credit-le
 - Modify: `apps/web/app/globals.css`
 
 **Interfaces:**
+
 - Consumes: `CustomerDetail.storeCreditTransactionCount` and the nested ledger endpoint.
 - Produces: `StoreCreditLedgerModal({ customer, onAdjust, onClose })` plus `loadStoreCreditLedger(customerId, page, signal?)`.
 
@@ -145,11 +154,15 @@ Assert these exact states:
 
 ```ts
 expect(renderSidebar({ ...customer, storeCreditTransactionCount: 0 })).toContain('>-</p>');
-expect(renderSidebar({ ...customer, storeCreditTransactionCount: 0 })).not.toContain('View store credit activity');
-expect(renderSidebar({ ...customer, storeCreditBalanceCents: 0, storeCreditTransactionCount: 2 }))
-  .toContain('$0.00 USD');
-expect(renderSidebar({ ...customer, storeCreditTransactionCount: 2 }))
-  .toContain('aria-label="View store credit activity"');
+expect(renderSidebar({ ...customer, storeCreditTransactionCount: 0 })).not.toContain(
+  'View store credit activity',
+);
+expect(
+  renderSidebar({ ...customer, storeCreditBalanceCents: 0, storeCreditTransactionCount: 2 }),
+).toContain('$0.00 USD');
+expect(renderSidebar({ ...customer, storeCreditTransactionCount: 2 })).toContain(
+  'aria-label="View store credit activity"',
+);
 ```
 
 - [ ] **Step 2: Write failing loader and modal static-state tests**
@@ -179,9 +192,11 @@ Run: `pnpm test -- apps/web/app/admin/customers/_components/customer-detail-side
 ### Task 4: Regression and completion verification
 
 **Files:**
+
 - Verify all modified files from Tasks 1–3.
 
 **Interfaces:**
+
 - Consumes: the completed domain, API, and UI implementations.
 - Produces: verified Store Credit ledger modal behavior on the CDP.
 

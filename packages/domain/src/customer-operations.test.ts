@@ -122,6 +122,7 @@ describe('customer detail commerce summary', () => {
               credit_balance: 2,
               store_credit_balance_cents: 2599,
               store_credit_currency: 'USD',
+              store_credit_transaction_count: 2,
               last_order_at: createdAt,
               saved_design_count: 1,
               last_design_at: createdAt,
@@ -207,6 +208,7 @@ describe('customer detail commerce summary', () => {
       creditBalance: 2,
       storeCreditBalanceCents: 2599,
       storeCreditCurrency: 'USD',
+      storeCreditTransactionCount: 2,
       preferredLocale: 'en',
       preferredLocaleSource: 'BROWSER',
       orders: [
@@ -245,5 +247,77 @@ describe('customer detail commerce summary', () => {
     expect(identitySql?.[0]).toContain("refund.status='SUCCEEDED'");
     expect(identitySql?.[0]).toContain('LEFT JOIN app.store_credit_accounts store_credit');
     expect(identitySql?.[0]).toContain('coalesce(store_credit.current_balance_cents, 0)::int');
+    expect(identitySql?.[0]).toContain('store_credit_transaction_count');
+  });
+});
+
+describe('customer Store Credit ledger', () => {
+  it('returns a deterministic paginated transaction history with authoritative balances', async () => {
+    const customerId = '00000000-0000-4000-8000-000000000099';
+    const createdAt = new Date('2026-09-12T14:30:00Z');
+    const query = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {
+      void parameters;
+      if (sql.includes('count(ledger.id)'))
+        return {
+          rows: [{ balance_cents: 0, currency: 'USD', total_count: 2 }],
+        };
+      if (sql.includes('FROM app.store_credit_ledger ledger'))
+        return {
+          rows: [
+            {
+              id: '00000000-0000-4000-8000-000000000120',
+              entry_type: 'DEBIT',
+              amount_cents: -2500,
+              balance_after_cents: 0,
+              reason: 'REFUND',
+              note: 'Applied to replacement order',
+              actor_label: 'operations@example.test',
+              created_at: createdAt,
+            },
+          ],
+        };
+      return { rows: [] };
+    });
+    const service = new CustomerOperationsService({ query } as unknown as SqlPool);
+
+    await expect(
+      service.listStoreCreditLedger(actor, customerId, { page: 2, limit: 20 }),
+    ).resolves.toEqual({
+      balanceCents: 0,
+      currency: 'USD',
+      total: 2,
+      page: 2,
+      limit: 20,
+      entries: [
+        {
+          id: '00000000-0000-4000-8000-000000000120',
+          entryType: 'DEBIT',
+          amountCents: 2500,
+          balanceAfterCents: 0,
+          reason: 'REFUND',
+          note: 'Applied to replacement order',
+          actorLabel: 'operations@example.test',
+          createdAt,
+        },
+      ],
+    });
+
+    const entryQuery = query.mock.calls.find(([sql]) =>
+      String(sql).includes('FROM app.store_credit_ledger ledger'),
+    );
+    expect(entryQuery?.[0]).toContain('ORDER BY ledger.created_at DESC, ledger.id DESC');
+    expect(entryQuery?.[1]).toEqual([customerId, 20, 20]);
+  });
+
+  it('rejects invalid pagination before querying customer Store Credit data', async () => {
+    const query = vi.fn();
+    const service = new CustomerOperationsService({ query } as unknown as SqlPool);
+
+    await expect(
+      service.listStoreCreditLedger(actor, '00000000-0000-4000-8000-000000000099', {
+        page: 0,
+      }),
+    ).rejects.toThrow('Enter a valid page.');
+    expect(query).not.toHaveBeenCalled();
   });
 });

@@ -172,6 +172,7 @@ suite('Store Credit ledger integration', () => {
 
     expect(detail.storeCreditBalanceCents).toBe(925);
     expect(detail.storeCreditCurrency).toBe('USD');
+    expect(detail.storeCreditTransactionCount).toBe(2);
     expect(detail.timeline).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -199,6 +200,62 @@ suite('Store Credit ledger integration', () => {
             reason: 'OTHER',
             currency: 'USD',
           },
+        }),
+      ]),
+    );
+  });
+
+  it('distinguishes no Store Credit history from a historical zero balance', async () => {
+    await expect(customerOperations.listStoreCreditLedger(actor, customerId)).resolves.toEqual({
+      balanceCents: 0,
+      currency: 'USD',
+      total: 0,
+      page: 1,
+      limit: 20,
+      entries: [],
+    });
+
+    const addition = await service.adjust(
+      actor,
+      customerId,
+      adjustment({ amount: '10.00', reason: 'PROMOTION', note: 'Welcome credit' }),
+    );
+    const deduction = await service.adjust(
+      actor,
+      customerId,
+      adjustment({
+        direction: 'DEBIT',
+        amount: '10.00',
+        reason: 'OTHER',
+        note: 'Applied to order',
+      }),
+    );
+
+    const detail = await customerOperations.getCustomer(actor, customerId);
+    const history = await customerOperations.listStoreCreditLedger(actor, customerId);
+
+    expect(detail.storeCreditBalanceCents).toBe(0);
+    expect(detail.storeCreditTransactionCount).toBe(2);
+    expect(history).toMatchObject({ balanceCents: 0, currency: 'USD', total: 2 });
+    expect(history.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: addition.entryId,
+          entryType: 'CREDIT',
+          amountCents: 1000,
+          balanceAfterCents: 1000,
+          reason: 'PROMOTION',
+          note: 'Welcome credit',
+          actorLabel: actor.email,
+        }),
+        expect.objectContaining({
+          id: deduction.entryId,
+          entryType: 'DEBIT',
+          amountCents: 1000,
+          balanceAfterCents: 0,
+          reason: 'OTHER',
+          note: 'Applied to order',
+          actorLabel: actor.email,
         }),
       ]),
     );

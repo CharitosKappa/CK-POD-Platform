@@ -3624,6 +3624,43 @@ select:focus-visible {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.customer-store-credit-card-row {
+  display: flex;
+  min-height: 30px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.customer-store-credit-ledger-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #4d5149;
+  cursor: pointer;
+}
+.customer-store-credit-ledger-button:hover,
+.customer-store-credit-ledger-button:focus-visible {
+  background: #eeefea;
+  color: #20231f;
+}
+.customer-store-credit-ledger-button:focus-visible {
+  outline: 2px solid #5a785e;
+  outline-offset: 1px;
+}
+.customer-store-credit-ledger-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
 .customer-sidebar-tags-field {
   display: flex;
   flex-wrap: wrap;
@@ -3889,6 +3926,147 @@ select:focus-visible {
 .customer-store-credit-modal button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+.customer-edit-modal.customer-store-credit-ledger-modal {
+  width: min(100%, 980px);
+}
+.customer-store-credit-ledger-modal > header > div {
+  display: grid;
+  gap: 2px;
+}
+.customer-store-credit-ledger-modal > header p {
+  margin: 0;
+  color: #777b73;
+  font-size: 0.63rem;
+  line-height: 1.2;
+}
+.customer-store-credit-ledger-summary {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(110px, 0.65fr) auto;
+  gap: 0;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #dedfd9;
+  border-radius: 10px;
+  background: #fbfbf9;
+}
+.customer-store-credit-ledger-summary > div {
+  display: grid;
+  min-height: 68px;
+  align-content: center;
+  gap: 5px;
+  padding: 12px 16px;
+  border-right: 1px solid #e4e5df;
+}
+.customer-store-credit-ledger-summary span {
+  color: #73776f;
+  font-size: 0.62rem;
+}
+.customer-store-credit-ledger-summary strong {
+  color: #282b26;
+  font-size: 0.78rem;
+  font-weight: 720;
+}
+.customer-store-credit-ledger-summary > button {
+  align-self: center;
+  margin: 0 14px;
+}
+.customer-store-credit-ledger-status {
+  margin: 18px 0 0;
+  padding: 22px;
+  border: 1px solid #e2e3dd;
+  border-radius: 9px;
+  color: #747870;
+  font-size: 0.7rem;
+  text-align: center;
+}
+.customer-store-credit-ledger-status.error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #913c31;
+  text-align: left;
+}
+.customer-store-credit-ledger-status.error p {
+  margin: 0;
+}
+.customer-store-credit-ledger-table-wrap {
+  margin-top: 16px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid #dedfd9;
+  border-radius: 10px;
+}
+.customer-store-credit-ledger-table {
+  width: 100%;
+  min-width: 790px;
+  border-collapse: collapse;
+  color: #3b3e38;
+  font-size: 0.67rem;
+  text-align: left;
+}
+.customer-store-credit-ledger-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid #dedfd9;
+  background: #f6f6f3;
+  color: #70746c;
+  font-size: 0.59rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.customer-store-credit-ledger-table td {
+  padding: 12px;
+  border-bottom: 1px solid #e7e8e2;
+  vertical-align: top;
+}
+.customer-store-credit-ledger-table tr:last-child td {
+  border-bottom: 0;
+}
+.customer-store-credit-ledger-table td:nth-child(n + 4),
+.customer-store-credit-ledger-table th:nth-child(n + 4) {
+  text-align: right;
+  white-space: nowrap;
+}
+.customer-store-credit-ledger-table td:nth-child(2) {
+  display: grid;
+  min-width: 180px;
+  gap: 3px;
+}
+.customer-store-credit-ledger-table td:nth-child(2) strong {
+  font-size: 0.69rem;
+}
+.customer-store-credit-ledger-table td:nth-child(2) span,
+.customer-store-credit-ledger-table td:nth-child(2) small {
+  color: #747870;
+  font-size: 0.61rem;
+  line-height: 1.35;
+}
+.customer-store-credit-ledger-table time,
+.customer-store-credit-ledger-table td:nth-child(3) {
+  white-space: nowrap;
+}
+.customer-store-credit-ledger-footer {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid #e2e3dd;
+  background: #fff;
+}
+.customer-store-credit-ledger-footer button:first-child {
+  justify-self: start;
+}
+.customer-store-credit-ledger-footer button:last-child {
+  justify-self: end;
+}
+.customer-store-credit-ledger-footer span {
+  color: #6d7169;
+  font-size: 0.65rem;
 }
 .customer-modal-backdrop {
   position: fixed;
@@ -4307,6 +4485,16 @@ select:focus-visible {
   .customer-edit-modal {
     max-height: calc(100vh - 24px);
     border-radius: 14px 14px 10px 10px;
+  }
+  .customer-store-credit-ledger-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .customer-store-credit-ledger-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+  .customer-store-credit-ledger-summary > button {
+    grid-column: 1 / -1;
+    margin: 12px;
   }
   .customer-modal-grid {
     grid-template-columns: 1fr;

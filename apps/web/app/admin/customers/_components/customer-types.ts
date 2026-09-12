@@ -92,6 +92,7 @@ export type CustomerDetail = {
   creditBalance: number;
   storeCreditBalanceCents: number;
   storeCreditCurrency: 'USD';
+  storeCreditTransactionCount: number;
   lastOrderAt: string | null;
   savedDesignCount: number;
   lastDesignAt: string | null;
@@ -144,4 +145,24 @@ export type CustomerDetail = {
     actorLabel: string | null;
     createdAt: string;
   }>;
+};
+
+export type StoreCreditLedgerEntry = {
+  id: string;
+  entryType: 'CREDIT' | 'DEBIT';
+  amountCents: number;
+  balanceAfterCents: number;
+  reason: 'REFUND' | 'PROMOTION' | 'CUSTOMER_SERVICE' | 'OTHER';
+  note: string | null;
+  actorLabel: string;
+  createdAt: string;
+};
+
+export type StoreCreditLedger = {
+  balanceCents: number;
+  currency: 'USD';
+  total: number;
+  page: number;
+  limit: number;
+  entries: StoreCreditLedgerEntry[];
 };

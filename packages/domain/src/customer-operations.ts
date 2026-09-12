@@ -19,6 +19,7 @@ import {
 } from './customer-contracts';
 import type { ActiveSession } from './identity';
 import type { StaffRole } from './staff-identity';
+import type { StoreCreditDirection, StoreCreditReason } from './store-credit';
 
 export type CustomerOperationsActor =
   ActiveSession | { staffMemberId: string; role: StaffRole; email: string };
@@ -85,6 +86,7 @@ export interface OperationsCustomerDetail {
   creditBalance: number;
   storeCreditBalanceCents: number;
   storeCreditCurrency: 'USD';
+  storeCreditTransactionCount: number;
   lastOrderAt: Date | null;
   savedDesignCount: number;
   lastDesignAt: Date | null;
@@ -137,6 +139,29 @@ export interface OperationsCustomerDetail {
     body: string | null;
     metadata: Record<string, unknown>;
     actorLabel: string | null;
+    createdAt: Date;
+  }>;
+}
+
+export interface StoreCreditLedgerOptions {
+  page?: number;
+  limit?: number;
+}
+
+export interface OperationsStoreCreditLedger {
+  balanceCents: number;
+  currency: 'USD';
+  total: number;
+  page: number;
+  limit: number;
+  entries: Array<{
+    id: string;
+    entryType: StoreCreditDirection;
+    amountCents: number;
+    balanceAfterCents: number;
+    reason: StoreCreditReason;
+    note: string | null;
+    actorLabel: string;
     createdAt: Date;
   }>;
 }
@@ -400,6 +425,10 @@ export class CustomerOperationsService {
               order_summary.last_order_at, coalesce(credit.current_balance, 0) AS credit_balance,
               coalesce(store_credit.current_balance_cents, 0)::int AS store_credit_balance_cents,
               coalesce(store_credit.currency, 'USD') AS store_credit_currency,
+              coalesce((
+                SELECT count(*)::int FROM app.store_credit_ledger store_credit_entry
+                WHERE store_credit_entry.store_credit_account_id = store_credit.id
+              ), 0)::int AS store_credit_transaction_count,
               coalesce(designs.count, 0)::int AS saved_design_count, designs.last_design_at
        FROM app.customer_profiles cp
        LEFT JOIN app.account_profiles profile ON profile.user_id = cp.user_id
@@ -507,6 +536,7 @@ export class CustomerOperationsService {
       creditBalance: customer.credit_balance,
       storeCreditBalanceCents: customer.store_credit_balance_cents,
       storeCreditCurrency: customer.store_credit_currency,
+      storeCreditTransactionCount: customer.store_credit_transaction_count,
       lastOrderAt: customer.last_order_at,
       savedDesignCount: customer.saved_design_count,
       lastDesignAt: customer.last_design_at,
@@ -541,6 +571,60 @@ export class CustomerOperationsService {
       })),
       tags: tags.rows.map((row) => row.value),
       timeline,
+    };
+  }
+
+  async listStoreCreditLedger(
+    session: CustomerOperationsActor,
+    customerId: string,
+    options: StoreCreditLedgerOptions = {},
+  ): Promise<OperationsStoreCreditLedger> {
+    await this.requireReadStaff(session);
+    const id = requireCustomerId(customerId);
+    const page = boundedInteger(options.page, 1, 1, 10_000, 'page');
+    const limit = boundedInteger(options.limit, 20, 1, 100, 'limit');
+    const offset = (page - 1) * limit;
+    const summary = await this.pool.query<StoreCreditLedgerSummaryRow>(
+      `SELECT coalesce(account.current_balance_cents, 0)::int AS balance_cents,
+              coalesce(account.currency, 'USD') AS currency,
+              count(ledger.id)::int AS total_count
+       FROM app.customer_profiles customer
+       LEFT JOIN app.store_credit_accounts account ON account.customer_profile_id=customer.id
+       LEFT JOIN app.store_credit_ledger ledger ON ledger.store_credit_account_id=account.id
+       WHERE customer.id=$1
+       GROUP BY account.current_balance_cents, account.currency`,
+      [id],
+    );
+    const account = summary.rows[0];
+    if (!account) throw new CustomerOperationsValidationError('Customer not found.');
+    const entries = await this.pool.query<StoreCreditLedgerRow>(
+      `SELECT ledger.id, ledger.entry_type, ledger.amount_cents,
+              ledger.balance_after_cents, ledger.reason, ledger.note,
+              staff.normalized_email AS actor_label, ledger.created_at
+       FROM app.store_credit_ledger ledger
+       JOIN app.store_credit_accounts account ON account.id=ledger.store_credit_account_id
+       JOIN app.staff_members staff ON staff.id=ledger.actor_staff_member_id
+       WHERE account.customer_profile_id=$1
+       ORDER BY ledger.created_at DESC, ledger.id DESC
+       LIMIT $2 OFFSET $3`,
+      [id, limit, offset],
+    );
+    return {
+      balanceCents: account.balance_cents,
+      currency: account.currency,
+      total: account.total_count,
+      page,
+      limit,
+      entries: entries.rows.map((row) => ({
+        id: row.id,
+        entryType: row.entry_type,
+        amountCents: Math.abs(row.amount_cents),
+        balanceAfterCents: row.balance_after_cents,
+        reason: row.reason,
+        note: row.note,
+        actorLabel: row.actor_label,
+        createdAt: row.created_at,
+      })),
     };
   }
 
@@ -1333,6 +1417,7 @@ interface CustomerIdentityRow {
   credit_balance: number;
   store_credit_balance_cents: number;
   store_credit_currency: 'USD';
+  store_credit_transaction_count: number;
   last_order_at: Date | null;
   saved_design_count: number;
   last_design_at: Date | null;
@@ -1340,6 +1425,21 @@ interface CustomerIdentityRow {
   sms_marketing_status: MarketingStatus;
   preferred_locale: CustomerLocale;
   preferred_locale_source: CustomerLocaleSource;
+}
+interface StoreCreditLedgerSummaryRow {
+  balance_cents: number;
+  currency: 'USD';
+  total_count: number;
+}
+interface StoreCreditLedgerRow {
+  id: string;
+  entry_type: StoreCreditDirection;
+  amount_cents: number;
+  balance_after_cents: number;
+  reason: StoreCreditReason;
+  note: string | null;
+  actor_label: string;
+  created_at: Date;
 }
 interface CustomerOrderRow {
   order_number: string;

@@ -31,6 +31,7 @@ const customer: CustomerDetail = {
   creditBalance: 4,
   storeCreditBalanceCents: 0,
   storeCreditCurrency: 'USD',
+  storeCreditTransactionCount: 0,
   lastOrderAt: null,
   savedDesignCount: 0,
   lastDesignAt: null,

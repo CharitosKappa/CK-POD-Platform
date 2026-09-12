@@ -5,10 +5,11 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { customerDisplayName, customerDuration } from './customer-detail-format';
 import { loadCustomerDetail, refreshCustomerAfterSave } from './customer-detail-loading';
-import { CustomerDetailModal, type CustomerDetailModalName } from './customer-detail-modals';
-import { CustomerDetailSidebar } from './customer-detail-sidebar';
+import { CustomerDetailModal } from './customer-detail-modals';
+import { CustomerDetailSidebar, type CustomerSidebarAction } from './customer-detail-sidebar';
 import { CustomerTimeline } from './customer-detail-timeline';
 import { StoreCreditAdjustmentModal } from './store-credit-adjustment-modal';
+import { StoreCreditLedgerModal } from './store-credit-ledger-modal';
 import type { CustomerDetail } from './customer-types';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -26,7 +27,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
-  const [modal, setModal] = useState<CustomerDetailModalName | 'storeCredit'>();
+  const [modal, setModal] = useState<CustomerSidebarAction>();
 
   const load = useCallback(
     (signal?: AbortSignal) =>
@@ -212,7 +213,13 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
         </div>
         <CustomerDetailSidebar customer={customer} onAction={setModal} />
       </div>
-      {modal === 'storeCredit' ? (
+      {modal === 'storeCreditLedger' ? (
+        <StoreCreditLedgerModal
+          customer={customer}
+          onAdjust={() => setModal('storeCredit')}
+          onClose={() => setModal(undefined)}
+        />
+      ) : modal === 'storeCredit' ? (
         <StoreCreditAdjustmentModal
           customerId={customer.id}
           balanceCents={customer.storeCreditBalanceCents}

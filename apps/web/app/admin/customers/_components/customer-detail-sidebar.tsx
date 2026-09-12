@@ -5,7 +5,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { CustomerDetail } from './customer-types';
 
 export type CustomerSidebarAction =
-  'customer' | 'address' | 'marketing' | 'tags' | 'note' | 'storeCredit';
+  'customer' | 'address' | 'marketing' | 'tags' | 'note' | 'storeCredit' | 'storeCreditLedger';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
@@ -134,9 +134,23 @@ export function CustomerDetailSidebar({
             type="edit"
           />
         </header>
-        <p className="customer-sidebar-card-value">
-          {usd.format(customer.storeCreditBalanceCents / 100)} USD
-        </p>
+        <div className="customer-store-credit-card-row">
+          <p className="customer-sidebar-card-value">
+            {customer.storeCreditTransactionCount
+              ? `${usd.format(customer.storeCreditBalanceCents / 100)} USD`
+              : '-'}
+          </p>
+          {customer.storeCreditTransactionCount ? (
+            <button
+              aria-label="View store credit activity"
+              className="customer-store-credit-ledger-button"
+              onClick={() => choose('storeCreditLedger')}
+              type="button"
+            >
+              <ChevronRightIcon />
+            </button>
+          ) : null}
+        </div>
       </section>
 
       <section className="customer-card customer-sidebar-card customer-sidebar-tags-card">
@@ -211,6 +225,14 @@ function EditIcon() {
     <svg aria-hidden="true" viewBox="0 0 20 20">
       <path d="m5.1 13.9.7-3.1 6.8-6.8a1.4 1.4 0 0 1 2 0l1.4 1.4a1.4 1.4 0 0 1 0 2l-6.8 6.8-3.1.7a.85.85 0 0 1-1-.99Z" />
       <path d="m11.6 5 3.4 3.4" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="m7.5 4.5 5.5 5.5-5.5 5.5" />
     </svg>
   );
 }
