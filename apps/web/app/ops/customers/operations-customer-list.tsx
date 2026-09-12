@@ -161,8 +161,8 @@ export function OperationsCustomerList({
                         }
                       >
                         {customer.creditBalance
-                          ? `${customer.creditBalance} available`
-                          : 'No credits'}
+                          ? `${customer.creditBalance} design credit${customer.creditBalance === 1 ? '' : 's'} available`
+                          : 'No design credits'}
                       </span>
                     </td>
                   ) : null}

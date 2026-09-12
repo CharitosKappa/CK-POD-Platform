@@ -120,7 +120,9 @@ export function CustomerDetailSidebar({
         <header className="customer-sidebar-card-header">
           <h2>Design credits</h2>
         </header>
-        <p className="customer-sidebar-card-value">{customer.creditBalance} credits</p>
+        <p className="customer-sidebar-card-value">
+          {customer.creditBalance} design credit{customer.creditBalance === 1 ? '' : 's'}
+        </p>
       </section>
 
       <section className="customer-card customer-sidebar-card">

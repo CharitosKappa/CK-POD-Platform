@@ -1299,7 +1299,7 @@ export function CreateExperience({
         setGenerationError(
           error instanceof Error
             ? error.message
-            : 'We couldn’t create this version. Your credit wasn’t used.',
+            : 'We couldn’t create this version. Your design credit wasn’t used.',
         );
         setGenerationStatus('failed');
       });
@@ -1543,7 +1543,7 @@ export function CreateExperience({
             </button>
             <div className="creation-meta">
               <span className="credit-copy">
-                {credits} {credits === 1 ? 'credit' : 'credits'} available
+                {credits} {credits === 1 ? 'design credit' : 'design credits'} available
               </span>
               <p className="reassurance">
                 Free to create <span>·</span> Pay when you order
@@ -2019,7 +2019,7 @@ function GenerateStep({
           <p className="eyebrow">Generation paused</p>
           <h1>Let’s try that again.</h1>
           <InlineFeedback role="alert" tone="error">
-            {generationError || 'We couldn’t create this version. Your credit wasn’t used.'}
+            {generationError || 'We couldn’t create this version. Your design credit wasn’t used.'}
           </InlineFeedback>
           <button className="create-button" onClick={regenerate} type="button">
             Try again <Icon>↻</Icon>
@@ -2162,10 +2162,10 @@ function GenerateStep({
               {credits >= RETRY_CREDIT_COST ? (
                 <>
                   <span className="regenerate-label">↻ Try another version</span>
-                  <span className="regenerate-cost">{RETRY_CREDIT_COST} credit</span>
+                  <span className="regenerate-cost">{RETRY_CREDIT_COST} design credit</span>
                 </>
               ) : (
-                'Buy credits to try again'
+                'Buy design credits to try again'
               )}
             </button>
           </div>
@@ -3995,18 +3995,18 @@ function SizeSelectionSheet({
 
 function CreditPurchaseSheet({ close, purchase }: { close: () => void; purchase: () => void }) {
   return (
-    <SelectionSheet title="You’re out of credits" name="credits" close={close}>
+    <SelectionSheet title="You’re out of design credits" name="credits" close={close}>
       <div className="credit-purchase-content">
-        <p>Another version costs 1 credit. Add credits to keep creating.</p>
+        <p>Another version costs 1 design credit. Add design credits to keep creating.</p>
         <div className="credit-pack-preview">
           <div>
-            <strong>{CREDIT_PACK_SIZE} credits</strong>
-            <span>Credit pack</span>
+            <strong>{CREDIT_PACK_SIZE} design credits</strong>
+            <span>Design credit pack</span>
           </div>
           <b>Price TBD</b>
         </div>
         <button className="create-button" onClick={purchase} type="button">
-          Buy credits <Icon>→</Icon>
+          Buy design credits <Icon>→</Icon>
         </button>
       </div>
     </SelectionSheet>
@@ -4522,7 +4522,9 @@ function AccountPage({
                   type="button"
                 >
                   <span>Available to create</span>
-                  <b>{credits} credits</b>
+                  <b>
+                    {credits} {credits === 1 ? 'design credit' : 'design credits'}
+                  </b>
                   <small>
                     Generated “Coastal dreams” <strong>−1</strong>
                   </small>
@@ -4653,9 +4655,11 @@ function AccountPage({
           ) : null}
           {view === 'credits' ? (
             <div className="account-list-view">
-              <h1>{credits} design credits.</h1>
+              <h1>
+                {credits} {credits === 1 ? 'design credit' : 'design credits'}.
+              </h1>
               <button className="create-button" onClick={getMoreCredits} type="button">
-                Get more credits <Icon>→</Icon>
+                Get more design credits <Icon>→</Icon>
               </button>
               <h2>History</h2>
               <AccountLog
@@ -4663,7 +4667,11 @@ function AccountPage({
                 timestamp="Sep 8, 2026 · 11:42 AM"
                 value="−1"
               />
-              <AccountLog label="Credit pack added" timestamp="Sep 7, 2026 · 4:18 PM" value="+5" />
+              <AccountLog
+                label="Design credit pack added"
+                timestamp="Sep 7, 2026 · 4:18 PM"
+                value="+5"
+              />
             </div>
           ) : null}
           {view === 'orders' ? (

@@ -119,11 +119,11 @@ const PAGE_CONTENT: Record<
 
 const FAQ_GROUPS = [
   {
-    title: 'Designs & credits',
+    title: 'Designs & design credits',
     questions: [
       [
         'How do design credits work?',
-        'A credit is used when you generate a new design. Your available credits and their history are shown in your account.',
+        'A design credit is used when you generate a new design. Your available design credits and their history are shown in your account.',
       ],
       [
         'Can I save a design?',

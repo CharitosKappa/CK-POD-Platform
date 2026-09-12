@@ -120,6 +120,32 @@ describe('customer timeline presentation', () => {
     });
   });
 
+  it('labels generation currency amounts as design credits', () => {
+    const entry = {
+      id: 'design-credit:event-4',
+      eventType: 'CREDIT_LEDGER',
+      body: null,
+      metadata: {
+        amount: 2,
+        balanceAfter: 5,
+        entryType: 'GRANT',
+      },
+      actorLabel: 'System',
+      createdAt: '2026-09-11T18:57:00Z',
+    } satisfies TimelineEntry;
+
+    expect(timelineContent(entry)).toEqual({
+      title: 'Design credit grant',
+      description: '+2 design credits · Balance 5',
+    });
+    expect(
+      timelineContent({ ...entry, metadata: { ...entry.metadata, amount: -1, balanceAfter: 4 } }),
+    ).toEqual({
+      title: 'Design credit grant',
+      description: '-1 design credit · Balance 4',
+    });
+  });
+
   it('describes Store Credit additions in USD with their resulting balance', () => {
     expect(
       timelineContent({

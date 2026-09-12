@@ -175,11 +175,14 @@ export function AccountScreen({ view }: { view: View }) {
             <AccountSection title="Design credits" action="View history" href="/account/credits">
               <Link className="account-production-credit-card" href="/account/credits">
                 <span>Available to create</span>
-                <b>{credits?.balance ?? 0} credits</b>
+                <b>
+                  {credits?.balance ?? 0}{' '}
+                  {(credits?.balance ?? 0) === 1 ? 'design credit' : 'design credits'}
+                </b>
                 <small>
                   {credits?.entries[0]
                     ? ledgerLabel(credits.entries[0])
-                    : 'Your credit history will appear here.'}
+                    : 'Your design credit history will appear here.'}
                 </small>
               </Link>
             </AccountSection>
@@ -327,15 +330,18 @@ export function AccountScreen({ view }: { view: View }) {
         ) : null}
         {!loading && view === 'credits' ? (
           <section className="account-production-list">
-            <h1 id="account-heading">{credits?.balance ?? 0} design credits.</h1>
+            <h1 id="account-heading">
+              {credits?.balance ?? 0}{' '}
+              {(credits?.balance ?? 0) === 1 ? 'design credit' : 'design credits'}.
+            </h1>
             <p className="account-production-intro">
-              Credits are used when you create a new design.
+              Design credits are used when you create a new design.
             </p>
             <h2>History</h2>
             {credits?.entries.length ? (
               credits.entries.map((entry) => <LedgerRow entry={entry} key={entry.id} />)
             ) : (
-              <Empty text="No credit activity yet." />
+              <Empty text="No design credit activity yet." />
             )}
           </section>
         ) : null}
@@ -617,9 +623,9 @@ function ledgerLabel(entry: Credits['entries'][number]): string {
   return entry.entryType === 'CONSUME'
     ? 'Design created'
     : entry.entryType === 'REFUND'
-      ? 'Credit returned'
+      ? 'Design credit returned'
       : entry.entryType === 'GRANT'
-        ? 'Credits added'
+        ? 'Design credits added'
         : entry.entryType.toLowerCase().replaceAll('_', ' ');
 }
 function messageFor(reason: unknown): string {

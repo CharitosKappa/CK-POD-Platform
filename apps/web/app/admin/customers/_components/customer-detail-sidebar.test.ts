@@ -80,7 +80,8 @@ describe('customer detail sidebar', () => {
     expect(markup).toContain('Tax details');
     expect(markup).toContain('VAT number: Not provided');
     expect(markup).toContain('Store credit');
-    expect(markup).toContain('4 credits');
+    expect(markup).toContain('4 design credits');
+    expect(markup).not.toContain('>4 credits<');
     expect(markup).toContain('$25.50 USD');
     expect(markup).toContain('aria-label="Adjust store credit"');
     const sections = ['Contact information', 'Design credits', 'Store credit', 'Tags', 'Notes'];

@@ -186,7 +186,7 @@ export function timelineContent(entry: TimelineEntry): {
       description: joinDetails([
         amount === null
           ? null
-          : `${amount > 0 ? '+' : ''}${amount} credit${Math.abs(amount) === 1 ? '' : 's'}`,
+          : `${amount > 0 ? '+' : ''}${amount} design credit${Math.abs(amount) === 1 ? '' : 's'}`,
         numberValue(metadata.balanceAfter) === null
           ? null
           : `Balance ${numberValue(metadata.balanceAfter)}`,

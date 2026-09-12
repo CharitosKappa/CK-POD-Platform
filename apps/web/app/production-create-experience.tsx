@@ -413,8 +413,8 @@ export function ProductionCreateExperience() {
       ) {
         throw new Error(
           generation.status === 'REJECTED_INTERNAL'
-            ? 'We couldn’t use that request. Try a different idea or reference image. Your credit wasn’t used.'
-            : 'We couldn’t create this version. Your credit wasn’t used.',
+            ? 'We couldn’t use that request. Try a different idea or reference image. Your design credit wasn’t used.'
+            : 'We couldn’t create this version. Your design credit wasn’t used.',
         );
       }
       await wait(500);
