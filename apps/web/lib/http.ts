@@ -16,6 +16,9 @@ import {
   CustomerExportAccessError,
   CustomerExportValidationError,
   StaffAuthenticationError,
+  StoreCreditAccessError,
+  StoreCreditConflictError,
+  StoreCreditValidationError,
   ProjectConflictError,
   ProjectValidationError,
   ReferenceAssetValidationError,
@@ -37,6 +40,18 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json(
       { error: error.message },
       { status: /valid email/i.test(error.message) ? 400 : 401 },
+    );
+  }
+  if (error instanceof StoreCreditAccessError) {
+    return NextResponse.json({ error: error.message }, { status: 403 });
+  }
+  if (error instanceof StoreCreditConflictError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof StoreCreditValidationError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.message === 'Customer not found.' ? 404 : 400 },
     );
   }
   if (error instanceof CustomerOperationsAccessError) {

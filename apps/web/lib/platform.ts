@@ -27,6 +27,7 @@ import {
   StripeTaxService,
   StaffAuthenticationError,
   StaffIdentityService,
+  StoreCreditService,
   type ActiveSession,
   type StaffSession,
   developmentCommerceConfiguration,
@@ -145,6 +146,10 @@ export function cxOperationsRuntime() {
 
 export function customerOperationsRuntime() {
   return new CustomerOperationsService(databasePool());
+}
+
+export function storeCreditRuntime() {
+  return new StoreCreditService(databasePool());
 }
 
 export async function customerExportRuntime() {
