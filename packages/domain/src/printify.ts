@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import {
   FulfillmentIntegrationError,
+  type FulfillmentCancellationResult,
   type FulfillmentCatalogSnapshot,
   type FulfillmentOrderRequest,
   type FulfillmentOrderResult,
@@ -49,6 +50,7 @@ export function createFulfillmentAdapter(input: {
  */
 export class PrintifyFulfillmentAdapter implements FulfillmentService {
   private readonly fetchImplementation: typeof fetch;
+  private readonly cancellations = new Map<string, Promise<FulfillmentCancellationResult>>();
 
   public constructor(private readonly options: PrintifyAdapterOptions) {
     this.fetchImplementation = options.fetch ?? fetch;
@@ -186,6 +188,60 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
     };
   }
 
+  async cancelOrder(input: {
+    idempotencyKey: string;
+    externalOrderId: string;
+  }): Promise<FulfillmentCancellationResult> {
+    const existing = this.cancellations.get(input.externalOrderId);
+    if (existing) return existing;
+    const cancellation = this.cancelProviderOrder(input).finally(() => {
+      this.cancellations.delete(input.externalOrderId);
+    });
+    this.cancellations.set(input.externalOrderId, cancellation);
+    return cancellation;
+  }
+
+  private async cancelProviderOrder(input: {
+    idempotencyKey: string;
+    externalOrderId: string;
+  }): Promise<FulfillmentCancellationResult> {
+    const path = `/shops/${encodeURIComponent(this.options.shopId)}/orders/${encodeURIComponent(input.externalOrderId)}`;
+    const signal = AbortSignal.timeout(30_000);
+    try {
+      // Printify does not document an idempotency guarantee. Reconcile before
+      // retrying, including after a lost POST response or process restart.
+      const existing = await this.request<unknown>(`${path}.json`, { signal }, true);
+      const status = cancellationOrderStatus(existing, input.externalOrderId);
+      if (status === 'canceled') return { state: 'CANCELLED', occurredAt: null };
+      // Eligibility belongs to the service and provider; SUBMITTED is not a
+      // production gate here. The provider makes the final cancellation decision.
+      const response = await this.request<unknown>(
+        `${path}/cancel.json`,
+        { method: 'POST', headers: { 'idempotency-key': input.idempotencyKey }, signal },
+        true,
+      );
+      if (cancellationOrderStatus(response, input.externalOrderId) !== 'canceled') {
+        throw new FulfillmentIntegrationError(
+          'INVALID_RESPONSE',
+          'Printify did not confirm cancellation.',
+        );
+      }
+      // The documented response has no cancellation timestamp.
+      return { state: 'CANCELLED', occurredAt: null };
+    } catch (error) {
+      if (error instanceof CancellationRefused) return { state: 'UNAVAILABLE', occurredAt: null };
+      if (error instanceof FulfillmentIntegrationError) {
+        throw new FulfillmentIntegrationError(error.code, error.message, {
+          retryable: error.retryable,
+        });
+      }
+      throw new FulfillmentIntegrationError(
+        'UNKNOWN',
+        'Printify cancellation could not be confirmed.',
+      );
+    }
+  }
+
   async verifyWebhook(input: {
     body: string;
     signature: string | null;
@@ -213,7 +269,7 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
     };
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, cancellation = false): Promise<T> {
     let response: Response;
     try {
       response = await this.fetchImplementation(`${this.options.baseUrl}${path}`, {
@@ -225,14 +281,36 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
         },
       });
     } catch (error) {
+      if (
+        cancellation &&
+        error instanceof Error &&
+        ['AbortError', 'TimeoutError'].includes(error.name)
+      ) {
+        throw new FulfillmentIntegrationError('TIMEOUT', 'Printify cancellation timed out.');
+      }
       throw new FulfillmentIntegrationError('NETWORK_ERROR', 'Printify could not be reached.', {
         cause: error,
       });
     }
+    if (cancellation && [400, 404, 409, 422].includes(response.status))
+      throw new CancellationRefused();
     if (!response.ok) throw responseError(response.status);
+    if (cancellation && response.status !== 200) {
+      throw new FulfillmentIntegrationError(
+        'INVALID_RESPONSE',
+        'Printify did not confirm cancellation.',
+      );
+    }
     try {
       return (await response.json()) as T;
     } catch (error) {
+      if (
+        cancellation &&
+        error instanceof Error &&
+        ['AbortError', 'TimeoutError'].includes(error.name)
+      ) {
+        throw new FulfillmentIntegrationError('TIMEOUT', 'Printify cancellation timed out.');
+      }
       throw new FulfillmentIntegrationError(
         'INVALID_RESPONSE',
         'Printify returned an invalid response.',
@@ -248,7 +326,7 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
 export class FakePrintifyFulfillmentAdapter implements FulfillmentService {
   private readonly orders = new Map<
     string,
-    'CREATED' | 'SUBMITTED' | 'IN_PRODUCTION' | 'SHIPPED' | 'DELIVERED'
+    'CREATED' | 'SUBMITTED' | 'IN_PRODUCTION' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
   >();
   async syncCatalog(input: {
     externalBlueprintIds: string[];
@@ -334,6 +412,14 @@ export class FakePrintifyFulfillmentAdapter implements FulfillmentService {
       state: this.orders.get(input.externalOrderId) ?? 'UNKNOWN',
       occurredAt: null,
     };
+  }
+
+  async cancelOrder(input: {
+    idempotencyKey: string;
+    externalOrderId: string;
+  }): Promise<FulfillmentCancellationResult> {
+    this.orders.set(input.externalOrderId, 'CANCELLED');
+    return { state: 'CANCELLED', occurredAt: null };
   }
 
   async verifyWebhook(input: {
@@ -444,6 +530,20 @@ function responseError(status: number): FulfillmentIntegrationError {
   return new FulfillmentIntegrationError('INVALID_RESPONSE', 'Printify rejected the request.', {
     retryable: false,
   });
+}
+
+class CancellationRefused extends Error {}
+
+function cancellationOrderStatus(response: unknown, externalOrderId: string): string {
+  const order = recordValue(response);
+  const status = stringValue(order.status);
+  if (order.id !== externalOrderId || !status) {
+    throw new FulfillmentIntegrationError(
+      'INVALID_RESPONSE',
+      'Printify returned an invalid cancellation order.',
+    );
+  }
+  return status;
 }
 
 function parseWebhook(body: string): Record<string, unknown> {

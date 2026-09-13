@@ -108,6 +108,11 @@ export interface FulfillmentOrderResult {
   state: 'CREATED' | 'SUBMITTED' | 'UNKNOWN';
 }
 
+export interface FulfillmentCancellationResult {
+  state: 'CANCELLED' | 'UNAVAILABLE';
+  occurredAt: Date | null;
+}
+
 export interface FulfillmentStatus {
   externalOrderId: string;
   state: string;
@@ -126,6 +131,10 @@ export interface FulfillmentService {
   quoteShipping(input: ShippingQuoteRequest): Promise<NormalizedShippingQuote>;
   createOrder(input: FulfillmentOrderRequest): Promise<FulfillmentOrderResult>;
   submitProduction(input: { idempotencyKey: string; externalOrderId: string }): Promise<void>;
+  cancelOrder(input: {
+    idempotencyKey: string;
+    externalOrderId: string;
+  }): Promise<FulfillmentCancellationResult>;
   getOrderStatus(input: { externalOrderId: string }): Promise<FulfillmentStatus>;
   verifyWebhook(input: {
     body: string;

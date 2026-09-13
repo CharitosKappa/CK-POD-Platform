@@ -296,6 +296,10 @@ class TestFulfillmentAdapter implements FulfillmentService {
 
   async submitProduction(): Promise<void> {}
 
+  async cancelOrder() {
+    return { state: 'CANCELLED' as const, occurredAt: null };
+  }
+
   async getOrderStatus() {
     return { externalOrderId: 'fixture-order', state: 'UNKNOWN', occurredAt: null };
   }

@@ -1240,6 +1240,9 @@ class NoProductionFulfillment implements FulfillmentService {
     this.submitCalls += 1;
     throw new Error('Commerce must not submit production.');
   }
+  async cancelOrder(): Promise<never> {
+    throw new Error('Commerce must not cancel fulfillment orders.');
+  }
   async getOrderStatus() {
     return { externalOrderId: 'unused', state: 'UNKNOWN', occurredAt: null };
   }
