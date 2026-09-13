@@ -77,11 +77,10 @@ export function AdminOrderDetail({
     });
 
   const runPrintingAction = async (action: string, groupId: string): Promise<boolean> => {
-    const operation = action === 'RESUME' ? 'RESUME' : 'SUBMIT_FULFILLMENT_GROUP';
     return mutate(`printing:${action}`, `${apiBase}/${encodeURIComponent(orderNumber)}/actions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: operation, fulfillmentGroupId: groupId }),
+      body: JSON.stringify({ action: 'SUBMIT_FULFILLMENT_GROUP', fulfillmentGroupId: groupId }),
     });
   };
 

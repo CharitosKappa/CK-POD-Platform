@@ -260,22 +260,20 @@ export function OrderPrintingModal({
           <footer>
             <span>Created {new Date(group.createdAt).toLocaleString('en-US')}</span>
             <div>
-              {group.permittedActions
-                .filter((action) => ['SUBMIT', 'RETRY', 'RESUME'].includes(action))
-                .map((action) => (
-                  <button
-                    key={action}
-                    type="button"
-                    disabled={Boolean(actionBusy)}
-                    onClick={() => void runAction(action)}
-                  >
-                    {actionBusy === action
-                      ? 'Working…'
-                      : action === 'SUBMIT'
-                        ? 'Submit to provider'
-                        : sentenceCase(action)}
-                  </button>
-                ))}
+              {group.permittedActions.map((action) => (
+                <button
+                  key={action}
+                  type="button"
+                  disabled={Boolean(actionBusy)}
+                  onClick={() => void runAction(action)}
+                >
+                  {actionBusy === action
+                    ? 'Working…'
+                    : action === 'SUBMIT'
+                      ? 'Submit to provider'
+                      : sentenceCase(action)}
+                </button>
+              ))}
               <button type="button" className="is-secondary" onClick={onClose}>
                 Close
               </button>

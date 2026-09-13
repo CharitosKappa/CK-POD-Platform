@@ -5,6 +5,7 @@ import {
   OrderDetailDataError,
   parseOrderPricingSnapshot,
   parsePostalAddressSnapshot,
+  permittedPrintingActions,
 } from './order-detail.js';
 
 describe('order detail snapshot boundary', () => {
@@ -80,5 +81,28 @@ describe('order detail snapshot boundary', () => {
         providerFeesCents: null,
       }),
     ).toMatchObject({ grossMarginCents: null, grossMarginBasisPoints: null });
+  });
+});
+
+describe('printing group action permissions', () => {
+  const actor = {
+    id: 'session-1',
+    staffMemberId: 'staff-1',
+    email: 'owner@example.test',
+    role: 'OWNER' as const,
+    expiresAt: new Date('2026-09-13T12:00:00.000Z'),
+  };
+
+  it('returns only actions backed by the group-scoped submission mechanism', () => {
+    expect(permittedPrintingActions(actor, 'READY_FOR_PRODUCTION')).toEqual(['SUBMIT']);
+    expect(permittedPrintingActions(actor, 'FAILED')).toEqual(['RETRY']);
+    expect(permittedPrintingActions(actor, 'IN_PRODUCTION')).toEqual([]);
+    expect(permittedPrintingActions(actor, 'ON_HOLD')).toEqual([]);
+  });
+
+  it('does not expose mutations to read-only staff', () => {
+    expect(
+      permittedPrintingActions({ ...actor, role: 'READ_ONLY' }, 'READY_FOR_PRODUCTION'),
+    ).toEqual([]);
   });
 });

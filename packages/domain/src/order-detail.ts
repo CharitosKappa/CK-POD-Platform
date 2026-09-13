@@ -441,11 +441,7 @@ export class OrderDetailService {
     const orderItems = items.rows.map(toAdminOrderItem);
     const frozen = parseProductionEconomicsSnapshot(group.production_economics_snapshot);
     const retailRevenueCents = orderItems.reduce((total, item) => total + item.lineTotalCents, 0);
-    const actions = permittedPrintingActions(
-      session,
-      group.printing_status,
-      Boolean(group.external_order_id),
-    );
+    const actions = permittedPrintingActions(session, group.printing_status);
     return {
       id: group.id,
       orderNumber: group.order_number,
@@ -963,17 +959,13 @@ function aggregateFulfillmentGroups(groups: AdminOrderGroupSummary[]): Fulfillme
   });
 }
 
-function permittedPrintingActions(
+export function permittedPrintingActions(
   session: OrderDetailStaffSession,
   state: PrintingGroupState,
-  hasExternalOrder: boolean,
 ): string[] {
   if (session.role === 'READ_ONLY') return [];
   if (state === 'READY_FOR_PRODUCTION') return ['SUBMIT'];
-  if (state === 'FAILED') return ['RETRY', 'HOLD', 'MANUAL_RECONCILE'];
-  if (state === 'ON_HOLD') return ['RESUME'];
-  if (hasExternalOrder && ['SUBMITTED', 'IN_PRODUCTION'].includes(state))
-    return ['HOLD', 'MANUAL_RECONCILE'];
+  if (state === 'FAILED') return ['RETRY'];
   return [];
 }
 
