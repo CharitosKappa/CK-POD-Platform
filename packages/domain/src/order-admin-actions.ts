@@ -10,6 +10,8 @@ import {
   type CancellationStatus,
   type RefundDestination,
   type OrderActionEligibility,
+  returnStates,
+  type ReturnState,
 } from './order-admin-actions-contracts';
 import {
   projectPaymentState,
@@ -47,6 +49,51 @@ export interface ArchiveResult {
   archivedAt: Date | null;
   duplicate: boolean;
 }
+
+export interface CreateReturnInput {
+  orderNumber: string;
+  items: Array<{ orderItemId: string; quantity: number }>;
+  reasonCode: string;
+  shippingRequired: boolean;
+  note?: string;
+  idempotencyKey: string;
+}
+
+export interface TransitionReturnInput {
+  orderNumber: string;
+  returnId: string;
+  toState: ReturnState;
+  carrier?: string;
+  trackingNumber?: string;
+  note?: string;
+  idempotencyKey: string;
+}
+
+export interface OrderReturnSummary {
+  id: string;
+  state: ReturnState;
+  items: Array<{ orderItemId: string; quantity: number }>;
+  reasonCode: string;
+  shippingRequired: boolean;
+  carrier: string | null;
+  trackingNumber: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+type StoredReturnSummary = Omit<OrderReturnSummary, 'createdAt' | 'updatedAt'> & {
+  createdAt: string;
+  updatedAt: string;
+};
+
+const returnTransitions: Record<ReturnState, readonly ReturnState[]> = {
+  REQUESTED: ['APPROVED', 'REJECTED'],
+  APPROVED: ['IN_TRANSIT', 'REJECTED'],
+  IN_TRANSIT: ['RECEIVED'],
+  RECEIVED: ['CLOSED'],
+  CLOSED: [],
+  REJECTED: [],
+};
 
 export interface CancelOrderInput {
   orderNumber: string;
@@ -133,6 +180,203 @@ export class OrderAdminActionsService {
 
   async unarchive(session: AdminStaffSession, input: ArchiveOrderInput): Promise<ArchiveResult> {
     return this.setArchive(session, input, false);
+  }
+
+  async createReturn(
+    session: AdminStaffSession,
+    input: CreateReturnInput,
+  ): Promise<OrderReturnSummary> {
+    this.validate(session, input);
+    if (
+      typeof input.shippingRequired !== 'boolean' ||
+      !Array.isArray(input.items) ||
+      !input.items.length ||
+      input.items.some(
+        (item) =>
+          !item ||
+          !isUuid(item.orderItemId) ||
+          !Number.isSafeInteger(item.quantity) ||
+          item.quantity <= 0,
+      ) ||
+      new Set(input.items.map((item) => item.orderItemId.toLowerCase())).size !== input.items.length
+    ) {
+      throw new OrderAdminActionValidationError(
+        'Select distinct order items with positive whole quantities and a shipping choice.',
+      );
+    }
+    return withTransaction(this.pool, async (client) => {
+      const order = await this.lockOrder(client, input.orderNumber);
+      const existing = await this.existingAction<StoredReturnSummary>(
+        client,
+        order.id,
+        'order_return_created',
+        input.idempotencyKey,
+      );
+      if (existing) return restoreReturnSummary(existing);
+      // Match the Order -> Fulfillment Groups lock order used by cancellation and provider updates.
+      await client.query(
+        'SELECT id FROM app.order_fulfillment_groups WHERE order_id=$1 ORDER BY id FOR UPDATE',
+        [order.id],
+      );
+      const available = await client.query<{ id: string; remaining: number }>(
+        `SELECT item.id, GREATEST(0, item.quantity - COALESCE((
+          SELECT sum(return_item.quantity) FROM app.order_return_items return_item
+          JOIN app.order_returns returned ON returned.id=return_item.order_return_id
+          WHERE return_item.order_item_id=item.id AND returned.state<>'REJECTED'
+        ),0))::int AS remaining
+        FROM app.order_items item
+        JOIN app.order_fulfillment_group_items assignment ON assignment.order_item_id=item.id
+        JOIN app.order_fulfillment_groups group_row ON group_row.id=assignment.fulfillment_group_id
+        WHERE item.order_id=$1 AND group_row.order_id=$1
+          AND group_row.fulfillment_status IN ('FULFILLED','DELIVERED')`,
+        [order.id],
+      );
+      const quantities = new Map(available.rows.map((row) => [row.id, row.remaining]));
+      if (
+        input.items.some(
+          (item) => item.quantity > (quantities.get(item.orderItemId.toLowerCase()) ?? 0),
+        )
+      )
+        throw new OrderAdminActionConflictError(
+          'The selected quantity exceeds the remaining fulfilled quantity.',
+        );
+      const created = (
+        await client.query<{ id: string }>(
+          `INSERT INTO app.order_returns (order_id,state,reason_code,shipping_required,note,created_by_staff_member_id,idempotency_key)
+        VALUES ($1,'REQUESTED',$2,$3,$4,$5,$6) RETURNING id`,
+          [
+            order.id,
+            input.reasonCode,
+            input.shippingRequired,
+            input.note ?? null,
+            session.staffMemberId,
+            input.idempotencyKey,
+          ],
+        )
+      ).rows[0]!;
+      for (const item of input.items)
+        await client.query(
+          'INSERT INTO app.order_return_items (order_return_id,order_item_id,quantity) VALUES ($1,$2,$3)',
+          [created.id, item.orderItemId, item.quantity],
+        );
+      await this.returnEvent(client, session, created.id, null, 'REQUESTED', input);
+      const result = await this.returnSummary(client, created.id);
+      await this.audit(client, session, order.id, 'order_return_created', input, {
+        result,
+        returnId: created.id,
+        items: result.items,
+        shippingRequired: input.shippingRequired,
+      });
+      return result;
+    });
+  }
+
+  async transitionReturn(
+    session: AdminStaffSession,
+    input: TransitionReturnInput,
+  ): Promise<OrderReturnSummary> {
+    this.validate(session, { ...input, reasonCode: 'RETURN_STATE_CHANGED' });
+    if (
+      !isUuid(input.returnId) ||
+      !returnStates.includes(input.toState) ||
+      [input.carrier, input.trackingNumber].some(
+        (value) => value !== undefined && (typeof value !== 'string' || value.length > 200),
+      )
+    ) {
+      throw new OrderAdminActionValidationError(
+        'Provide a valid return, target state, and tracking fields of at most 200 characters.',
+      );
+    }
+    return withTransaction(this.pool, async (client) => {
+      const order = await this.lockOrder(client, input.orderNumber);
+      const existing = await this.existingAction<StoredReturnSummary>(
+        client,
+        order.id,
+        'order_return_transitioned',
+        input.idempotencyKey,
+      );
+      if (existing) {
+        if (existing.id !== input.returnId.toLowerCase() || existing.state !== input.toState)
+          throw new OrderAdminActionConflictError(
+            'Idempotency key belongs to another return transition.',
+          );
+        return restoreReturnSummary(existing);
+      }
+      const returned = (
+        await client.query<{ state: ReturnState; reason_code: string }>(
+          'SELECT state,reason_code FROM app.order_returns WHERE id=$1 AND order_id=$2 FOR UPDATE',
+          [input.returnId, order.id],
+        )
+      ).rows[0];
+      if (!returned) throw new OrderAdminActionNotFoundError('Return not found for this order.');
+      if (!returnTransitions[returned.state]?.includes(input.toState))
+        throw new OrderAdminActionConflictError('This return state transition is not allowed.');
+      await client.query(
+        `UPDATE app.order_returns SET state=$2,carrier=COALESCE($3,carrier),tracking_number=COALESCE($4,tracking_number),updated_at=now() WHERE id=$1`,
+        [
+          input.returnId,
+          input.toState,
+          input.carrier?.trim() ?? null,
+          input.trackingNumber?.trim() ?? null,
+        ],
+      );
+      await this.returnEvent(client, session, input.returnId, returned.state, input.toState, input);
+      const result = await this.returnSummary(client, input.returnId);
+      await this.audit(
+        client,
+        session,
+        order.id,
+        'order_return_transitioned',
+        { ...input, reasonCode: returned.reason_code },
+        {
+          result,
+          returnId: result.id,
+          fromState: returned.state,
+          toState: input.toState,
+          carrier: result.carrier,
+          trackingNumber: result.trackingNumber,
+        },
+      );
+      return result;
+    });
+  }
+
+  private async returnEvent(
+    client: SqlClient,
+    session: AdminStaffSession,
+    returnId: string,
+    fromState: ReturnState | null,
+    toState: ReturnState,
+    input: { note?: string; idempotencyKey: string },
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO app.order_return_events (order_return_id,from_state,to_state,actor_staff_member_id,note,idempotency_key) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        returnId,
+        fromState,
+        toState,
+        session.staffMemberId,
+        input.note ?? null,
+        input.idempotencyKey,
+      ],
+    );
+  }
+
+  private async returnSummary(client: SqlClient, returnId: string): Promise<OrderReturnSummary> {
+    const row = (
+      await client.query<Omit<OrderReturnSummary, 'items'>>(
+        `SELECT id,state,reason_code AS "reasonCode",shipping_required AS "shippingRequired",carrier,
+        tracking_number AS "trackingNumber",created_at AS "createdAt",updated_at AS "updatedAt" FROM app.order_returns WHERE id=$1`,
+        [returnId],
+      )
+    ).rows[0]!;
+    const items = (
+      await client.query<OrderReturnSummary['items'][number]>(
+        `SELECT order_item_id AS "orderItemId",quantity FROM app.order_return_items WHERE order_return_id=$1 ORDER BY order_item_id`,
+        [returnId],
+      )
+    ).rows;
+    return { ...row, items };
   }
 
   async cancel(session: AdminStaffSession, input: CancelOrderInput): Promise<CancelOrderResult> {
@@ -904,4 +1148,15 @@ function archiveMetadata(order: LockedOrder) {
     archivedAt: order.archived_at?.toISOString() ?? null,
     archivedByStaffMemberId: order.archived_by_staff_member_id,
   };
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
+function restoreReturnSummary(value: StoredReturnSummary): OrderReturnSummary {
+  return { ...value, createdAt: new Date(value.createdAt), updatedAt: new Date(value.updatedAt) };
 }

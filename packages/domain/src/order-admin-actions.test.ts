@@ -192,3 +192,71 @@ describe('cancellation outcome orchestration', () => {
     ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
   });
 });
+
+describe('independent return preflight', () => {
+  const create = {
+    ...input,
+    items: [{ orderItemId: staff.staffMemberId, quantity: 1 }],
+    reasonCode: 'SIZE_OR_FIT',
+    shippingRequired: true,
+  };
+  const transition = {
+    orderNumber: '#1',
+    returnId: staff.staffMemberId,
+    toState: 'APPROVED' as const,
+    idempotencyKey: 'return-transition-0001',
+  };
+  it('restricts both return mutations to authorized staff', async () => {
+    const actions = service();
+    expect(actions.createReturn).toBeTypeOf('function');
+    expect(actions.transitionReturn).toBeTypeOf('function');
+    for (const role of ['PREPRESS', 'READ_ONLY'] as const) {
+      await expect(actions.createReturn({ ...staff, role }, create)).rejects.toBeInstanceOf(
+        domain.OrderAdminActionAccessError,
+      );
+      await expect(actions.transitionReturn({ ...staff, role }, transition)).rejects.toBeInstanceOf(
+        domain.OrderAdminActionAccessError,
+      );
+    }
+  });
+  it('rejects malformed quantities, item identities and shipment choices before persistence', async () => {
+    const actions = service();
+    expect(actions.createReturn).toBeTypeOf('function');
+    for (const invalid of [
+      { items: [] },
+      { items: null },
+      { items: [null] },
+      ...[0, -1, 1.2, Number.MAX_SAFE_INTEGER + 1].map((quantity) => ({
+        items: [{ orderItemId: staff.staffMemberId, quantity }],
+      })),
+      { items: [{ orderItemId: 'invalid', quantity: 1 }] },
+      { items: [create.items[0], create.items[0]] },
+      { shippingRequired: 'yes' },
+      { reasonCode: ' ' },
+      { note: 'x'.repeat(1001) },
+      { idempotencyKey: 'short' },
+    ])
+      await expect(
+        actions.createReturn(staff, { ...create, ...invalid } as never),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    await expect(actions.createReturn(staff, create)).rejects.toBe(databaseReached);
+  });
+  it('validates transition identity, state and tracking fields before persistence', async () => {
+    const actions = service();
+    expect(actions.transitionReturn).toBeTypeOf('function');
+    for (const invalid of [
+      { returnId: 'invalid' },
+      { toState: 'REFUNDED' },
+      { toState: '__proto__' },
+      { carrier: null },
+      { carrier: 'x'.repeat(201) },
+      { trackingNumber: 'x'.repeat(201) },
+      { note: 'x'.repeat(1001) },
+      { idempotencyKey: 'short' },
+    ])
+      await expect(
+        actions.transitionReturn(staff, { ...transition, ...invalid } as never),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    await expect(actions.transitionReturn(staff, transition)).rejects.toBe(databaseReached);
+  });
+});

@@ -177,6 +177,253 @@ suite('order archive transaction integration', () => {
     ).rows;
   }
 
+  function returnInput(f: Awaited<ReturnType<typeof fixture>>, quantity = 1) {
+    return {
+      orderNumber: f.orderNumber,
+      items: [{ orderItemId: f.itemId, quantity }],
+      reasonCode: 'SIZE_OR_FIT',
+      shippingRequired: true,
+      note: 'Return requested by customer',
+      idempotencyKey: randomUUID(),
+    };
+  }
+
+  it('creates and advances a return with persisted actors and no monetary or fulfillment side effects', async () => {
+    const f = await fixture();
+    const before = await snapshot(f.orderId);
+    const { actions, refunds, payments, cancelOrder } = cancellationService();
+    expect(actions.createReturn).toBeTypeOf('function');
+    const original = vi.spyOn(refunds, 'refundOriginalPayment');
+    const credit = vi.spyOn(refunds, 'refundToStoreCredit');
+    const paymentRefund = vi.spyOn(payments, 'refund');
+    const input = returnInput(f);
+    const created = await actions.createReturn(staff, input);
+    expect(created).toMatchObject({
+      state: 'REQUESTED',
+      items: [{ orderItemId: f.itemId, quantity: 1 }],
+      shippingRequired: true,
+      reasonCode: 'SIZE_OR_FIT',
+      carrier: null,
+      trackingNumber: null,
+    });
+    expect(created.createdAt).toBeInstanceOf(Date);
+    expect(await actions.createReturn(staff, input)).toEqual(created);
+    let approved!: domain.OrderReturnSummary;
+    const approveKey = randomUUID();
+    for (const toState of ['APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CLOSED'] as const) {
+      const next = await actions.transitionReturn(staff, {
+        orderNumber: f.orderNumber,
+        returnId: created.id,
+        toState,
+        idempotencyKey: toState === 'APPROVED' ? approveKey : randomUUID(),
+        note: `Moved to ${toState}`,
+        ...(toState === 'IN_TRANSIT'
+          ? { carrier: 'USPS', trackingNumber: 'return-track-001' }
+          : {}),
+      });
+      expect(next.state).toBe(toState);
+      if (toState === 'APPROVED') approved = next;
+      if (toState === 'CLOSED')
+        expect(next).toMatchObject({ carrier: 'USPS', trackingNumber: 'return-track-001' });
+    }
+    expect(
+      await actions.transitionReturn(staff, {
+        orderNumber: f.orderNumber,
+        returnId: created.id,
+        toState: 'APPROVED',
+        idempotencyKey: approveKey,
+      }),
+    ).toEqual(approved);
+    const events = (
+      await pool.query(
+        `SELECT * FROM app.order_return_events WHERE order_return_id=$1 ORDER BY created_at,id`,
+        [created.id],
+      )
+    ).rows;
+    expect(events.map((e) => [e.from_state, e.to_state])).toEqual([
+      [null, 'REQUESTED'],
+      ['REQUESTED', 'APPROVED'],
+      ['APPROVED', 'IN_TRANSIT'],
+      ['IN_TRANSIT', 'RECEIVED'],
+      ['RECEIVED', 'CLOSED'],
+    ]);
+    expect(events.every((e) => e.actor_staff_member_id === staff.staffMemberId)).toBe(true);
+    expect(
+      (
+        await pool.query(
+          `SELECT created_by_staff_member_id,note FROM app.order_returns WHERE id=$1`,
+          [created.id],
+        )
+      ).rows[0],
+    ).toMatchObject({ created_by_staff_member_id: staff.staffMemberId, note: input.note });
+    const auditRows = (
+      await pool.query(
+        `SELECT * FROM app.order_operational_audits WHERE order_id=$1 AND action IN ('order_return_created','order_return_transitioned')`,
+        [f.orderId],
+      )
+    ).rows;
+    expect(auditRows).toHaveLength(5);
+    expect(auditRows.every((a) => a.actor_staff_member_id === staff.staffMemberId)).toBe(true);
+    const after = await snapshot(f.orderId);
+    expect({ ...after, returns: [] }).toEqual({ ...before, returns: [] });
+    expect(original).not.toHaveBeenCalled();
+    expect(credit).not.toHaveBeenCalled();
+    expect(paymentRefund).not.toHaveBeenCalled();
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(['UNFULFILLED', 'PARTIALLY_FULFILLED', 'CANCELLED'])(
+    'rejects returns without item-level fulfilled evidence (%s)',
+    async (fulfillment) => {
+      const f = await fixture(fulfillment);
+      const actions = service();
+      expect(actions.createReturn).toBeTypeOf('function');
+      await expect(actions.createReturn(staff, returnInput(f))).rejects.toBeInstanceOf(
+        domain.OrderAdminActionConflictError,
+      );
+      expect((await snapshot(f.orderId)).returns).toHaveLength(0);
+    },
+  );
+
+  it('reserves multiple partial returns, frees rejected quantities and prevents concurrent over-return', async () => {
+    const f = await fixture('FULFILLED');
+    const actions = service();
+    expect(actions.createReturn).toBeTypeOf('function');
+    const first = await actions.createReturn(staff, returnInput(f));
+    const results = await Promise.allSettled([
+      actions.createReturn(staff, returnInput(f)),
+      actions.createReturn(staff, returnInput(f)),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    await expect(actions.createReturn(staff, returnInput(f))).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+    await actions.transitionReturn(staff, {
+      orderNumber: f.orderNumber,
+      returnId: first.id,
+      toState: 'REJECTED',
+      idempotencyKey: randomUUID(),
+    });
+    await expect(actions.createReturn(staff, returnInput(f))).resolves.toMatchObject({
+      state: 'REQUESTED',
+    });
+    await expect(actions.createReturn(staff, returnInput(f, 3))).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+  });
+
+  it('rejects foreign items atomically and scopes idempotency to its order and return', async () => {
+    const f = await fixture();
+    const other = await fixture();
+    const actions = service();
+    expect(actions.createReturn).toBeTypeOf('function');
+    const input = returnInput(f);
+    await expect(
+      actions.createReturn(staff, {
+        ...input,
+        items: [...input.items, { orderItemId: other.itemId, quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    expect((await snapshot(f.orderId)).returns).toHaveLength(0);
+    const [a, b] = await Promise.all([
+      actions.createReturn(staff, input),
+      actions.createReturn(staff, input),
+    ]);
+    expect(a).toEqual(b);
+    await expect(
+      actions.createReturn(staff, { ...returnInput(other), idempotencyKey: input.idempotencyKey }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    const c = await actions.createReturn(staff, returnInput(other));
+    const key = randomUUID();
+    await actions.transitionReturn(staff, {
+      orderNumber: f.orderNumber,
+      returnId: a.id,
+      toState: 'APPROVED',
+      idempotencyKey: key,
+    });
+    await expect(
+      actions.transitionReturn(staff, {
+        orderNumber: f.orderNumber,
+        returnId: c.id,
+        toState: 'APPROVED',
+        idempotencyKey: randomUUID(),
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionNotFoundError);
+    const d = await actions.createReturn(staff, returnInput(f));
+    await expect(
+      actions.transitionReturn(staff, {
+        orderNumber: f.orderNumber,
+        returnId: d.id,
+        toState: 'APPROVED',
+        idempotencyKey: key,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+  });
+
+  it.each(['REQUESTED', 'APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CLOSED', 'REJECTED'] as const)(
+    'fails closed for invalid transitions from %s',
+    async (fromState) => {
+      const f = await fixture();
+      const actions = service();
+      expect(actions.createReturn).toBeTypeOf('function');
+      const created = await actions.createReturn(staff, returnInput(f));
+      if (fromState === 'REJECTED')
+        await actions.transitionReturn(staff, {
+          orderNumber: f.orderNumber,
+          returnId: created.id,
+          toState: 'REJECTED',
+          idempotencyKey: randomUUID(),
+        });
+      else
+        for (const toState of ['APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CLOSED'] as const) {
+          if (fromState === 'REQUESTED') break;
+          await actions.transitionReturn(staff, {
+            orderNumber: f.orderNumber,
+            returnId: created.id,
+            toState,
+            idempotencyKey: randomUUID(),
+          });
+          if (toState === fromState) break;
+        }
+      const allowed = {
+        REQUESTED: ['APPROVED', 'REJECTED'],
+        APPROVED: ['IN_TRANSIT', 'REJECTED'],
+        IN_TRANSIT: ['RECEIVED'],
+        RECEIVED: ['CLOSED'],
+        CLOSED: [],
+        REJECTED: [],
+      };
+      for (const toState of [
+        'REQUESTED',
+        'APPROVED',
+        'IN_TRANSIT',
+        'RECEIVED',
+        'CLOSED',
+        'REJECTED',
+      ] as const)
+        if (!(allowed[fromState] as string[]).includes(toState)) {
+          await expect(
+            actions.transitionReturn(staff, {
+              orderNumber: f.orderNumber,
+              returnId: created.id,
+              toState,
+              idempotencyKey: randomUUID(),
+            }),
+          ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+        }
+      if (fromState === 'APPROVED')
+        await expect(
+          actions.transitionReturn(staff, {
+            orderNumber: f.orderNumber,
+            returnId: created.id,
+            toState: 'REJECTED',
+            idempotencyKey: randomUUID(),
+          }),
+        ).resolves.toMatchObject({ state: 'REJECTED' });
+    },
+  );
+
   function cancellationService(
     cancelOrder = vi
       .fn<domain.FulfillmentService['cancelOrder']>()
