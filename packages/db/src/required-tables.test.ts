@@ -27,6 +27,18 @@ describe('required application tables', () => {
     expect(requiredApplicationTables).toContain('store_credit_ledger');
   });
 
+  it('includes the independent order detail layer tables', () => {
+    for (const table of [
+      'order_printing_status_events',
+      'order_fulfillment_status_history',
+      'order_notes',
+      'order_tags',
+      'order_tag_assignments',
+    ]) {
+      expect(requiredApplicationTables).toContain(table);
+    }
+  });
+
   it('tracks every table created by the checked-in migrations', async () => {
     const migrationFiles = (await readdir(migrationsDirectory)).filter((fileName) =>
       fileName.endsWith('.sql'),
