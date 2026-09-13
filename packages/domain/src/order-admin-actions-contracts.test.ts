@@ -60,6 +60,14 @@ describe('order admin action contracts', () => {
     });
   });
 
+  it('allows an owner to invoke mutating actions', () => {
+    expect(resolveOrderActionEligibility({ ...baseInput, role: 'OWNER' }).actions).toMatchObject({
+      edit: true,
+      cancel: true,
+      refund: true,
+    });
+  });
+
   it.each(['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED', 'CANCELLED'] as const)(
     'does not allow whole-order cancellation when fulfillment is %s',
     (fulfillmentState) => {
