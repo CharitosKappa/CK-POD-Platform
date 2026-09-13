@@ -177,6 +177,538 @@ suite('order archive transaction integration', () => {
     ).rows;
   }
 
+  function editService(
+    configuration = domain.developmentCommerceConfiguration,
+    fulfillment: domain.FulfillmentService = new ArchiveFixtureFulfillment(),
+  ) {
+    const operations = new domain.OrderOperationsService(
+      actionDatabase.pool,
+      new MemoryObjectStorage(),
+      fulfillment,
+      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+    );
+    const tax = {
+      calculate: async (input: Parameters<domain.TaxService['calculate']>[0]) =>
+        new domain.FakeTaxService(input.address.stateCode === 'WY' ? 400 : 875).calculate(input),
+    };
+    return {
+      operations,
+      actions: new domain.OrderAdminActionsService(actionDatabase.pool, {
+        fulfillment,
+        operations,
+        refunds: new domain.OrderRefundService(
+          actionDatabase.pool,
+          new domain.FakePaymentService(),
+        ),
+        repricing: new domain.OrderRepricingService(actionDatabase.pool, tax, configuration),
+      }),
+    };
+  }
+
+  it('rejects resume, readiness and provider submission whenever an order has amount due', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { operations } = editService();
+    await operations.hold(staff, f.orderNumber, 'OPERATIONAL_HOLD');
+    await pool.query('UPDATE app.orders SET amount_due_cents=100 WHERE id=$1', [f.orderId]);
+    await expect(operations.resume(staff, f.orderNumber)).rejects.toThrow(/amount due/i);
+    await expect(operations.evaluateReadiness(staff, f.orderNumber)).rejects.toThrow(/amount due/i);
+    await expect(
+      operations.evaluateFulfillmentGroupReadiness(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).rejects.toThrow(/amount due/i);
+    await expect(operations.submitProduction(staff, f.orderNumber)).rejects.toThrow(/amount due/i);
+    await expect(
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).rejects.toThrow(/amount due/i);
+  });
+
+  it('edits safe metadata after delivery, records snapshots, and replays the committed result', async () => {
+    const f = await fixture();
+    const before = await snapshot(f.orderId);
+    const { actions } = editService();
+    const input = {
+      ...f.input(),
+      customerEmail: 'edited@example.test',
+      customerPhone: '+1 555 123 4567',
+      tags: ['VIP', ' vip ', 'Follow up'],
+      note: 'Address confirmed',
+    };
+    const result = await actions.editOrder(staff, input);
+    expect(result).toMatchObject({
+      revisionId: expect.any(String),
+      priceDifferenceCents: 0,
+      amountDueCents: 0,
+      refundableAdjustmentCents: 0,
+      duplicate: false,
+      eligibility: { editFields: { items: false, shippingAddress: false } },
+    });
+    const after = await snapshot(f.orderId);
+    expect(after.order).toMatchObject({
+      customer_email: 'edited@example.test',
+      shipping_address_snapshot: { phone: '+1 555 123 4567' },
+    });
+    for (const key of ['payments', 'refunds', 'returns', 'history', 'groups', 'items'] as const)
+      expect(after[key]).toEqual(before[key]);
+    const revision = (
+      await pool.query<{
+        before_snapshot: { order: Record<string, unknown> };
+        after_snapshot: { order: Record<string, unknown>; tags: string[] };
+        price_difference_cents: number;
+      }>('SELECT * FROM app.order_revisions WHERE id=$1', [result.revisionId])
+    ).rows[0]!;
+    expect(revision.before_snapshot.order.customer_email).toBe(before.order!.customer_email);
+    expect(revision.after_snapshot.order.customer_email).toBe('edited@example.test');
+    expect(revision.after_snapshot.tags).toEqual(['Follow up', 'VIP']);
+    expect(
+      (
+        await pool.query('SELECT * FROM app.order_notes WHERE order_id=$1 AND body=$2', [
+          f.orderId,
+          'Address confirmed',
+        ])
+      ).rows,
+    ).toHaveLength(1);
+    await actions.editOrder(staff, { ...f.input(), customerEmail: 'newer@example.test' });
+    expect(await actions.editOrder(staff, input)).toEqual({ ...result, duplicate: true });
+    expect((await snapshot(f.orderId)).order!.customer_email).toBe('newer@example.test');
+  });
+
+  it('recalculates edited items, places amount due on hold, and blocks unpaid production and resume', async () => {
+    const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+    const before = await snapshot(f.orderId);
+    const { actions, operations } = editService();
+    const result = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 3 },
+      ],
+    });
+    expect(result).toMatchObject({
+      priceDifferenceCents: 4349,
+      amountDueCents: 4349,
+      refundableAdjustmentCents: 0,
+    });
+    const after = await snapshot(f.orderId);
+    expect(after.order).toMatchObject({
+      status: 'ON_HOLD',
+      amount_due_cents: 4349,
+      pricing_snapshot: { quantity: 3, totalCents: 13047 },
+    });
+    expect(after.items[0]).toMatchObject({ id: f.itemId, quantity: 3 });
+    expect(after.payments).toEqual(before.payments);
+    expect(after.refunds).toEqual(before.refunds);
+    expect(
+      (
+        await pool.query('SELECT * FROM app.order_holds WHERE order_id=$1 AND resumed_at IS NULL', [
+          f.orderId,
+        ])
+      ).rows,
+    ).toHaveLength(1);
+    await expect(operations.resume(staff, f.orderNumber)).rejects.toThrow(/amount due/i);
+    await expect(
+      operations.evaluateFulfillmentGroupReadiness(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).rejects.toThrow(/amount due/i);
+    await expect(
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).rejects.toThrow(/amount due/i);
+  });
+
+  it('makes a decrease refundable without moving money and recalculates tax from shipping, not billing', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const before = await snapshot(f.orderId);
+    const { actions } = editService();
+    const result = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+      ],
+      shippingAddress: {
+        recipientName: 'Wyoming Customer',
+        email: 'wy@example.test',
+        line1: '10 Main St',
+        city: 'Cheyenne',
+        stateCode: 'WY',
+        postalCode: '82001',
+        countryCode: 'US',
+      },
+    });
+    expect(result).toMatchObject({
+      priceDifferenceCents: -4539,
+      amountDueCents: 0,
+      refundableAdjustmentCents: 4539,
+    });
+    const after = await snapshot(f.orderId);
+    expect(after.order).toMatchObject({
+      status: 'PAID',
+      pricing_snapshot: { taxCents: 160, totalCents: 4159 },
+      financial_snapshot: { taxSnapshot: { taxCents: 160 } },
+    });
+    expect(after.order!.billing_address_snapshot).toEqual(before.order!.billing_address_snapshot);
+    expect(after.payments).toEqual(before.payments);
+    expect(after.refunds).toEqual(before.refunds);
+    expect(after.returns).toEqual(before.returns);
+  });
+
+  it.each(['SUBMITTING', 'SUBMITTED', 'IN_PRODUCTION', 'PRINTED'])(
+    'fails closed on production fields at %s while preserving provider history',
+    async (printing) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', printing);
+      if (printing !== 'SUBMITTING')
+        await pool.query(
+          'UPDATE app.order_fulfillment_groups SET external_order_id=$2 WHERE id=$1',
+          [f.groupId, `provider-${randomUUID()}`],
+        );
+      const before = await snapshot(f.orderId);
+      const { actions } = editService();
+      for (const change of [
+        {
+          items: [
+            { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+          ],
+        },
+        { discountCents: 100 },
+        { shippingCents: 200 },
+      ]) {
+        await expect(actions.editOrder(staff, { ...f.input(), ...change })).rejects.toBeInstanceOf(
+          domain.OrderAdminActionConflictError,
+        );
+      }
+      expect(await snapshot(f.orderId)).toEqual(before);
+      const metadataEdit = await actions.editOrder(staff, {
+        ...f.input(),
+        customerEmail: 'safe-metadata@example.test',
+      });
+      expect(metadataEdit.eligibility.editFields).toMatchObject({
+        items: false,
+        pricing: false,
+        shippingAddress: false,
+      });
+    },
+  );
+
+  it('rejects shipped address changes and invalid/unrelated variants without partial writes', async () => {
+    const f = await fixture();
+    const { actions } = editService();
+    await expect(
+      actions.editOrder(staff, {
+        ...f.input(),
+        shippingAddress: {
+          recipientName: 'Test',
+          email: 'test@example.test',
+          line1: '10 Main',
+          city: 'Cheyenne',
+          stateCode: 'WY',
+          postalCode: '82001',
+          countryCode: 'US',
+        },
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    const pending = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const before = await snapshot(pending.orderId);
+    for (const change of [
+      { items: [{ orderItemId: pending.itemId, productVariantId: 'invalid', quantity: 1 }] },
+      {
+        items: [
+          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+        ],
+      },
+      { discountCents: 100000 },
+    ])
+      await expect(actions.editOrder(staff, { ...pending.input(), ...change })).rejects.toThrow();
+    expect(await snapshot(pending.orderId)).toEqual(before);
+    expect(
+      (await pool.query('SELECT id FROM app.order_revisions WHERE order_id=$1', [pending.orderId]))
+        .rows,
+    ).toEqual([]);
+  });
+
+  it.each(['group', 'legacy'] as const)(
+    'submits the revised variant through %s from the persisted order plan instead of the original checkout mapping',
+    async (entryPoint) => {
+      const f = await productionFixture();
+      const providerId = (
+        await pool.query<{ provider_id: string }>(
+          'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
+          [f.groupId],
+        )
+      ).rows[0]!.provider_id;
+      await pool.query(
+        `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
+        [f.qualificationId],
+      );
+      await pool.query(
+        "INSERT INTO app.provider_variants (provider_id,product_variant_id,external_variant_id) VALUES ($1,'essential-dtg-tee-white-L','white-large')",
+        [providerId],
+      );
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const create = vi.spyOn(fulfillment, 'createOrder');
+      const { actions, operations } = editService(
+        { ...domain.developmentCommerceConfiguration, eligibleProviderExternalIds: [providerId] },
+        fulfillment,
+      );
+      const checkoutBefore = (
+        await pool.query(
+          'SELECT checkout.* FROM app.checkout_fulfillment_group_items checkout JOIN app.order_items item ON item.cart_item_id=checkout.cart_item_id WHERE item.id=$1',
+          [f.itemId],
+        )
+      ).rows;
+      await actions.editOrder(staff, {
+        ...f.input(),
+        items: [
+          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-white-L', quantity: 2 },
+        ],
+      });
+      await actions.editOrder(staff, {
+        ...f.input(),
+        items: [
+          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-white-L', quantity: 2 },
+        ],
+      });
+      const groupId = (
+        await pool.query<{ fulfillment_group_id: string }>(
+          'SELECT fulfillment_group_id FROM app.order_fulfillment_group_items WHERE order_item_id=$1',
+          [f.itemId],
+        )
+      ).rows[0]!.fulfillment_group_id;
+      if (entryPoint === 'group')
+        await operations.submitFulfillmentGroup(staff, {
+          orderNumber: f.orderNumber,
+          fulfillmentGroupId: groupId,
+        });
+      else await operations.submitProduction(staff, f.orderNumber);
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]![0].items).toMatchObject([
+        { externalVariantId: 'fake-essential-dtg-tee-white-L', quantity: 2 },
+      ]);
+      expect(
+        (
+          await pool.query(
+            'SELECT checkout.* FROM app.checkout_fulfillment_group_items checkout JOIN app.order_items item ON item.cart_item_id=checkout.cart_item_id WHERE item.id=$1',
+            [f.itemId],
+          )
+        ).rows,
+      ).toEqual(checkoutBefore);
+    },
+  );
+
+  it('rejects a stale provider creation context when an edit commits before its action claim', async () => {
+    const f = await productionFixture();
+    const providerId = (
+      await pool.query<{ provider_id: string }>(
+        'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
+        [f.groupId],
+      )
+    ).rows[0]!.provider_id;
+    await pool.query(
+      `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
+      [f.qualificationId],
+    );
+    let contexts = 0;
+    let captured!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      captured = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pausedPool: SqlPool = {
+      connect: () => actionDatabase.pool.connect(),
+      async query<T>(sql: string, values?: readonly unknown[]) {
+        const result = await (actionDatabase.pool as SqlPool).query<T>(sql, values);
+        if (
+          sql.includes('AS external_blueprint_id') &&
+          sql.includes('group_item.order_item_id') &&
+          ++contexts === 3
+        ) {
+          captured();
+          await wait;
+        }
+        return result;
+      },
+    };
+    const fulfillment = new ArchiveFixtureFulfillment();
+    const create = vi.spyOn(fulfillment, 'createOrder');
+    const operations = new domain.OrderOperationsService(
+      pausedPool,
+      new MemoryObjectStorage(),
+      fulfillment,
+      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+    );
+    const pending = Promise.allSettled([
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ]);
+    try {
+      await reached;
+      await editService({
+        ...domain.developmentCommerceConfiguration,
+        eligibleProviderExternalIds: [providerId],
+      }).actions.editOrder(staff, {
+        ...f.input(),
+        items: [
+          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+        ],
+      });
+    } finally {
+      release();
+    }
+    expect(await pending).toMatchObject([
+      { status: 'rejected', reason: expect.any(domain.OrderTransitionError) },
+    ]);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('updates line prices with commercial repricing and adds/removes lines using owned design provenance', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const before = await snapshot(f.orderId);
+    await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-2XL', quantity: 1 },
+        { productVariantId: 'essential-dtg-tee-white-L', quantity: 1 },
+      ],
+    });
+    let after = await snapshot(f.orderId);
+    expect(after.items).toHaveLength(2);
+    for (const item of after.items)
+      expect(item).toMatchObject({
+        project_id: before.items[0]!.project_id,
+        project_version_id: before.items[0]!.project_version_id,
+        prepress_run_id: before.items[0]!.prepress_run_id,
+      });
+    expect(after.items.find((item) => item.id === f.itemId)!.item_snapshot).toMatchObject({
+      unitPriceCents: 4299,
+      size: '2XL',
+    });
+    await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+      ],
+    });
+    after = await snapshot(f.orderId);
+    expect(after.items).toHaveLength(1);
+    expect(after.items[0]).toMatchObject({ id: f.itemId, quantity: 1 });
+    expect(after.payments).toEqual(before.payments);
+  });
+
+  it('serializes duplicate edit keys into one revision and rejects cross-order reuse', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const input = { ...f.input(), shippingCents: 300 };
+    const [one, two] = await Promise.all([
+      actions.editOrder(staff, input),
+      actions.editOrder(staff, input),
+    ]);
+    expect(one.revisionId).toBe(two.revisionId);
+    expect([one.duplicate, two.duplicate].sort()).toEqual([false, true]);
+    expect(
+      (await pool.query('SELECT id FROM app.order_revisions WHERE order_id=$1', [f.orderId])).rows,
+    ).toHaveLength(1);
+    const other = await fixture();
+    await expect(
+      actions.editOrder(staff, { ...other.input(), idempotencyKey: input.idempotencyKey }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+  });
+
+  it('keeps commercial line snapshots consistent when catalog prices change before a pricing-only edit', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    await pool.query(
+      'UPDATE app.order_items SET item_snapshot=item_snapshot || \'{"unitPriceCents":2900}\'::jsonb WHERE id=$1',
+      [f.itemId],
+    );
+    await editService().actions.editOrder(staff, { ...f.input(), discountCents: 100 });
+    expect((await snapshot(f.orderId)).items[0]!.item_snapshot).toMatchObject({
+      unitPriceCents: 3999,
+    });
+  });
+
+  it('includes reserved refunds in effective paid balance without altering their ledger', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const paymentId = (await snapshot(f.orderId)).payments[0]!.id;
+    await pool.query(
+      `INSERT INTO app.order_refunds (order_id,payment_id,provider,amount_cents,reason_code,status,idempotency_key,initiated_by_staff_member_id) VALUES ($1,$2,'FAKE',500,'Pending customer refund','PENDING',$3,$4)`,
+      [f.orderId, paymentId, randomUUID(), staff.staffMemberId],
+    );
+    const before = await snapshot(f.orderId);
+    const result = await editService().actions.editOrder(staff, { ...f.input(), discountCents: 0 });
+    expect(result).toMatchObject({
+      priceDifferenceCents: 0,
+      amountDueCents: 500,
+      refundableAdjustmentCents: 0,
+    });
+    expect((await snapshot(f.orderId)).refunds).toEqual(before.refunds);
+  });
+
+  it('rejects currency conversion during edits and keeps clearing a contact phone compatible with later repricing', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    await actions.editOrder(staff, { ...f.input(), customerPhone: '' });
+    await expect(
+      actions.editOrder(staff, { ...f.input(), discountCents: 100 }),
+    ).resolves.toMatchObject({ amountDueCents: 0 });
+    await pool.query(
+      `UPDATE app.orders SET pricing_snapshot=pricing_snapshot || '{"currency":"EUR"}'::jsonb WHERE id=$1`,
+      [f.orderId],
+    );
+    const before = await snapshot(f.orderId);
+    await expect(
+      actions.editOrder(staff, { ...f.input(), discountCents: 100 }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    expect(await snapshot(f.orderId)).toEqual(before);
+  });
+
+  it('rolls back revised items, planning, money, hold, notes and tags if the revision cannot persist', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const before = await snapshot(f.orderId);
+    const name = `edit_failure_${randomUUID().replaceAll('-', '')}`;
+    await pool.query(
+      `CREATE FUNCTION app.${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.order_id='${f.orderId}'::uuid THEN RAISE EXCEPTION 'fixture edit revision failed'; END IF; RETURN NEW; END; $$`,
+    );
+    await pool.query(
+      `CREATE TRIGGER ${name} BEFORE INSERT ON app.order_revisions FOR EACH ROW EXECUTE FUNCTION app.${name}()`,
+    );
+    try {
+      await expect(
+        editService().actions.editOrder(staff, {
+          ...f.input(),
+          items: [
+            { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 3 },
+          ],
+          note: 'Must roll back',
+          tags: ['New tag'],
+        }),
+      ).rejects.toThrow('fixture edit revision failed');
+      expect(await snapshot(f.orderId)).toEqual(before);
+      for (const table of [
+        'order_revisions',
+        'order_holds',
+        'order_notes',
+        'order_tag_assignments',
+      ])
+        expect(
+          (await pool.query(`SELECT * FROM app.${table} WHERE order_id=$1`, [f.orderId])).rows,
+        ).toEqual([]);
+    } finally {
+      await pool.query(`DROP TRIGGER ${name} ON app.order_revisions`);
+      await pool.query(`DROP FUNCTION app.${name}()`);
+    }
+  });
+
   function returnInput(f: Awaited<ReturnType<typeof fixture>>, quantity = 1) {
     return {
       orderNumber: f.orderNumber,

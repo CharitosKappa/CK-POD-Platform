@@ -18,6 +18,7 @@ import type { PolicyOutcome } from './policy';
 import type { LifecycleOrchestrator } from './operations-analytics';
 import type { FulfillmentState, PrintingGroupState } from './order-detail-contracts';
 import type { CancellationStatus } from './order-admin-actions-contracts';
+import type { OrderRepricingService } from './commerce';
 
 export const canonicalOrderStates = [
   'DRAFT',
@@ -599,6 +600,7 @@ export class OrderOperationsService {
     input: { orderNumber: string; fulfillmentGroupId: string },
   ): Promise<{ ready: boolean; blockers: string[] }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await assertNoAmountDue(this.pool, input.orderNumber);
     const result = await this.pool.query<GroupReadinessRow>(
       `SELECT fulfillment_group.id AS fulfillment_group_id, fulfillment_group.order_id,
               orders.status AS order_status, fulfillment_group.qualification_id,
@@ -839,6 +841,117 @@ export class OrderOperationsService {
     });
   }
 
+  /** Composes the canonical hold authority with an already-open order-edit transaction. */
+  async holdForEditLocked(
+    client: SqlClient,
+    session: OrderOperationsActor,
+    orderNumber: string,
+    reasonCode: string,
+  ): Promise<void> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const order = await lockOrder(client, orderNumber);
+    if (order.status !== 'ON_HOLD')
+      await this.holdLocked(
+        client,
+        order,
+        session,
+        reasonCode,
+        'Additional payment is required for the edited order.',
+      );
+  }
+
+  /** Replace only local planning; preserve group identities and append-only operational history. */
+  async replaceUnsubmittedPlanningLocked(
+    client: SqlClient,
+    session: OrderOperationsActor,
+    orderNumber: string,
+    plan: Awaited<ReturnType<OrderRepricingService['plan']>>,
+  ): Promise<string[]> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const order = await lockOrder(client, orderNumber);
+    const old = await client.query<{
+      id: string;
+      group_key: string;
+      external_order_id: string | null;
+      printing_status: PrintingGroupState;
+      fulfillment_status: FulfillmentState;
+    }>(
+      'SELECT id,group_key,external_order_id,printing_status,fulfillment_status FROM app.order_fulfillment_groups WHERE order_id=$1 ORDER BY id FOR UPDATE',
+      [order.id],
+    );
+    if (
+      old.rows.some(
+        (group) =>
+          group.external_order_id ||
+          !['NOT_STARTED', 'READY_FOR_PRODUCTION', 'FAILED', 'CANCELLED'].includes(
+            group.printing_status,
+          ) ||
+          group.fulfillment_status !== 'UNFULFILLED',
+      )
+    )
+      throw new OrderTransitionError('Only unsubmitted fulfillment planning may be replaced.');
+    const ids: string[] = [];
+    for (const group of plan) {
+      const row = (
+        await client.query<{ id: string }>(
+          `INSERT INTO app.order_fulfillment_groups (order_id,group_key,adapter_type,provider_id,qualification_id,shipping_snapshot)
+        VALUES ($1,$2,'PRINTIFY',$3,$4,$5::jsonb) ON CONFLICT (order_id,group_key) DO UPDATE SET shipping_snapshot=EXCLUDED.shipping_snapshot,status='PENDING',updated_at=now() RETURNING id`,
+          [
+            order.id,
+            group.groupKey,
+            group.providerId,
+            group.qualificationId,
+            JSON.stringify({ ...group.quote, orderItems: group.items }),
+          ],
+        )
+      ).rows[0]!;
+      ids.push(row.id);
+      const prior = old.rows.find((candidate) => candidate.id === row.id);
+      if (prior)
+        await transitionPrintingGroup(client, {
+          orderId: order.id,
+          fulfillmentGroupId: row.id,
+          from: prior.printing_status,
+          to: 'NOT_STARTED',
+          source: 'OPS',
+          actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+          metadata: { reason: 'ORDER_EDIT_REQUIRES_READINESS' },
+        });
+      for (const item of group.items)
+        await client.query(
+          'INSERT INTO app.order_fulfillment_group_items (fulfillment_group_id,order_item_id) VALUES ($1,$2)',
+          [row.id, item.orderItemId],
+        );
+      await client.query(
+        `INSERT INTO app.order_fulfillment_group_readiness_evaluations (fulfillment_group_id,ready,blockers,snapshot,created_by_staff_member_id) VALUES ($1,false,'["ORDER_EDIT_REQUIRES_READINESS"]'::jsonb,$2::jsonb,$3)`,
+        [
+          row.id,
+          JSON.stringify({ groupKey: group.groupKey, items: group.items }),
+          actorIds(session).staffMemberId,
+        ],
+      );
+    }
+    for (const removed of old.rows.filter((group) => !ids.includes(group.id))) {
+      await transitionPrintingGroup(client, {
+        orderId: order.id,
+        fulfillmentGroupId: removed.id,
+        from: removed.printing_status,
+        to: 'CANCELLED',
+        source: 'OPS',
+        actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+        metadata: { reason: 'ORDER_EDIT_REPLANNED' },
+      });
+      await client.query(
+        "UPDATE app.order_fulfillment_groups SET status='CANCELLED',updated_at=now() WHERE id=$1",
+        [removed.id],
+      );
+    }
+    await this.audit(client, order.id, 'order_fulfillment_replanned', session, 'ORDER_EDIT', {
+      fulfillmentGroupIds: ids,
+    });
+    return ids;
+  }
+
   async resume(session: OrderOperationsActor, orderNumber: string, notes?: string): Promise<void> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS', 'PREPRESS_REVIEWER']);
     let next: CanonicalOrderState | undefined;
@@ -985,9 +1098,11 @@ export class OrderOperationsService {
     orderNumber: string,
   ): Promise<{ ready: boolean; blockers: string[] }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await assertNoAmountDue(this.pool, orderNumber);
     const snapshot = await this.readinessSnapshot(orderNumber, { allowRouting: true });
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
+      await assertNoAmountDue(client, orderNumber);
       await client.query(
         `INSERT INTO app.order_readiness_evaluations (
            order_id, ready, blockers, snapshot, created_by_user_id, created_by_staff_member_id
@@ -1030,6 +1145,22 @@ export class OrderOperationsService {
     await withTransaction(this.pool, async (client) => {
       await assertCancellationResolved(client, (await lockOrder(client, orderNumber)).id);
     });
+    const revised = await this.pool.query<{ id: string }>(
+      `SELECT id FROM app.orders WHERE order_number=$1 AND EXISTS (SELECT 1 FROM app.order_revisions WHERE order_id=app.orders.id)`,
+      [orderNumber],
+    );
+    if (revised.rows[0]) {
+      const groups = await this.pool.query<{ id: string }>(
+        `SELECT group_row.id FROM app.order_fulfillment_groups group_row WHERE order_id=$1 AND EXISTS (SELECT 1 FROM app.order_fulfillment_group_items WHERE fulfillment_group_id=group_row.id)`,
+        [revised.rows[0].id],
+      );
+      if (groups.rows.length !== 1)
+        throw new OrderTransitionError('This order requires group-scoped production submission.');
+      return this.submitFulfillmentGroup(session, {
+        orderNumber,
+        fulfillmentGroupId: groups.rows[0]!.id,
+      });
+    }
     if (
       this.configuration.fulfillmentAdapter === 'printify' &&
       !this.configuration.realProductionSubmissionEnabled
@@ -1630,6 +1761,7 @@ export class OrderOperationsService {
       group.id,
       'CREATE_EXTERNAL_ORDER',
       session,
+      group,
     );
     if (action.status === 'SUCCEEDED' && action.externalOrderId) {
       return { externalOrderId: action.externalOrderId };
@@ -1670,15 +1802,16 @@ export class OrderOperationsService {
   private async groupSubmissionContext(
     orderNumber: string,
     fulfillmentGroupId: string,
+    client: SqlClient = this.pool,
   ): Promise<FulfillmentGroupSubmissionContext> {
-    const result = await this.pool.query<GroupSubmissionRow>(
+    const result = await client.query<GroupSubmissionRow>(
       `SELECT fulfillment_group.id AS fulfillment_group_id, fulfillment_group.order_id,
               orders.order_number, fulfillment_group.status AS fulfillment_group_status,
               fulfillment_group.external_order_id, qualification.id AS qualification_id,
               provider.external_id AS external_provider_id,
               order_item.prepress_run_id,
-              checkout_item.item_snapshot->>'externalBlueprintId' AS external_blueprint_id,
-              checkout_item.item_snapshot->>'externalVariantId' AS external_variant_id,
+              CASE WHEN fulfillment_group.shipping_snapshot ? 'orderItems' THEN revised_item->>'externalBlueprintId' ELSE checkout_item.item_snapshot->>'externalBlueprintId' END AS external_blueprint_id,
+              CASE WHEN fulfillment_group.shipping_snapshot ? 'orderItems' THEN revised_item->>'externalVariantId' ELSE checkout_item.item_snapshot->>'externalVariantId' END AS external_variant_id,
               order_item.quantity,
               derivative.derivative_asset_id
        FROM app.order_fulfillment_groups fulfillment_group
@@ -1688,9 +1821,11 @@ export class OrderOperationsService {
        JOIN app.order_fulfillment_group_items group_item
          ON group_item.fulfillment_group_id = fulfillment_group.id
        JOIN app.order_items order_item ON order_item.id = group_item.order_item_id
-       JOIN app.checkout_fulfillment_group_items checkout_item
+       LEFT JOIN app.checkout_fulfillment_group_items checkout_item
          ON checkout_item.cart_item_id = order_item.cart_item_id
         AND checkout_item.fulfillment_group_id = fulfillment_group.checkout_fulfillment_group_id
+       LEFT JOIN LATERAL jsonb_array_elements(fulfillment_group.shipping_snapshot->'orderItems') revised_item
+         ON revised_item->>'orderItemId'=order_item.id::text
        LEFT JOIN LATERAL (
          SELECT derivative_asset_id
          FROM app.provider_derivatives
@@ -1736,6 +1871,7 @@ export class OrderOperationsService {
     fulfillmentGroupId: string,
     action: 'CREATE_EXTERNAL_ORDER' | 'SUBMIT_TO_PRODUCTION',
     session: OrderOperationsActor,
+    expectedContext?: FulfillmentGroupSubmissionContext,
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
@@ -1752,6 +1888,15 @@ export class OrderOperationsService {
       );
       if (!group.rows[0])
         throw new OrderTransitionError('Fulfillment group not found for this order.');
+      if (
+        expectedContext &&
+        JSON.stringify(
+          await this.groupSubmissionContext(orderNumber, fulfillmentGroupId, client),
+        ) !== JSON.stringify(expectedContext)
+      )
+        throw new OrderTransitionError(
+          'The order changed before its provider action could be claimed. Reload the order.',
+        );
       const idempotencyKey = `fulfillment-group:${fulfillmentGroupId}:${action}:v1`;
       const existing = await client.query<{
         id: string;
@@ -1864,6 +2009,16 @@ export class OrderOperationsService {
           'External fulfillment actions require an order that is ready for production.',
         );
       }
+      if (
+        (
+          await client.query('SELECT id FROM app.order_revisions WHERE order_id=$1 LIMIT 1', [
+            order.id,
+          ])
+        ).rows.length
+      )
+        throw new OrderTransitionError(
+          'The order changed before its provider action could be claimed. Reload its current fulfillment groups.',
+        );
       const idempotencyKey = `order:${order.id}:${action}:v1`;
       const existing = await client.query<{
         id: string;
@@ -2359,6 +2514,16 @@ function groupReadinessBlockers(rows: GroupReadinessRow[]): string[] {
 }
 
 async function assertCancellationResolved(client: SqlClient, orderId: string): Promise<void> {
+  const balance = (
+    await client.query<{ amount_due_cents: number }>(
+      'SELECT amount_due_cents FROM app.orders WHERE id=$1',
+      [orderId],
+    )
+  ).rows[0];
+  if (balance && balance.amount_due_cents > 0)
+    throw new OrderTransitionError(
+      'The order has an amount due; payment is required before production can continue.',
+    );
   const cancellation = await client.query(
     `SELECT id FROM app.order_cancellations cancellation
     WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED')
@@ -2369,6 +2534,19 @@ async function assertCancellationResolved(client: SqlClient, orderId: string): P
   );
   if (cancellation.rows.length)
     throw new OrderTransitionError('Cancellation must be resolved before production can continue.');
+}
+
+async function assertNoAmountDue(client: SqlClient, orderNumber: string): Promise<void> {
+  const order = (
+    await client.query<{ amount_due_cents: number }>(
+      'SELECT amount_due_cents FROM app.orders WHERE order_number=$1',
+      [orderNumber],
+    )
+  ).rows[0];
+  if (order && order.amount_due_cents > 0)
+    throw new OrderTransitionError(
+      'The order has an amount due; payment is required before production can continue.',
+    );
 }
 
 async function lockOrder(client: SqlClient, orderNumber: string): Promise<LockedOrder> {

@@ -27,7 +27,6 @@ import {
 import { FakePrintifyFulfillmentAdapter } from './printify.js';
 import { OrderDetailService } from './order-detail.js';
 import { FulfillmentIntegrationError } from './fulfillment-contracts.js';
-import type { PaymentService } from './commerce-contracts.js';
 import type {
   FulfillmentService,
   NormalizedShippingQuote,
@@ -64,6 +63,69 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
   });
 
   afterAll(async () => close());
+
+  it('reprices catalog variants with explicit discount/shipping and destination-owned tax', async () => {
+    expect(domain.OrderRepricingService).toBeTypeOf('function');
+    const address = {
+      recipientName: 'Test Customer',
+      email: 'pricing@example.test',
+      line1: '100 Main St',
+      city: 'Cheyenne',
+      stateCode: 'WY',
+      postalCode: '82001',
+      countryCode: 'US',
+    };
+    const tax = {
+      calculate: async (input: Parameters<domain.TaxService['calculate']>[0]) =>
+        new FakeTaxService(input.address.stateCode === 'WY' ? 400 : 725).calculate(input),
+    };
+    const reprice = new domain.OrderRepricingService(pool, tax);
+    const result = await reprice.reprice({
+      items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 2 }],
+      discountCents: 500,
+      shippingCents: 550,
+      shippingAddress: address,
+    });
+    expect(result.pricing).toMatchObject({
+      quantity: 2,
+      unitRetailCents: 3999,
+      subtotalCents: 7498,
+      discountCents: 500,
+      customerShippingCents: 550,
+      taxCents: 300,
+      totalCents: 8348,
+    });
+    const ca = await reprice.reprice({
+      items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 2 }],
+      discountCents: 500,
+      shippingCents: 550,
+      shippingAddress: { ...address, stateCode: 'CA', postalCode: '94107' },
+    });
+    expect(ca.pricing.taxCents).toBe(544);
+    const normalized = await reprice.reprice({
+      items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 2 }],
+      discountCents: 500,
+      shippingCents: 550,
+      shippingAddress: { ...address, stateCode: ' wy ', countryCode: ' us ' },
+    });
+    expect(normalized.pricing.taxCents).toBe(300);
+    for (const invalid of [
+      { items: [{ productVariantId: 'not-a-variant', quantity: 1 }] },
+      { items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 0 }] },
+      { discountCents: 8000 },
+      { shippingCents: -1 },
+      { shippingAddress: { ...address, countryCode: 'GR' } },
+    ])
+      await expect(
+        reprice.reprice({
+          items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 2 }],
+          discountCents: 0,
+          shippingCents: 0,
+          shippingAddress: address,
+          ...invalid,
+        }),
+      ).rejects.toBeInstanceOf(CommerceValidationError);
+  });
 
   it('creates an owned cart from a passed canonical project, persists variant/quantity, and produces a controlled proof', async () => {
     const ready = await readyProject(pool, identity, projects, storage);

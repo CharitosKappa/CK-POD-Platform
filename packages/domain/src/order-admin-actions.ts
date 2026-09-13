@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
 import {
@@ -23,6 +24,13 @@ import { OrderOperationsAccessError, type OrderOperationsService } from './order
 import { normalizeFulfillmentError, type FulfillmentService } from './fulfillment-contracts';
 import type { OrderRefundService } from './order-refunds';
 import { LifecycleOrchestrator } from './operations-analytics';
+import {
+  CommerceValidationError,
+  type OrderRepricingService,
+  type PricingSnapshot,
+  type ShippingAddressInput,
+  type RepricedOrderItem,
+} from './commerce';
 
 export class OrderAdminActionAccessError extends OrderOperationsAccessError {}
 export class OrderAdminActionValidationError extends AdminCommerceValidationError {}
@@ -48,6 +56,47 @@ export interface ArchiveResult {
   archived: boolean;
   archivedAt: Date | null;
   duplicate: boolean;
+}
+
+export interface EditOrderInput extends ArchiveOrderInput {
+  items?: Array<{ orderItemId?: string; productVariantId: string; quantity: number }>;
+  discountCents?: number;
+  shippingCents?: number;
+  shippingAddress?: ShippingAddressInput;
+  customerEmail?: string;
+  customerPhone?: string;
+  tags?: string[];
+}
+
+export interface EditOrderResult {
+  revisionId: string;
+  priceDifferenceCents: number;
+  amountDueCents: number;
+  refundableAdjustmentCents: number;
+  eligibility: OrderActionEligibility;
+  duplicate: boolean;
+}
+
+interface EditableOrderRow extends LockedOrder {
+  customer_email: string;
+  shipping_address_snapshot: ShippingAddressInput;
+  pricing_snapshot: PricingSnapshot;
+  financial_snapshot: Record<string, unknown>;
+  amount_due_cents: number;
+  refundable_adjustment_cents: number;
+}
+
+interface EditableItemRow {
+  id: string;
+  cart_item_id: string;
+  project_id: string;
+  project_version_id: string;
+  prepress_run_id: string;
+  mockup_id: string;
+  product_model_id: string;
+  product_variant_id: string;
+  quantity: number;
+  item_snapshot: Record<string, unknown>;
 }
 
 export interface CreateReturnInput {
@@ -133,6 +182,7 @@ export interface OrderAdminActionsDependencies {
   operations: OrderOperationsService;
   refunds: OrderRefundService;
   lifecycle?: LifecycleOrchestrator;
+  repricing?: OrderRepricingService;
 }
 
 interface CancellationRow {
@@ -180,6 +230,278 @@ export class OrderAdminActionsService {
 
   async unarchive(session: AdminStaffSession, input: ArchiveOrderInput): Promise<ArchiveResult> {
     return this.setArchive(session, input, false);
+  }
+
+  async editOrder(session: AdminStaffSession, input: EditOrderInput): Promise<EditOrderResult> {
+    this.validate(session, input);
+    validateEdit(input);
+    let replannedGroupIds: string[] = [];
+    const result = await withTransaction(this.pool, async (client) => {
+      const locked = await this.lockOrder(client, input.orderNumber);
+      const existing = await this.existingAction<EditOrderResult>(
+        client,
+        locked.id,
+        'order_edited',
+        input.idempotencyKey,
+      );
+      if (existing) return { ...existing, duplicate: true };
+      const eligibility = await this.loadEligibility(client, session, locked);
+      const before = await editSnapshot(client, locked.id);
+      const order = before.order;
+      const commercial =
+        input.items !== undefined ||
+        input.discountCents !== undefined ||
+        input.shippingCents !== undefined ||
+        input.shippingAddress !== undefined;
+      if (
+        (input.items !== undefined && !eligibility.editFields.items) ||
+        ((input.discountCents !== undefined || input.shippingCents !== undefined) &&
+          !eligibility.editFields.pricing) ||
+        (input.shippingAddress !== undefined && !eligibility.editFields.shippingAddress)
+      )
+        throw new OrderAdminActionConflictError(
+          'These order fields are locked by fulfillment or production progress.',
+          eligibility,
+        );
+      if (commercial) {
+        const blockers = await client.query(
+          `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))
+          UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND status='PROCESSING'
+          UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
+          UNION ALL SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED') LIMIT 1`,
+          [locked.id],
+        );
+        if (
+          blockers.rows.length ||
+          [
+            'CANCELLED',
+            'SHIPPED',
+            'DELIVERED',
+            'PARTIALLY_SHIPPED',
+            'IN_PRODUCTION',
+            'SUBMITTED_TO_PRINTIFY',
+          ].includes(locked.status)
+        )
+          throw new OrderAdminActionConflictError(
+            'Commercial edits require an unsubmitted, unfulfilled order without an unresolved cancellation.',
+            eligibility,
+          );
+      }
+      let pricing = order.pricing_snapshot;
+      let financial = order.financial_snapshot;
+      let address = {
+        ...order.shipping_address_snapshot,
+        email: order.customer_email,
+        ...input.shippingAddress,
+        ...(input.customerPhone !== undefined ? { phone: input.customerPhone } : {}),
+      };
+      if (address.phone === '') delete address.phone;
+      const email = input.customerEmail?.trim().toLowerCase() ?? order.customer_email;
+      let amountDueCents = order.amount_due_cents;
+      let refundableAdjustmentCents = order.refundable_adjustment_cents;
+      if (commercial) {
+        if (order.pricing_snapshot.currency !== 'USD')
+          throw new OrderAdminActionValidationError(
+            'Order editing supports the persisted USD currency only.',
+          );
+        const repricing = this.dependencies?.repricing;
+        if (!repricing || !this.dependencies)
+          throw new OrderAdminActionValidationError('Order repricing is unavailable.');
+        let result: Awaited<ReturnType<OrderRepricingService['reprice']>>;
+        try {
+          result = await repricing.reprice(
+            {
+              items:
+                input.items ??
+                before.items.map((item) => ({
+                  orderItemId: item.id,
+                  productVariantId: item.product_variant_id,
+                  quantity: item.quantity,
+                })),
+              discountCents: input.discountCents ?? pricing.discountCents,
+              shippingCents: input.shippingCents ?? pricing.customerShippingCents,
+              shippingAddress: address,
+            },
+            client,
+          );
+        } catch (error) {
+          if (error instanceof CommerceValidationError)
+            throw new OrderAdminActionValidationError(error.message);
+          throw error;
+        }
+        const changedItems = result.items.map((item) => resolveEditedItem(item, before.items));
+        address = result.shippingAddress;
+        pricing = result.pricing;
+        financial = {
+          ...financial,
+          revenueCents: pricing.subtotalCents,
+          discountCents: pricing.discountCents,
+          customerShippingRevenueCents: pricing.customerShippingCents,
+          taxCollectedCents: pricing.taxCents,
+          taxSnapshot: result.tax,
+        };
+        const balance = (
+          await client.query<{ paid: number }>(
+            `SELECT (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid FROM app.orders orders JOIN app.payments payment ON payment.checkout_attempt_id=orders.checkout_attempt_id WHERE orders.id=$1`,
+            [locked.id],
+          )
+        ).rows[0];
+        if (!balance)
+          throw new OrderAdminActionValidationError('The order payment is unavailable.');
+        amountDueCents = Math.max(0, pricing.totalCents - balance.paid);
+        refundableAdjustmentCents = Math.max(0, balance.paid - pricing.totalCents);
+        if (input.items !== undefined || input.shippingAddress !== undefined) {
+          const plan = await repricing.plan(
+            changedItems.map((item) => ({ ...item.price, orderItemId: item.id })),
+            address.countryCode,
+            this.dependencies.fulfillment,
+            client,
+          );
+          // Unsubmitted group identities/history remain intact. Replace only their current planning.
+          await client.query(
+            'DELETE FROM app.order_fulfillment_group_items WHERE fulfillment_group_id IN (SELECT id FROM app.order_fulfillment_groups WHERE order_id=$1)',
+            [locked.id],
+          );
+          await client.query(
+            'DELETE FROM app.order_items WHERE order_id=$1 AND NOT (id=ANY($2::uuid[]))',
+            [locked.id, changedItems.map((item) => item.id)],
+          );
+          for (const item of changedItems)
+            await client.query(
+              `INSERT INTO app.order_items (id,order_id,cart_item_id,project_id,project_version_id,prepress_run_id,mockup_id,product_model_id,product_variant_id,quantity,item_snapshot)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) ON CONFLICT (id) DO UPDATE SET product_variant_id=EXCLUDED.product_variant_id,quantity=EXCLUDED.quantity,item_snapshot=EXCLUDED.item_snapshot`,
+              [
+                item.id,
+                locked.id,
+                item.source.cart_item_id,
+                item.source.project_id,
+                item.source.project_version_id,
+                item.source.prepress_run_id,
+                item.source.mockup_id,
+                item.price.productModelId,
+                item.price.productVariantId,
+                item.price.quantity,
+                JSON.stringify({
+                  ...item.source.item_snapshot,
+                  productName: item.price.productName,
+                  productVariantId: item.price.productVariantId,
+                  colorCode: item.price.colorCode,
+                  colorName: item.price.colorName,
+                  size: item.price.size,
+                  unitPriceCents: item.price.unitPriceCents,
+                }),
+              ],
+            );
+          replannedGroupIds = await this.dependencies.operations.replaceUnsubmittedPlanningLocked(
+            client,
+            session,
+            input.orderNumber,
+            plan,
+          );
+          financial = {
+            ...financial,
+            estimatedProviderShippingCostCents: plan.reduce(
+              (sum, group) => sum + group.quote.shippingCents,
+              0,
+            ),
+          };
+        } else
+          for (const item of changedItems)
+            await client.query(
+              'UPDATE app.order_items SET item_snapshot=item_snapshot || $2::jsonb WHERE id=$1',
+              [item.id, JSON.stringify({ unitPriceCents: item.price.unitPriceCents })],
+            );
+      }
+      await client.query(
+        `UPDATE app.orders SET customer_email=$2,shipping_address_snapshot=$3::jsonb,pricing_snapshot=$4::jsonb,financial_snapshot=$5::jsonb,amount_due_cents=$6,refundable_adjustment_cents=$7,updated_at=now() WHERE id=$1`,
+        [
+          locked.id,
+          email,
+          JSON.stringify(address),
+          JSON.stringify(pricing),
+          JSON.stringify(financial),
+          amountDueCents,
+          refundableAdjustmentCents,
+        ],
+      );
+      if (commercial && amountDueCents > 0)
+        await this.dependencies!.operations.holdForEditLocked(
+          client,
+          session,
+          input.orderNumber,
+          input.reasonCode,
+        );
+      if (input.note?.trim())
+        await client.query(
+          'INSERT INTO app.order_notes (order_id,body,created_by_staff_member_id) VALUES ($1,$2,$3)',
+          [locked.id, input.note.trim(), session.staffMemberId],
+        );
+      if (input.tags !== undefined) {
+        await client.query('DELETE FROM app.order_tag_assignments WHERE order_id=$1', [locked.id]);
+        const tagMap = new Map<string, string>();
+        for (const tag of input.tags)
+          if (!tagMap.has(tag.trim().toLowerCase()))
+            tagMap.set(tag.trim().toLowerCase(), tag.trim());
+        const tags = [...tagMap.values()].sort();
+        for (const tag of tags)
+          await client.query(
+            `WITH tag AS (INSERT INTO app.order_tags (value) VALUES ($2) ON CONFLICT (lower(value)) DO UPDATE SET value=app.order_tags.value RETURNING id) INSERT INTO app.order_tag_assignments (order_id,order_tag_id,created_by_staff_member_id) SELECT $1,id,$3 FROM tag`,
+            [locked.id, tag, session.staffMemberId],
+          );
+      }
+      const after = await editSnapshot(client, locked.id);
+      const priceDifferenceCents = pricing.totalCents - order.pricing_snapshot.totalCents;
+      const revision = (
+        await client.query<{ id: string }>(
+          `INSERT INTO app.order_revisions (order_id,before_snapshot,after_snapshot,price_difference_cents,reason_code,note,created_by_staff_member_id,idempotency_key) VALUES ($1,$2::jsonb,$3::jsonb,$4,$5,$6,$7,$8) RETURNING id`,
+          [
+            locked.id,
+            JSON.stringify(before),
+            JSON.stringify(after),
+            priceDifferenceCents,
+            input.reasonCode,
+            input.note ?? null,
+            session.staffMemberId,
+            input.idempotencyKey,
+          ],
+        )
+      ).rows[0]!;
+      const result = {
+        revisionId: revision.id,
+        priceDifferenceCents,
+        amountDueCents,
+        refundableAdjustmentCents,
+        eligibility: await this.loadEligibility(client, session, after.order),
+        duplicate: false,
+      };
+      await this.audit(client, session, locked.id, 'order_edited', input, {
+        revisionId: revision.id,
+        result,
+      });
+      return result;
+    });
+    // Planning is committed in a non-submittable state. Reuse the full operational
+    // qualification/proof/policy/derivative checks after releasing the edit transaction.
+    if (!result.duplicate && result.amountDueCents === 0)
+      for (const fulfillmentGroupId of replannedGroupIds) {
+        try {
+          await this.dependencies!.operations.evaluateFulfillmentGroupReadiness(session, {
+            orderNumber: input.orderNumber,
+            fulfillmentGroupId,
+          });
+        } catch {
+          await this.pool.query(
+            `INSERT INTO app.order_operational_audits (order_id,action,actor_type,actor_staff_member_id,reason_code,metadata)
+          SELECT id,'order_edit_readiness_pending','OPS',$2,'ORDER_EDIT_REVIEW_REQUIRED',$3::jsonb FROM app.orders WHERE order_number=$1`,
+            [
+              input.orderNumber,
+              session.staffMemberId,
+              JSON.stringify({ revisionId: result.revisionId, fulfillmentGroupId }),
+            ],
+          );
+        }
+      }
+    return result;
   }
 
   async createReturn(
@@ -1090,7 +1412,7 @@ export class OrderAdminActionsService {
         : row.fulfillment_status === 'CANCELLED'
           ? 'UNFULFILLED'
           : row.fulfillment_status;
-    return resolveOrderActionEligibility({
+    const eligibility = resolveOrderActionEligibility({
       role: session.role,
       paymentState: projectPaymentState({
         paymentStatus: row.payment_status,
@@ -1106,6 +1428,29 @@ export class OrderAdminActionsService {
         ['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED'].includes(group.fulfillment_status),
       ),
     });
+    const blocked = await client.query(
+      `SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
+      UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
+      UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND status='PROCESSING'
+      UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0)) LIMIT 1`,
+      [order.id],
+    );
+    if (
+      blocked.rows.length ||
+      [
+        'CANCELLED',
+        'SHIPPED',
+        'DELIVERED',
+        'PARTIALLY_SHIPPED',
+        'IN_PRODUCTION',
+        'SUBMITTED_TO_PRINTIFY',
+      ].includes(order.status)
+    ) {
+      eligibility.editFields.items = false;
+      eligibility.editFields.pricing = false;
+      eligibility.editFields.shippingAddress = false;
+    }
+    return eligibility;
   }
 
   private async audit(
@@ -1155,6 +1500,94 @@ function isUuid(value: unknown): value is string {
     typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
   );
+}
+
+function validateEdit(input: EditOrderInput) {
+  const invalidMoney = [input.discountCents, input.shippingCents].some(
+    (value) =>
+      value !== undefined && (!Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647),
+  );
+  const invalidItems =
+    input.items !== undefined &&
+    (!Array.isArray(input.items) ||
+      !input.items.length ||
+      input.items.length > 100 ||
+      input.items.some(
+        (item) =>
+          !item ||
+          typeof item.productVariantId !== 'string' ||
+          !item.productVariantId.trim() ||
+          (item.orderItemId !== undefined && !isUuid(item.orderItemId)) ||
+          !Number.isInteger(item.quantity) ||
+          item.quantity < 1 ||
+          item.quantity > 99,
+      ) ||
+      new Set(
+        input.items
+          .filter((item) => item.orderItemId)
+          .map((item) => item.orderItemId!.toLowerCase()),
+      ).size !== input.items.filter((item) => item.orderItemId).length);
+  const invalidEmail =
+    input.customerEmail !== undefined &&
+    (typeof input.customerEmail !== 'string' ||
+      input.customerEmail.length > 254 ||
+      !/^\S+@\S+\.\S+$/.test(input.customerEmail.trim()));
+  const invalidPhone =
+    input.customerPhone !== undefined &&
+    (typeof input.customerPhone !== 'string' ||
+      (input.customerPhone !== '' && !/^[+0-9().\-\s]{7,25}$/.test(input.customerPhone.trim())));
+  const invalidTags =
+    input.tags !== undefined &&
+    (!Array.isArray(input.tags) ||
+      input.tags.length > 100 ||
+      input.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.trim().length > 80));
+  const invalidAddress =
+    input.shippingAddress !== undefined &&
+    (!input.shippingAddress ||
+      ['recipientName', 'email', 'line1', 'city', 'stateCode', 'postalCode', 'countryCode'].some(
+        (key) =>
+          typeof (input.shippingAddress as unknown as Record<string, unknown>)[key] !== 'string',
+      ));
+  if (invalidMoney || invalidItems || invalidEmail || invalidPhone || invalidTags || invalidAddress)
+    throw new OrderAdminActionValidationError(
+      'Enter valid order fields, quantities and non-negative minor-unit prices.',
+    );
+}
+
+async function editSnapshot(client: SqlClient, orderId: string) {
+  const order = (
+    await client.query<EditableOrderRow>('SELECT * FROM app.orders WHERE id=$1', [orderId])
+  ).rows[0]!;
+  const items = (
+    await client.query<EditableItemRow>(
+      'SELECT * FROM app.order_items WHERE order_id=$1 ORDER BY id FOR UPDATE',
+      [orderId],
+    )
+  ).rows;
+  const tags = (
+    await client.query<{ value: string }>(
+      'SELECT tag.value FROM app.order_tags tag JOIN app.order_tag_assignments assignment ON assignment.order_tag_id=tag.id WHERE assignment.order_id=$1 ORDER BY tag.value',
+      [orderId],
+    )
+  ).rows.map((tag) => tag.value);
+  const notes = (
+    await client.query('SELECT * FROM app.order_notes WHERE order_id=$1 ORDER BY created_at,id', [
+      orderId,
+    ])
+  ).rows;
+  return { order, items, tags, notes };
+}
+
+function resolveEditedItem(price: RepricedOrderItem, items: EditableItemRow[]) {
+  const candidates = price.orderItemId
+    ? items.filter((item) => item.id === price.orderItemId!.toLowerCase())
+    : items.filter((item) => item.product_model_id === price.productModelId);
+  // New lines must inherit an unambiguous existing artwork/proof. No invented design provenance.
+  if (candidates.length !== 1 || candidates[0]!.product_model_id !== price.productModelId)
+    throw new OrderAdminActionValidationError(
+      'Select an existing item with an unambiguous design for this product model.',
+    );
+  return { id: price.orderItemId?.toLowerCase() ?? randomUUID(), source: candidates[0]!, price };
 }
 
 function restoreReturnSummary(value: StoredReturnSummary): OrderReturnSummary {

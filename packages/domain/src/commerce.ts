@@ -169,6 +169,230 @@ export interface TaxSnapshot {
   configurationVersion: string;
 }
 
+export interface RepriceOrderInput {
+  items: Array<{ orderItemId?: string; productVariantId: string; quantity: number }>;
+  discountCents: number;
+  shippingCents: number;
+  shippingAddress: ShippingAddressInput;
+}
+
+export interface RepricedOrderItem {
+  orderItemId?: string;
+  productVariantId: string;
+  quantity: number;
+  productModelId: string;
+  productName: string;
+  colorCode: string;
+  colorName: string;
+  size: string;
+  unitPriceCents: number;
+}
+
+/** Server-owned catalog pricing. A caller may supply its locked transaction client. */
+export class OrderRepricingService {
+  constructor(
+    private readonly pool: SqlClient,
+    private readonly taxes: TaxService,
+    private readonly configuration: CommerceConfiguration = developmentCommerceConfiguration,
+  ) {}
+
+  async plan(
+    items: Array<RepricedOrderItem & { orderItemId: string }>,
+    destinationCountry: string,
+    fulfillment: FulfillmentService,
+    client: SqlClient = this.pool,
+  ) {
+    const groups = new Map<
+      string,
+      {
+        groupKey: string;
+        providerId: string;
+        qualificationId: string;
+        externalProviderId: string;
+        items: Array<{
+          orderItemId: string;
+          externalBlueprintId: string;
+          externalVariantId: string;
+          quantity: number;
+        }>;
+      }
+    >();
+    for (const item of items) {
+      const mapping = await resolveFulfillmentMapping(
+        client,
+        this.configuration,
+        item.productVariantId,
+        item.productModelId,
+        destinationCountry,
+      );
+      const groupKey = `PRINTIFY:${mapping.provider_id}:${mapping.qualification_id}:${destinationCountry}`;
+      const group = groups.get(groupKey) ?? {
+        groupKey,
+        providerId: mapping.provider_id,
+        qualificationId: mapping.qualification_id,
+        externalProviderId: mapping.external_provider_id,
+        items: [],
+      };
+      group.items.push({
+        orderItemId: item.orderItemId,
+        externalBlueprintId: mapping.external_blueprint_id,
+        externalVariantId: mapping.external_variant_id,
+        quantity: item.quantity,
+      });
+      groups.set(groupKey, group);
+    }
+    return Promise.all(
+      [...groups.values()].map(async (group) => ({
+        ...group,
+        quote: await fulfillment.quoteShipping({
+          externalProviderId: group.externalProviderId,
+          destinationCountry,
+          items: group.items,
+        }),
+      })),
+    );
+  }
+
+  async reprice(
+    input: RepriceOrderInput,
+    client: SqlClient = this.pool,
+  ): Promise<{
+    pricing: PricingSnapshot;
+    tax: TaxSnapshot;
+    items: RepricedOrderItem[];
+    shippingAddress: ShippingAddressInput;
+  }> {
+    validateAddress(input.shippingAddress);
+    const normalizedAddress = normalizedBillingAddress(input.shippingAddress);
+    const shippingAddress: ShippingAddressInput = {
+      ...normalizedAddress,
+      line2: normalizedAddress.line2 ?? '',
+      email: input.shippingAddress.email.trim().toLowerCase(),
+      ...(input.shippingAddress.phone?.trim() ? { phone: input.shippingAddress.phone.trim() } : {}),
+    };
+    if (!Array.isArray(input.items) || !input.items.length || input.items.length > 100)
+      throw new CommerceValidationError('An order needs between 1 and 100 items.');
+    const items: RepricedOrderItem[] = [];
+    for (const item of input.items) {
+      validateQuantity(item.quantity);
+      const row = (
+        await client.query<VariantRow & { product_model_id: string; product_name: string }>(
+          `SELECT variant.*,model.display_name AS product_name FROM app.product_variants variant
+         JOIN app.product_models model ON model.id=variant.product_model_id
+         WHERE variant.id=$1 AND variant.status='ACTIVE' FOR SHARE OF variant`,
+          [item.productVariantId],
+        )
+      ).rows[0];
+      if (!row) throw new CommerceValidationError('The selected product variant is unavailable.');
+      items.push({
+        ...item,
+        productModelId: row.product_model_id,
+        productName: row.product_name,
+        colorCode: row.color_code,
+        colorName: row.color_name,
+        size: row.size,
+        unitPriceCents: row.price_cents,
+      });
+    }
+    const pricing = priceLines(
+      items,
+      input.discountCents,
+      input.shippingCents,
+      this.configuration.pricingVersion,
+    );
+    const calculated = await addTax(this.taxes, pricing, shippingAddress);
+    return { ...calculated, items, shippingAddress };
+  }
+}
+
+async function resolveFulfillmentMapping(
+  client: SqlClient,
+  configuration: CommerceConfiguration,
+  variantId: string,
+  modelId: string,
+  destinationCountry: string,
+) {
+  const result = await client.query<{
+    adapter_type: 'PRINTIFY';
+    provider_id: string;
+    qualification_id: string;
+    external_provider_id: string;
+    external_blueprint_id: string;
+    external_variant_id: string;
+  }>(
+    `SELECT pm.adapter_type, p.id AS provider_id, pq.id AS qualification_id,
+      p.external_id AS external_provider_id, pm.external_blueprint_id, vm.external_variant_id
+     FROM app.fulfillment_product_mappings pm
+     JOIN app.fulfillment_variant_mappings vm ON vm.product_variant_id=$1 AND vm.adapter_type=pm.adapter_type
+     JOIN app.print_providers p ON p.adapter_type=pm.adapter_type AND p.status='ENABLED'
+     JOIN app.provider_qualifications pq ON pq.provider_id=p.id AND pq.product_model_id=pm.product_model_id
+     WHERE pm.product_model_id=$2 AND pq.active=true AND pq.shipping_enabled=true AND pq.destination_countries ? $3
+       AND ($4::boolean=false OR p.development_only=true)
+       AND ($5::text[] IS NULL OR p.external_id=ANY($5::text[])) ORDER BY p.id LIMIT 1`,
+    [
+      variantId,
+      modelId,
+      destinationCountry,
+      configuration.developmentProviderOnly ?? false,
+      configuration.eligibleProviderExternalIds ?? null,
+    ],
+  );
+  return requireRow(
+    result.rows[0],
+    `Shipping is unavailable for this product in ${destinationCountry}.`,
+  );
+}
+
+function priceLines(
+  items: Array<{ unitPriceCents: number; quantity: number }>,
+  discountCents: number,
+  shippingCents: number,
+  pricingVersion: string,
+): PricingSnapshot {
+  const gross = items.reduce((total, item) => total + item.unitPriceCents * item.quantity, 0);
+  for (const cents of [gross, discountCents, shippingCents])
+    if (!Number.isSafeInteger(cents) || cents < 0 || cents > 2_147_483_647)
+      throw new CommerceValidationError('Prices must be valid non-negative integer minor units.');
+  if (discountCents > gross)
+    throw new CommerceValidationError('The discount exceeds the item total.');
+  return {
+    unitRetailCents: requireRow(items[0], 'Order has no items.').unitPriceCents,
+    quantity: items.reduce((total, item) => total + item.quantity, 0),
+    discountCents,
+    subtotalCents: gross - discountCents,
+    customerShippingCents: shippingCents,
+    freeShippingApplied: shippingCents === 0,
+    taxCents: 0,
+    totalCents: gross - discountCents + shippingCents,
+    currency,
+    pricingVersion,
+  };
+}
+
+async function addTax(
+  taxes: TaxService,
+  pricing: PricingSnapshot,
+  address: { countryCode: string; stateCode: string; postalCode: string },
+): Promise<{ pricing: PricingSnapshot; tax: TaxSnapshot }> {
+  const tax = await taxes.calculate({
+    subtotalCents: pricing.subtotalCents,
+    customerShippingCents: pricing.customerShippingCents,
+    address,
+  });
+  const totalCents = pricing.subtotalCents + pricing.customerShippingCents + tax.taxCents;
+  if (
+    ![tax.taxCents, tax.shippingTaxCents, totalCents].every(
+      (value) => Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647,
+    ) ||
+    tax.currency !== currency
+  )
+    throw new CommerceValidationError('Tax calculation returned invalid monetary values.');
+  return {
+    tax: { ...tax, calculatedAt: tax.calculatedAt.toISOString() },
+    pricing: { ...pricing, taxCents: tax.taxCents, totalCents },
+  };
+}
+
 interface CartRow {
   id: string;
   revision: number;
@@ -633,30 +857,11 @@ export class CommerceService {
       0,
     );
     const pricing = this.priceCart(items, providerShippingCents);
-    const tax = await this.taxes.calculate({
-      subtotalCents: pricing.subtotalCents,
-      customerShippingCents: pricing.customerShippingCents,
-      address: {
-        countryCode: shippingAddress.country_code,
-        stateCode: shippingAddress.state_code,
-        postalCode: shippingAddress.postal_code,
-      },
+    const { pricing: pricingWithTax, tax: taxSnapshot } = await addTax(this.taxes, pricing, {
+      countryCode: shippingAddress.country_code,
+      stateCode: shippingAddress.state_code,
+      postalCode: shippingAddress.postal_code,
     });
-    const taxSnapshot: TaxSnapshot = {
-      provider: tax.provider,
-      providerCalculationId: tax.providerCalculationId,
-      taxableSubtotalCents: tax.taxableSubtotalCents,
-      shippingTaxCents: tax.shippingTaxCents,
-      taxCents: tax.taxCents,
-      currency,
-      calculatedAt: tax.calculatedAt.toISOString(),
-      configurationVersion: tax.configurationVersion,
-    };
-    const pricingWithTax: PricingSnapshot = {
-      ...pricing,
-      taxCents: tax.taxCents,
-      totalCents: pricing.subtotalCents + pricing.customerShippingCents + tax.taxCents,
-    };
     const expiry = fulfillmentQuoteExpiry(fulfillmentGroups, this.configuration.quoteTtlMinutes);
     const attemptId = randomUUID();
     const inserted = await withTransaction(this.pool, async (client) => {
@@ -1296,38 +1501,12 @@ export class CommerceService {
     externalProviderId: string;
     item: FulfillmentPlanItem;
   }> {
-    const result = await this.pool.query<{
-      adapter_type: 'PRINTIFY';
-      provider_id: string;
-      qualification_id: string;
-      external_provider_id: string;
-      external_blueprint_id: string;
-      external_variant_id: string;
-    }>(
-      `SELECT pm.adapter_type, p.id AS provider_id, pq.id AS qualification_id,
-              p.external_id AS external_provider_id, pm.external_blueprint_id, vm.external_variant_id
-       FROM app.fulfillment_product_mappings pm
-       JOIN app.fulfillment_variant_mappings vm ON vm.product_variant_id = $1 AND vm.adapter_type = pm.adapter_type
-       JOIN app.print_providers p ON p.adapter_type = pm.adapter_type AND p.status = 'ENABLED'
-       JOIN app.provider_qualifications pq ON pq.provider_id = p.id AND pq.product_model_id = pm.product_model_id
-       WHERE pm.product_model_id = $2
-         AND pq.active = true
-         AND pq.shipping_enabled = true
-         AND pq.destination_countries ? $3
-         AND ($4::boolean = false OR p.development_only = true)
-         AND ($5::text[] IS NULL OR p.external_id = ANY($5::text[]))
-       ORDER BY p.id LIMIT 1`,
-      [
-        item.product_variant_id,
-        item.product_model_id,
-        destinationCountry,
-        this.configuration.developmentProviderOnly ?? false,
-        this.configuration.eligibleProviderExternalIds ?? null,
-      ],
-    );
-    const mapping = requireRow(
-      result.rows[0],
-      `Shipping is unavailable for ${item.product_name} in ${destinationCountry}.`,
+    const mapping = await resolveFulfillmentMapping(
+      this.pool,
+      this.configuration,
+      item.product_variant_id,
+      item.product_model_id,
+      destinationCountry,
     );
     return {
       adapterType: mapping.adapter_type,
@@ -1342,37 +1521,7 @@ export class CommerceService {
     };
   }
 
-  private price(
-    unitRetailCents: number,
-    quantity: number,
-    providerShippingCents: number,
-  ): PricingSnapshot {
-    const gross = unitRetailCents * quantity;
-    const discountRule = [...this.configuration.quantityDiscounts]
-      .sort((a, b) => b.minimumQuantity - a.minimumQuantity)
-      .find((rule) => quantity >= rule.minimumQuantity);
-    const discountCents = discountRule
-      ? Math.round((gross * discountRule.basisPoints) / 10_000)
-      : 0;
-    const subtotalCents = gross - discountCents;
-    const freeShippingApplied = subtotalCents >= this.configuration.freeShippingThresholdCents;
-    const customerShippingCents = freeShippingApplied ? 0 : providerShippingCents;
-    return {
-      unitRetailCents,
-      quantity,
-      discountCents,
-      subtotalCents,
-      customerShippingCents,
-      freeShippingApplied,
-      taxCents: 0,
-      totalCents: subtotalCents + customerShippingCents,
-      currency,
-      pricingVersion: this.configuration.pricingVersion,
-    };
-  }
-
   private priceCart(items: ItemRow[], providerShippingCents: number): PricingSnapshot {
-    const primaryItem = requireRow(items[0], 'Cart has no items.');
     const quantity = items.reduce((total, item) => total + item.quantity, 0);
     const gross = items.reduce((total, item) => total + item.unit_price_cents * item.quantity, 0);
     const discountRule = [...this.configuration.quantityDiscounts]
@@ -1385,16 +1534,13 @@ export class CommerceService {
     const freeShippingApplied = subtotalCents >= this.configuration.freeShippingThresholdCents;
     const customerShippingCents = freeShippingApplied ? 0 : providerShippingCents;
     return {
-      unitRetailCents: primaryItem.unit_price_cents,
-      quantity,
-      discountCents,
-      subtotalCents,
-      customerShippingCents,
+      ...priceLines(
+        items.map((item) => ({ unitPriceCents: item.unit_price_cents, quantity: item.quantity })),
+        discountCents,
+        customerShippingCents,
+        this.configuration.pricingVersion,
+      ),
       freeShippingApplied,
-      taxCents: 0,
-      totalCents: subtotalCents + customerShippingCents,
-      currency,
-      pricingVersion: this.configuration.pricingVersion,
     };
   }
 

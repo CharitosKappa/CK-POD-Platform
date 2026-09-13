@@ -33,6 +33,40 @@ function service() {
   return new domain.OrderAdminActionsService(pool);
 }
 
+describe('guarded order edit preflight', () => {
+  it('rejects unauthorized edits and malformed changes before persistence', async () => {
+    const actions = service();
+    expect(actions.editOrder).toBeTypeOf('function');
+    for (const role of ['PREPRESS', 'READ_ONLY'] as const)
+      await expect(actions.editOrder({ ...staff, role }, input)).rejects.toBeInstanceOf(
+        domain.OrderAdminActionAccessError,
+      );
+    for (const invalid of [
+      { items: [] },
+      { items: [null] },
+      { items: [{ productVariantId: '', quantity: 1 }] },
+      { items: [{ productVariantId: 'variant', quantity: 0 }] },
+      { items: [{ productVariantId: 'variant', quantity: 1.5 }] },
+      { items: [{ productVariantId: 'variant', orderItemId: 'other', quantity: 1 }] },
+      { discountCents: -1 },
+      { shippingCents: 0.5 },
+      { shippingCents: Number.MAX_SAFE_INTEGER },
+      { customerEmail: 'invalid' },
+      { customerPhone: 'x' },
+      { tags: [null] },
+      { tags: ['x'.repeat(81)] },
+      { shippingAddress: null },
+      { note: 'x'.repeat(1001) },
+    ])
+      await expect(
+        actions.editOrder(staff, { ...input, ...invalid } as never),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    await expect(
+      actions.editOrder(staff, { ...input, customerEmail: 'valid@example.test' }),
+    ).rejects.toBe(databaseReached);
+  });
+});
+
 describe('order archive action preflight', () => {
   it.each(['archive', 'unarchive'] as const)(
     '%s restricts mutation to OWNER/OPERATIONS',
