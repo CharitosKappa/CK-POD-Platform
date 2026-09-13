@@ -501,75 +501,307 @@ suite('order archive transaction integration', () => {
     },
   );
 
-  it('rejects a stale provider creation context when an edit commits before its action claim', async () => {
-    const f = await productionFixture();
-    const providerId = (
-      await pool.query<{ provider_id: string }>(
-        'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
-        [f.groupId],
-      )
-    ).rows[0]!.provider_id;
-    await pool.query(
-      `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
-      [f.qualificationId],
-    );
-    let contexts = 0;
-    let captured!: () => void;
-    let release!: () => void;
-    const reached = new Promise<void>((resolve) => {
-      captured = resolve;
-    });
-    const wait = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const pausedPool: SqlPool = {
-      connect: () => actionDatabase.pool.connect(),
-      async query<T>(sql: string, values?: readonly unknown[]) {
-        const result = await (actionDatabase.pool as SqlPool).query<T>(sql, values);
-        if (
-          sql.includes('AS external_blueprint_id') &&
-          sql.includes('group_item.order_item_id') &&
-          ++contexts === 3
-        ) {
-          captured();
-          await wait;
-        }
-        return result;
-      },
-    };
-    const fulfillment = new ArchiveFixtureFulfillment();
-    const create = vi.spyOn(fulfillment, 'createOrder');
-    const operations = new domain.OrderOperationsService(
-      pausedPool,
-      new MemoryObjectStorage(),
-      fulfillment,
-      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
-    );
-    const pending = Promise.allSettled([
-      operations.submitFulfillmentGroup(staff, {
-        orderNumber: f.orderNumber,
-        fulfillmentGroupId: f.groupId,
-      }),
-    ]);
-    try {
-      await reached;
-      await editService({
+  it.each(['ROUTING', 'READY_FOR_PRODUCTION'])(
+    'advances a provider-changing edit from %s through delivery without discarding retired plan history',
+    async (stage) => {
+      const f = await productionFixture();
+      await pool.query('UPDATE app.orders SET status=$2 WHERE id=$1', [f.orderId, stage]);
+      const providerId = (
+        await pool.query<{ provider_id: string }>(
+          'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
+          [f.groupId],
+        )
+      ).rows[0]!.provider_id;
+      await pool.query(
+        `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
+        [f.qualificationId],
+      );
+      const { actions, operations } = editService({
         ...domain.developmentCommerceConfiguration,
         eligibleProviderExternalIds: [providerId],
-      }).actions.editOrder(staff, {
+      });
+      await actions.editOrder(staff, {
         ...f.input(),
         items: [
-          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+          { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 2 },
         ],
       });
-    } finally {
-      release();
-    }
-    expect(await pending).toMatchObject([
-      { status: 'rejected', reason: expect.any(domain.OrderTransitionError) },
-    ]);
-    expect(create).not.toHaveBeenCalled();
-  });
+      const after = await snapshot(f.orderId);
+      expect(after.order.status).toBe('READY_FOR_PRODUCTION');
+      const retired = after.groups.find((group) => group.id === f.groupId)!;
+      expect(retired).toMatchObject({
+        status: 'CANCELLED',
+        external_order_id: null,
+        fulfillment_status: 'UNFULFILLED',
+      });
+      const groupId = after.groups.find((group) => group.id !== f.groupId)!.id;
+      const { externalOrderId } = await operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: groupId,
+      });
+      expect((await snapshot(f.orderId)).order.status).toBe('SUBMITTED_TO_PRINTIFY');
+      for (const [rawStatus, status] of [
+        ['in_production', 'IN_PRODUCTION'],
+        ['shipped', 'SHIPPED'],
+        ['delivered', 'DELIVERED'],
+      ] as const) {
+        await operations.reconcileStatus({ externalOrderId, rawStatus, source: 'POLLING' });
+        expect((await snapshot(f.orderId)).order.status).toBe(status);
+      }
+      expect((await snapshot(f.orderId)).groups.find((group) => group.id === f.groupId)).toEqual(
+        retired,
+      );
+      expect(
+        (
+          await pool.query(
+            `SELECT id FROM app.order_printing_status_events WHERE fulfillment_group_id=$1 AND metadata->>'reason'='ORDER_EDIT_REPLANNED'`,
+            [f.groupId],
+          )
+        ).rows,
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['unchanged', 'new artwork'])(
+    'locks commercial content after provider acceptance followed by a transport timeout (retry: %s)',
+    async (retry) => {
+      const f = await productionFixture();
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const accepted = fulfillment.createOrder.bind(fulfillment);
+      let first = true;
+      const create = vi.spyOn(fulfillment, 'createOrder').mockImplementation(async (input) => {
+        const result = await accepted(input);
+        if (first) {
+          first = false;
+          throw new domain.FulfillmentIntegrationError('TIMEOUT', 'Accepted but response lost');
+        }
+        return result;
+      });
+      const { actions, operations } = editService(undefined, fulfillment);
+      const submission = { orderNumber: f.orderNumber, fulfillmentGroupId: f.groupId };
+      await expect(operations.submitFulfillmentGroup(staff, submission)).rejects.toThrow(
+        'response lost',
+      );
+      const before = await snapshot(f.orderId);
+      expect(
+        (
+          await pool.query(
+            'SELECT status,attempt_count FROM app.order_fulfillment_actions WHERE order_id=$1',
+            [f.orderId],
+          )
+        ).rows,
+      ).toMatchObject([{ status: 'RETRYING', attempt_count: 1 }]);
+      await expect(
+        actions.editOrder(staff, { ...f.input(), discountCents: 100 }),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+      expect(await snapshot(f.orderId)).toEqual(before);
+      if (retry === 'new artwork') {
+        await pool.query(
+          `UPDATE app.provider_derivatives SET derivative_asset_id=(SELECT mockup.preview_asset_id FROM app.mockups mockup JOIN app.order_items item ON item.mockup_id=mockup.id WHERE item.id=$2) WHERE id=$1`,
+          [f.derivativeId, f.itemId],
+        );
+        await expect(operations.submitFulfillmentGroup(staff, submission)).rejects.toBeInstanceOf(
+          domain.OrderTransitionError,
+        );
+        expect(create).toHaveBeenCalledOnce();
+        return;
+      }
+      await operations.submitFulfillmentGroup(staff, submission);
+      expect(create.mock.calls[1]![0]).toEqual(create.mock.calls[0]![0]);
+      expect((await snapshot(f.orderId)).groups[0]).toMatchObject({ status: 'SUBMITTED' });
+    },
+  );
+
+  it.each(['PENDING', 'FAILED', 'RETRYING'])(
+    'rejects commercial edits for a started %s external creation attempt',
+    async (status) => {
+      const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+      await pool.query(
+        `INSERT INTO app.order_fulfillment_actions (order_id,fulfillment_group_id,action,idempotency_key,status,attempt_count) VALUES ($1,$2,'CREATE_EXTERNAL_ORDER',$3,$4,1)`,
+        [f.orderId, f.groupId, randomUUID(), status],
+      );
+      await expect(
+        editService().actions.editOrder(staff, { ...f.input(), shippingCents: 0 }),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    },
+  );
+
+  it.each(['edit', 'availability'])(
+    'rejects a stale provider creation context when %s changes before its action claim',
+    async (change) => {
+      const f = await productionFixture();
+      const providerId = (
+        await pool.query<{ provider_id: string }>(
+          'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
+          [f.groupId],
+        )
+      ).rows[0]!.provider_id;
+      await pool.query(
+        `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
+        [f.qualificationId],
+      );
+      let contexts = 0;
+      let captured!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        captured = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pausedPool: SqlPool = {
+        connect: () => actionDatabase.pool.connect(),
+        async query<T>(sql: string, values?: readonly unknown[]) {
+          const result = await (actionDatabase.pool as SqlPool).query<T>(sql, values);
+          if (
+            sql.includes('AS external_blueprint_id') &&
+            sql.includes('group_item.order_item_id') &&
+            ++contexts === 3
+          ) {
+            captured();
+            await wait;
+          }
+          return result;
+        },
+      };
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const create = vi.spyOn(fulfillment, 'createOrder');
+      const operations = new domain.OrderOperationsService(
+        pausedPool,
+        new MemoryObjectStorage(),
+        fulfillment,
+        { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+      );
+      const pending = Promise.allSettled([
+        operations.submitFulfillmentGroup(staff, {
+          orderNumber: f.orderNumber,
+          fulfillmentGroupId: f.groupId,
+        }),
+      ]);
+      try {
+        await reached;
+        if (change === 'availability')
+          await pool.query(
+            'UPDATE app.provider_variants SET available=false WHERE provider_id=$1',
+            [providerId],
+          );
+        else
+          await editService({
+            ...domain.developmentCommerceConfiguration,
+            eligibleProviderExternalIds: [providerId],
+          }).actions.editOrder(staff, {
+            ...f.input(),
+            items: [
+              { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 1 },
+            ],
+          });
+      } finally {
+        release();
+      }
+      expect(await pending).toMatchObject([
+        { status: 'rejected', reason: expect.any(domain.OrderTransitionError) },
+      ]);
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['unavailable variant', 'operational hold'])(
+    'rejects paused old readiness after a concurrent %s change',
+    async (change) => {
+      const f = await productionFixture();
+      const providerId = (
+        await pool.query<{ provider_id: string }>(
+          'SELECT provider_id FROM app.order_fulfillment_groups WHERE id=$1',
+          [f.groupId],
+        )
+      ).rows[0]!.provider_id;
+      await pool.query(
+        `UPDATE app.provider_qualifications SET shipping_enabled=true,destination_countries='["US"]'::jsonb WHERE id=$1`,
+        [f.qualificationId],
+      );
+      await pool.query(`UPDATE app.order_fulfillment_groups SET group_key=$2 WHERE id=$1`, [
+        f.groupId,
+        `PRINTIFY:${providerId}:${f.qualificationId}:US`,
+      ]);
+      await pool.query(
+        `INSERT INTO app.provider_variants (provider_id,product_variant_id,external_variant_id,available) VALUES ($1,'essential-dtg-tee-white-L','white-large',false)`,
+        [providerId],
+      );
+      let captured!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        captured = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let paused = false;
+      const pausedPool: SqlPool = {
+        connect: () => actionDatabase.pool.connect(),
+        async query<T>(sql: string, values?: readonly unknown[]) {
+          const result = await (actionDatabase.pool as SqlPool).query<T>(sql, values);
+          if (
+            !paused &&
+            sql.includes('AS approved_proofs') &&
+            sql.includes('fulfillment_group.id AS fulfillment_group_id')
+          ) {
+            paused = true;
+            captured();
+            await wait;
+          }
+          return result;
+        },
+      };
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const create = vi.spyOn(fulfillment, 'createOrder');
+      const operations = new domain.OrderOperationsService(
+        pausedPool,
+        new MemoryObjectStorage(),
+        fulfillment,
+        { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+      );
+      const pending = Promise.allSettled([
+        operations.submitFulfillmentGroup(staff, {
+          orderNumber: f.orderNumber,
+          fulfillmentGroupId: f.groupId,
+        }),
+      ]);
+      try {
+        await reached;
+        if (change === 'operational hold')
+          await editService().operations.hold(staff, f.orderNumber, 'OPERATIONAL_HOLD');
+        else
+          await editService({
+            ...domain.developmentCommerceConfiguration,
+            eligibleProviderExternalIds: [providerId],
+          }).actions.editOrder(staff, {
+            ...f.input(),
+            items: [
+              { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-white-L', quantity: 2 },
+            ],
+          });
+      } finally {
+        release();
+      }
+      expect(await pending).toMatchObject([
+        { status: 'rejected', reason: expect.any(domain.OrderTransitionError) },
+      ]);
+      expect(create).not.toHaveBeenCalled();
+      if (change === 'unavailable variant')
+        expect((await snapshot(f.orderId)).groups[0]).toMatchObject({
+          status: 'PENDING',
+          printing_status: 'NOT_STARTED',
+        });
+      expect(
+        (
+          await pool.query<{ ready: boolean }>(
+            'SELECT ready FROM app.order_fulfillment_group_readiness_evaluations WHERE fulfillment_group_id=$1 ORDER BY created_at DESC LIMIT 1',
+            [f.groupId],
+          )
+        ).rows[0]?.ready ?? false,
+      ).toBe(false);
+    },
+  );
 
   it('updates line prices with commercial repricing and adds/removes lines using owned design provenance', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
@@ -653,6 +885,101 @@ suite('order archive transaction integration', () => {
     });
     expect((await snapshot(f.orderId)).refunds).toEqual(before.refunds);
   });
+
+  it('reconciles edited amount due when a pending refund fails without releasing the operational hold', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    let captured!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      captured = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const payments = new domain.FakePaymentService();
+    vi.spyOn(payments, 'refund').mockImplementation(async () => {
+      captured();
+      await wait;
+      throw new Error('Refund rejected');
+    });
+    const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
+    const pending = Promise.allSettled([
+      refunds.refundOriginalPayment(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        {
+          orderNumber: f.orderNumber,
+          amountCents: 500,
+          reasonCode: 'CUSTOMER_REQUEST',
+          idempotencyKey: randomUUID(),
+        },
+      ),
+    ]);
+    try {
+      await reached;
+      await editService().actions.editOrder(staff, { ...f.input(), discountCents: 0 });
+      expect((await snapshot(f.orderId)).order).toMatchObject({
+        amount_due_cents: 500,
+        status: 'ON_HOLD',
+      });
+    } finally {
+      release();
+    }
+    expect(await pending).toMatchObject([{ status: 'rejected' }]);
+    const after = await snapshot(f.orderId);
+    expect(after.refunds).toMatchObject([{ status: 'FAILED' }]);
+    expect(after.order).toMatchObject({
+      amount_due_cents: 0,
+      refundable_adjustment_cents: 0,
+      status: 'ON_HOLD',
+    });
+  });
+
+  it.each(['ORIGINAL_PAYMENT', 'STORE_CREDIT'])(
+    'reconciles a negative edit adjustment after a %s refund succeeds',
+    async (destination) => {
+      const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+      const { refundableAdjustmentCents } = await editService().actions.editOrder(staff, {
+        ...f.input(),
+        discountCents: 1000,
+      });
+      expect(refundableAdjustmentCents).toBeGreaterThan(0);
+      const before = await snapshot(f.orderId);
+      const refunds = new domain.OrderRefundService(
+        actionDatabase.pool,
+        new domain.FakePaymentService(),
+      );
+      const actor = {
+        type: 'STAFF',
+        staffMemberId: staff.staffMemberId,
+        role: 'OPERATIONS',
+        email: staff.email,
+      } as const;
+      const input = {
+        orderNumber: f.orderNumber,
+        amountCents: refundableAdjustmentCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      };
+      if (destination === 'ORIGINAL_PAYMENT') await refunds.refundOriginalPayment(actor, input);
+      else await refunds.refundToStoreCredit(actor, input);
+      const after = await snapshot(f.orderId);
+      expect(after.order).toMatchObject({
+        amount_due_cents: 0,
+        refundable_adjustment_cents: 0,
+        status: 'PAID',
+      });
+      expect(after.groups).toEqual(before.groups);
+      expect(after.history).toEqual(before.history);
+      expect(after.refunds).toMatchObject([
+        { status: 'SUCCEEDED', amount_cents: refundableAdjustmentCents },
+      ]);
+    },
+  );
 
   it('rejects currency conversion during edits and keeps clearing a contact phone compatible with later repricing', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');

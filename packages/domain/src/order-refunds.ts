@@ -64,6 +64,55 @@ function result(row: RefundRow, duplicate: boolean): RefundOrderResult {
   };
 }
 
+/** Caller holds the order row lock shared by revisions and refund reservations. */
+export async function editedOrderBalanceWithClient(
+  client: SqlClient,
+  orderId: string,
+  totalCents: number,
+) {
+  const balance = (
+    await client.query<{ paid: number }>(
+      `SELECT (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid FROM app.orders orders JOIN app.payments payment ON payment.checkout_attempt_id=orders.checkout_attempt_id WHERE orders.id=$1`,
+      [orderId],
+    )
+  ).rows[0];
+  return balance
+    ? {
+        amountDueCents: Math.max(0, totalCents - balance.paid),
+        refundableAdjustmentCents: Math.max(0, balance.paid - totalCents),
+      }
+    : null;
+}
+
+async function lockRefundOrder(client: SqlClient, orderId: string) {
+  // The row lock is first, matching admin edits and Order→Groups operations.
+  await client.query('SELECT id FROM app.orders WHERE id=$1 FOR UPDATE', [orderId]);
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [orderId]);
+}
+
+async function reconcileEditedOrderBalance(client: SqlClient, orderId: string) {
+  // Ordinary refunds remain independent of fulfillment. Reconcile only financial
+  // revisions (including an unchanged-total edit which reserved a pending refund),
+  // not a delivered order whose only revision was a contact/note update.
+  const order = (
+    await client.query<{ total: number }>(
+      `SELECT (pricing_snapshot->>'totalCents')::int AS total FROM app.orders orders WHERE id=$1
+     AND EXISTS (SELECT 1 FROM app.order_revisions revision WHERE revision.order_id=orders.id AND (
+       revision.before_snapshot->'order'->'pricing_snapshot' IS DISTINCT FROM revision.after_snapshot->'order'->'pricing_snapshot'
+       OR COALESCE((revision.after_snapshot->'order'->>'amount_due_cents')::int,0)>0
+       OR COALESCE((revision.after_snapshot->'order'->>'refundable_adjustment_cents')::int,0)>0))`,
+      [orderId],
+    )
+  ).rows[0];
+  if (!order) return;
+  const balance = await editedOrderBalanceWithClient(client, orderId, order.total);
+  if (!balance) throw new Error('The order payment is unavailable.');
+  await client.query(
+    'UPDATE app.orders SET amount_due_cents=$2,refundable_adjustment_cents=$3,updated_at=now() WHERE id=$1 AND (amount_due_cents<>$2 OR refundable_adjustment_cents<>$3)',
+    [orderId, balance.amountDueCents, balance.refundableAdjustmentCents],
+  );
+}
+
 /** Refund reservations share one order lock across both destinations, independent of fulfillment. */
 export class OrderRefundService {
   constructor(
@@ -91,15 +140,20 @@ export class OrderRefundService {
         idempotencyKey: input.idempotencyKey,
       });
     } catch (error) {
-      await this.pool.query(
-        `UPDATE app.order_refunds SET status='FAILED' WHERE id=$1 AND status='PENDING'`,
-        [reservation.refund.id],
-      );
+      await withTransaction(this.pool, async (client) => {
+        await lockRefundOrder(client, reservation.order.id);
+        await client.query(
+          `UPDATE app.order_refunds SET status='FAILED' WHERE id=$1 AND status='PENDING'`,
+          [reservation.refund.id],
+        );
+        await reconcileEditedOrderBalance(client, reservation.order.id);
+      });
       throw error;
     }
 
     // External success cannot be undone. Keep the reservation PENDING if local finalization fails.
     const completed = await withTransaction(this.pool, async (client) => {
+      await lockRefundOrder(client, reservation.order.id);
       const updated = await client.query<RefundRow>(
         `UPDATE app.order_refunds SET provider_refund_id=$2, status='SUCCEEDED', completed_at=now()
          WHERE id=$1 AND status='PENDING' RETURNING *`,
@@ -107,6 +161,7 @@ export class OrderRefundService {
       );
       const refund = updated.rows[0];
       if (!refund) throw new Error('Refund reservation is unavailable.');
+      await reconcileEditedOrderBalance(client, reservation.order.id);
       await this.audit(client, reservation.order.id, 'refund_succeeded', actor, input, {
         amountCents: refund.amount_cents,
         providerRefundId: provider.providerRefundId,
@@ -151,6 +206,7 @@ export class OrderRefundService {
       );
       const refund = updated.rows[0];
       if (!refund) throw new Error('Refund reservation is unavailable.');
+      await reconcileEditedOrderBalance(client, order.id);
       await this.audit(client, order.id, 'refund_succeeded', actor, input, {
         amountCents,
         destination: 'STORE_CREDIT',
@@ -210,7 +266,7 @@ export class OrderRefundService {
       `SELECT o.id, o.customer_profile_id, p.id AS payment_id, p.provider,
               p.provider_payment_id, p.amount_cents, p.currency
        FROM app.orders o JOIN app.payments p ON p.checkout_attempt_id=o.checkout_attempt_id
-       WHERE o.order_number=$1 AND p.status='SUCCEEDED'`,
+       WHERE o.order_number=$1 AND p.status='SUCCEEDED' FOR UPDATE OF o`,
       [input.orderNumber],
     );
     const order = found.rows[0];
@@ -256,6 +312,7 @@ export class OrderRefundService {
     );
     const refund = inserted.rows[0];
     if (!refund) throw new Error('Could not reserve refund.');
+    await reconcileEditedOrderBalance(client, order.id);
     await this.audit(client, order.id, 'refund_requested', actor, input, {
       amountCents: input.amountCents,
       idempotencyKey: input.idempotencyKey,

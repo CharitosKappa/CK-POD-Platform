@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 import type { PrivateObjectStorage } from '@let-it-be/storage';
 
@@ -595,14 +597,17 @@ export class OrderOperationsService {
    * group. It never reroutes a paid group, because a provider switch would
    * invalidate the frozen shipping and cost snapshots.
    */
-  async evaluateFulfillmentGroupReadiness(
-    session: OrderOperationsActor,
+  private async groupReadinessRows(
     input: { orderNumber: string; fulfillmentGroupId: string },
-  ): Promise<{ ready: boolean; blockers: string[] }> {
-    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
-    await assertNoAmountDue(this.pool, input.orderNumber);
-    const result = await this.pool.query<GroupReadinessRow>(
+    client: SqlClient = this.pool,
+  ): Promise<GroupReadinessRow[]> {
+    const result = await client.query<GroupReadinessRow>(
       `SELECT fulfillment_group.id AS fulfillment_group_id, fulfillment_group.order_id,
+              jsonb_build_object('shippingAddress',orders.shipping_address_snapshot,
+                'revisionCount',(SELECT count(*) FROM app.order_revisions WHERE order_id=orders.id),
+                'groupPlan',fulfillment_group.shipping_snapshot,'providerId',fulfillment_group.provider_id,
+                'itemId',order_item.id,'variantId',order_item.product_variant_id,'quantity',order_item.quantity,
+                'versionId',order_item.project_version_id,'mockupId',order_item.mockup_id) AS plan_snapshot,
               orders.status AS order_status, fulfillment_group.qualification_id,
               qualification.qualification_status, qualification.active AS qualification_active,
               qualification.g3_reviewed, qualification.physical_test_status,
@@ -641,14 +646,36 @@ export class OrderOperationsService {
          ON profile_mapping.qualification_id = qualification.id
         AND profile_mapping.production_profile_id = prepress.production_profile_id
        WHERE fulfillment_group.id = $1 AND orders.order_number = $2
-       ORDER BY order_item.created_at`,
+       ORDER BY order_item.created_at, order_item.id`,
       [input.fulfillmentGroupId, input.orderNumber],
     );
-    const rows = result.rows;
+    return result.rows;
+  }
+
+  async evaluateFulfillmentGroupReadiness(
+    session: OrderOperationsActor,
+    input: { orderNumber: string; fulfillmentGroupId: string },
+  ): Promise<{ ready: boolean; blockers: string[] }> {
+    const { ready, blockers } = await this.evaluateFulfillmentGroupReadinessSnapshot(
+      session,
+      input,
+    );
+    return { ready, blockers };
+  }
+
+  private async evaluateFulfillmentGroupReadinessSnapshot(
+    session: OrderOperationsActor,
+    input: { orderNumber: string; fulfillmentGroupId: string },
+  ): Promise<{ ready: boolean; blockers: string[]; fingerprint: string }> {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await assertNoAmountDue(this.pool, input.orderNumber);
+    const rows = await this.groupReadinessRows(input);
+    const fingerprint = readinessFingerprint(rows);
     const first = required(rows[0], 'Fulfillment group not found for this order.');
     const blockers = groupReadinessBlockers(rows);
     const policy = await this.policy.finalArtworkEligibility(input.orderNumber);
     if (!policy.eligible) blockers.push(policy.code);
+    let evaluatedSubmission: ReturnType<typeof submissionFingerprint> | null = null;
     if (!blockers.length) {
       const group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
       for (const item of group.items.filter((candidate) => !candidate.derivativeAssetId)) {
@@ -671,12 +698,26 @@ export class OrderOperationsService {
       if (refreshed.items.some((item) => !item.derivativeAssetId)) {
         blockers.push('PROVIDER_DERIVATIVE');
       }
+      evaluatedSubmission = submissionFingerprint(refreshed);
     }
     const uniqueBlockers = [...new Set(blockers)];
     const ready = uniqueBlockers.length === 0;
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, input.orderNumber);
       await assertCancellationResolved(client, order.id);
+      await client.query(
+        'SELECT id FROM app.order_fulfillment_groups WHERE order_id=$1 ORDER BY id FOR UPDATE',
+        [order.id],
+      );
+      const currentRows = await this.groupReadinessRows(input, client);
+      if (
+        fingerprint !== readinessFingerprint(currentRows) ||
+        JSON.stringify(groupReadinessBlockers(currentRows)) !==
+          JSON.stringify(groupReadinessBlockers(rows))
+      )
+        throw new OrderTransitionError(
+          'The fulfillment plan changed during readiness evaluation. Evaluate the current revision again.',
+        );
       await client.query(
         `INSERT INTO app.order_fulfillment_group_readiness_evaluations (
            fulfillment_group_id, ready, blockers, snapshot, created_by_user_id, created_by_staff_member_id
@@ -686,6 +727,8 @@ export class OrderOperationsService {
           ready,
           JSON.stringify(uniqueBlockers),
           JSON.stringify({
+            fingerprint,
+            submissionFingerprint: evaluatedSubmission,
             qualificationId: first.qualification_id,
             providerStatus: first.provider_status,
             qualificationStatus: first.qualification_status,
@@ -729,8 +772,9 @@ export class OrderOperationsService {
       }
       if (ready && order.status === 'ROUTING') {
         const pendingGroups = await client.query<{ count: number }>(
-          `SELECT count(*)::int AS count FROM app.order_fulfillment_groups
-           WHERE order_id = $1 AND status NOT IN ('READY_FOR_PRODUCTION', 'SUBMITTED', 'IN_PRODUCTION', 'SHIPPED', 'DELIVERED')`,
+          `SELECT count(*)::int AS count FROM app.order_fulfillment_groups fulfillment_group
+           WHERE order_id = $1 AND ${activeFulfillmentPlanPredicate}
+           AND status NOT IN ('READY_FOR_PRODUCTION', 'SUBMITTED', 'IN_PRODUCTION', 'SHIPPED', 'DELIVERED')`,
           [order.id],
         );
         if ((pendingGroups.rows[0]?.count ?? 0) === 0) {
@@ -749,7 +793,7 @@ export class OrderOperationsService {
         blockers: uniqueBlockers,
       });
     });
-    return { ready, blockers: uniqueBlockers };
+    return { ready, blockers: uniqueBlockers, fingerprint };
   }
 
   async startPrepressReview(session: OrderOperationsActor, orderNumber: string): Promise<void> {
@@ -1265,17 +1309,19 @@ export class OrderOperationsService {
         'Real production submission is disabled by environment safety configuration.',
       );
     }
-    const readiness = await this.evaluateFulfillmentGroupReadiness(session, input);
+    const readiness = await this.evaluateFulfillmentGroupReadinessSnapshot(session, input);
     if (!readiness.ready) {
       throw new OrderTransitionError('This order is not ready for production.');
     }
     const group = await this.groupSubmissionContext(input.orderNumber, input.fulfillmentGroupId);
-    const external = await this.createExternalOrderForGroup(session, group);
+    const external = await this.createExternalOrderForGroup(session, group, readiness.fingerprint);
     const action = await this.beginGroupAction(
       input.orderNumber,
       input.fulfillmentGroupId,
       'SUBMIT_TO_PRODUCTION',
       session,
+      undefined,
+      readiness.fingerprint,
     );
     if (action.status === 'SUCCEEDED') {
       return { externalOrderId: external.externalOrderId, duplicate: true };
@@ -1754,6 +1800,7 @@ export class OrderOperationsService {
   private async createExternalOrderForGroup(
     session: OrderOperationsActor,
     group: FulfillmentGroupSubmissionContext,
+    readinessFingerprint: string,
   ): Promise<{ externalOrderId: string }> {
     if (group.externalOrderId) return { externalOrderId: group.externalOrderId };
     const action = await this.beginGroupAction(
@@ -1762,6 +1809,7 @@ export class OrderOperationsService {
       'CREATE_EXTERNAL_ORDER',
       session,
       group,
+      readinessFingerprint,
     );
     if (action.status === 'SUCCEEDED' && action.externalOrderId) {
       return { externalOrderId: action.externalOrderId };
@@ -1872,6 +1920,7 @@ export class OrderOperationsService {
     action: 'CREATE_EXTERNAL_ORDER' | 'SUBMIT_TO_PRODUCTION',
     session: OrderOperationsActor,
     expectedContext?: FulfillmentGroupSubmissionContext,
+    expectedReadinessFingerprint?: string,
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
@@ -1888,6 +1937,33 @@ export class OrderOperationsService {
       );
       if (!group.rows[0])
         throw new OrderTransitionError('Fulfillment group not found for this order.');
+      const currentRows = await this.groupReadinessRows(
+        { orderNumber, fulfillmentGroupId },
+        client,
+      );
+      const latestReadiness = (
+        await client.query<{
+          ready: boolean;
+          snapshot: { fingerprint?: string; submissionFingerprint?: string };
+        }>(
+          'SELECT ready,snapshot FROM app.order_fulfillment_group_readiness_evaluations WHERE fulfillment_group_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',
+          [fulfillmentGroupId],
+        )
+      ).rows[0];
+      if (
+        !currentRows.length ||
+        !latestReadiness?.ready ||
+        latestReadiness.snapshot.fingerprint !== expectedReadinessFingerprint ||
+        readinessFingerprint(currentRows) !== expectedReadinessFingerprint ||
+        groupReadinessBlockers(currentRows).length ||
+        latestReadiness.snapshot.submissionFingerprint !==
+          submissionFingerprint(
+            await this.groupSubmissionContext(orderNumber, fulfillmentGroupId, client),
+          )
+      )
+        throw new OrderTransitionError(
+          'Production readiness no longer matches the current fulfillment plan. Evaluate it again.',
+        );
       if (
         expectedContext &&
         JSON.stringify(
@@ -1901,16 +1977,29 @@ export class OrderOperationsService {
       const existing = await client.query<{
         id: string;
         status: string;
+        attempt_count: number;
+        response_metadata: { requestFingerprint?: string };
         external_order_id: string | null;
         idempotency_key: string;
         updated_at: Date;
       }>(
-        `SELECT id, status, external_order_id, idempotency_key, updated_at
+        `SELECT id, status, attempt_count, response_metadata, external_order_id, idempotency_key, updated_at
          FROM app.order_fulfillment_actions
          WHERE fulfillment_group_id = $1 AND action = $2 FOR UPDATE`,
         [fulfillmentGroupId, action],
       );
       const row = existing.rows[0];
+      const requestFingerprint = expectedContext ? submissionFingerprint(expectedContext) : null;
+      if (
+        action === 'CREATE_EXTERNAL_ORDER' &&
+        row &&
+        row.status !== 'SUCCEEDED' &&
+        (row.attempt_count > 0 || row.status !== 'PENDING') &&
+        (!requestFingerprint || row.response_metadata.requestFingerprint !== requestFingerprint)
+      )
+        throw new OrderTransitionError(
+          'The attempted provider request changed or has no bound snapshot. Reconcile its external identity before retrying.',
+        );
       if (row?.status === 'PROCESSING') {
         if (Date.now() - row.updated_at.getTime() < this.fulfillmentActionLeaseMs) {
           throw new OrderTransitionError('This fulfillment group action is already in progress.');
@@ -1943,8 +2032,8 @@ export class OrderOperationsService {
       if (row) {
         await client.query(
           `UPDATE app.order_fulfillment_actions
-           SET status = 'PROCESSING', attempt_count = attempt_count + 1, updated_at = now() WHERE id = $1`,
-          [row.id],
+           SET status = 'PROCESSING', attempt_count = attempt_count + 1, response_metadata=response_metadata || $2::jsonb, updated_at = now() WHERE id = $1`,
+          [row.id, JSON.stringify(requestFingerprint ? { requestFingerprint } : {})],
         );
         return {
           id: row.id,
@@ -1956,8 +2045,8 @@ export class OrderOperationsService {
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO app.order_fulfillment_actions (
            order_id, fulfillment_group_id, action, idempotency_key, status, attempt_count,
-           requested_by_user_id, requested_by_staff_member_id
-         ) VALUES ($1, $2, $3, $4, 'PROCESSING', 1, $5, $6) RETURNING id`,
+           requested_by_user_id, requested_by_staff_member_id, response_metadata
+         ) VALUES ($1, $2, $3, $4, 'PROCESSING', 1, $5, $6, $7::jsonb) RETURNING id`,
         [
           order.id,
           fulfillmentGroupId,
@@ -1965,6 +2054,7 @@ export class OrderOperationsService {
           idempotencyKey,
           actorIds(session).userId,
           actorIds(session).staffMemberId,
+          JSON.stringify(requestFingerprint ? { requestFingerprint } : {}),
         ],
       );
       return {
@@ -1986,7 +2076,7 @@ export class OrderOperationsService {
       `SELECT COUNT(*)::int AS group_count
        FROM app.order_fulfillment_groups fulfillment_group
        JOIN app.orders orders ON orders.id = fulfillment_group.order_id
-       WHERE orders.order_number = $1`,
+       WHERE orders.order_number = $1 AND ${activeFulfillmentPlanPredicate}`,
       [orderNumber],
     );
     if ((result.rows[0]?.group_count ?? 0) > 1) {
@@ -2441,6 +2531,7 @@ interface GroupSubmissionRow {
   derivative_asset_id: string | null;
 }
 interface GroupReadinessRow {
+  plan_snapshot: Record<string, unknown>;
   fulfillment_group_id: string;
   order_id: string;
   order_status: CanonicalOrderState;
@@ -2479,6 +2570,20 @@ interface FulfillmentGroupSubmissionContext {
     quantity: number;
     derivativeAssetId: string | null;
   }>;
+}
+
+function readinessFingerprint(rows: GroupReadinessRow[]): string {
+  // Canonical stage can advance as a result of readiness; the evaluated commercial
+  // revision, assignment and qualification/availability inputs must not change.
+  return createHash('sha256')
+    .update(JSON.stringify(rows.map((row) => ({ ...row, order_status: undefined }))))
+    .digest('hex');
+}
+
+function submissionFingerprint(group: FulfillmentGroupSubmissionContext): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ ...group, status: undefined, externalOrderId: undefined }))
+    .digest('hex');
 }
 
 function groupReadinessBlockers(rows: GroupReadinessRow[]): string[] {
@@ -2822,6 +2927,18 @@ async function updateLegacyFulfillmentGroupStatus(
   );
 }
 
+// Retain retired planning/history rows but do not count them as outstanding work.
+// Empty provider-backed, attempted, shipped or ordinarily cancelled groups are
+// deliberately NOT excluded: absence of items is not proof of local retirement.
+const activeFulfillmentPlanPredicate = `NOT (
+  fulfillment_group.status='CANCELLED' AND fulfillment_group.printing_status='CANCELLED'
+  AND fulfillment_group.fulfillment_status='UNFULFILLED' AND fulfillment_group.external_order_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM app.order_fulfillment_group_items WHERE fulfillment_group_id=fulfillment_group.id)
+  AND NOT EXISTS (SELECT 1 FROM app.order_shipments WHERE fulfillment_group_id=fulfillment_group.id)
+  AND NOT EXISTS (SELECT 1 FROM app.order_fulfillment_actions WHERE fulfillment_group_id=fulfillment_group.id AND (attempt_count>0 OR status<>'PENDING'))
+  AND EXISTS (SELECT 1 FROM app.order_printing_status_events WHERE fulfillment_group_id=fulfillment_group.id AND to_state='CANCELLED' AND metadata->>'reason'='ORDER_EDIT_REPLANNED')
+)`;
+
 async function aggregateOrderFulfillmentStatus(
   client: SqlClient,
   orderId: string,
@@ -2842,7 +2959,7 @@ async function aggregateOrderFulfillmentStatus(
             COUNT(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered,
             COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
             COUNT(*) FILTER (WHERE status = 'CANCELLED')::int AS cancelled
-     FROM app.order_fulfillment_groups WHERE order_id = $1`,
+     FROM app.order_fulfillment_groups fulfillment_group WHERE order_id = $1 AND ${activeFulfillmentPlanPredicate}`,
     [orderId],
   );
   const summary = result.rows[0];

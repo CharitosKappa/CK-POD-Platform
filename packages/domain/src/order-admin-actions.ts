@@ -22,7 +22,7 @@ import {
 } from './order-detail-contracts';
 import { OrderOperationsAccessError, type OrderOperationsService } from './order-operations';
 import { normalizeFulfillmentError, type FulfillmentService } from './fulfillment-contracts';
-import type { OrderRefundService } from './order-refunds';
+import { editedOrderBalanceWithClient, type OrderRefundService } from './order-refunds';
 import { LifecycleOrchestrator } from './operations-analytics';
 import {
   CommerceValidationError,
@@ -266,7 +266,7 @@ export class OrderAdminActionsService {
       if (commercial) {
         const blockers = await client.query(
           `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))
-          UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND status='PROCESSING'
+          UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
           UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
           UNION ALL SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED') LIMIT 1`,
           [locked.id],
@@ -340,16 +340,11 @@ export class OrderAdminActionsService {
           taxCollectedCents: pricing.taxCents,
           taxSnapshot: result.tax,
         };
-        const balance = (
-          await client.query<{ paid: number }>(
-            `SELECT (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid FROM app.orders orders JOIN app.payments payment ON payment.checkout_attempt_id=orders.checkout_attempt_id WHERE orders.id=$1`,
-            [locked.id],
-          )
-        ).rows[0];
+        const balance = await editedOrderBalanceWithClient(client, locked.id, pricing.totalCents);
         if (!balance)
           throw new OrderAdminActionValidationError('The order payment is unavailable.');
-        amountDueCents = Math.max(0, pricing.totalCents - balance.paid);
-        refundableAdjustmentCents = Math.max(0, balance.paid - pricing.totalCents);
+        amountDueCents = balance.amountDueCents;
+        refundableAdjustmentCents = balance.refundableAdjustmentCents;
         if (input.items !== undefined || input.shippingAddress !== undefined) {
           const plan = await repricing.plan(
             changedItems.map((item) => ({ ...item.price, orderItemId: item.id })),
@@ -1431,7 +1426,7 @@ export class OrderAdminActionsService {
     const blocked = await client.query(
       `SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
       UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
-      UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND status='PROCESSING'
+      UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
       UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0)) LIMIT 1`,
       [order.id],
     );
