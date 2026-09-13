@@ -1102,6 +1102,50 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       fulfillmentState: 'DELIVERED',
     });
     expect(await orderDetail.getPrintingGroup(staffSession, orderNumber, randomUUID())).toBeNull();
+    await orderDetail.addOrderNote(staffSession, orderNumber, 'Customer requested gift packaging.');
+    await orderDetail.replaceOrderTags(staffSession, orderNumber, [
+      'Priority',
+      'priority',
+      ' VIP ',
+    ]);
+    const persistedOrderDetail = await new OrderDetailService(pool).getOrder(
+      staffSession,
+      orderNumber,
+    );
+    expect(persistedOrderDetail?.notes[0]).toMatchObject({
+      body: 'Customer requested gift packaging.',
+      createdByName: staffSession.email,
+    });
+    expect(persistedOrderDetail?.tags).toEqual(['Priority', 'VIP']);
+    const firstTimelinePage = await orderDetail.listTimeline(staffSession, orderNumber, {
+      limit: 10,
+    });
+    expect(firstTimelinePage.events).toHaveLength(10);
+    expect(firstTimelinePage.nextCursor).toBeTruthy();
+    expect(firstTimelinePage.events.map((event) => event.occurredAt.getTime())).toEqual(
+      [...firstTimelinePage.events]
+        .map((event) => event.occurredAt.getTime())
+        .sort((left, right) => right - left),
+    );
+    expect(firstTimelinePage.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'ORDER_NOTE_ADDED',
+          source: 'STAFF',
+          actorName: staffSession.email,
+        }),
+        expect.objectContaining({ type: 'ORDER_TAGS_CHANGED', source: 'STAFF' }),
+      ]),
+    );
+    const secondTimelinePage = await orderDetail.listTimeline(staffSession, orderNumber, {
+      limit: 10,
+      cursor: firstTimelinePage.nextCursor!,
+    });
+    expect(
+      secondTimelinePage.events.some((event) =>
+        firstTimelinePage.events.some((firstEvent) => firstEvent.id === event.id),
+      ),
+    ).toBe(false);
     const item = await pool.query<{ id: string }>(
       `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
       [orderNumber],

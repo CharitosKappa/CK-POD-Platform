@@ -1,4 +1,4 @@
-import type { SqlPool } from '@let-it-be/db';
+import { withTransaction, type SqlPool } from '@let-it-be/db';
 
 import type { StaffSession } from './staff-identity';
 import {
@@ -162,6 +162,21 @@ export interface PrintingGroupDetail {
     createdAt: Date;
   }>;
   permittedActions: string[];
+}
+
+export interface AdminOrderTimelineEvent {
+  id: string;
+  type: string;
+  occurredAt: Date;
+  source: 'CUSTOMER' | 'STAFF' | 'SYSTEM' | 'PAYMENT_PROVIDER' | 'PRINT_PROVIDER' | 'CARRIER';
+  actorName: string | null;
+  description: string;
+  details: Record<string, string | number | boolean | null>;
+}
+
+export interface AdminOrderTimelinePage {
+  events: AdminOrderTimelineEvent[];
+  nextCursor: string | null;
 }
 
 interface BaseOrderRow {
@@ -475,6 +490,266 @@ export class OrderDetailService {
     };
   }
 
+  async addOrderNote(
+    session: OrderDetailStaffSession,
+    orderNumber: string,
+    body: string,
+  ): Promise<AdminOrderNote> {
+    assertOrderDetailMutationAccess(session);
+    const normalizedBody = body.trim();
+    if (!normalizedBody || normalizedBody.length > 5_000) {
+      throw new OrderDetailDataError('Order notes must contain between 1 and 5000 characters.');
+    }
+    return withTransaction(this.pool, async (client) => {
+      const order = await client.query<{ id: string }>(
+        `SELECT id FROM app.orders WHERE order_number = $1 FOR UPDATE`,
+        [orderNumber],
+      );
+      const orderId = order.rows[0]?.id;
+      if (!orderId) throw new OrderDetailDataError('Order not found.');
+      const inserted = await client.query<{
+        id: string;
+        body: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        `INSERT INTO app.order_notes (order_id, body, created_by_staff_member_id)
+         VALUES ($1, $2, $3)
+         RETURNING id, body, created_at, updated_at`,
+        [orderId, normalizedBody, session.staffMemberId],
+      );
+      const note = requiredRow(inserted.rows[0], 'Could not add the order note.');
+      await client.query(
+        `INSERT INTO app.order_operational_audits (
+           order_id, action, actor_type, actor_staff_member_id, metadata
+         ) VALUES ($1, 'order_note_added', 'OPS', $2, $3::jsonb)`,
+        [orderId, session.staffMemberId, JSON.stringify({ noteId: note.id })],
+      );
+      return {
+        id: note.id,
+        body: note.body,
+        createdByName: session.email,
+        createdAt: note.created_at,
+        updatedAt: note.updated_at,
+      };
+    });
+  }
+
+  async replaceOrderTags(
+    session: OrderDetailStaffSession,
+    orderNumber: string,
+    values: string[],
+  ): Promise<string[]> {
+    assertOrderDetailMutationAccess(session);
+    const canonical = canonicalTags(values);
+    return withTransaction(this.pool, async (client) => {
+      const order = await client.query<{ id: string }>(
+        `SELECT id FROM app.orders WHERE order_number = $1 FOR UPDATE`,
+        [orderNumber],
+      );
+      const orderId = order.rows[0]?.id;
+      if (!orderId) throw new OrderDetailDataError('Order not found.');
+      const previous = await client.query<{ value: string }>(
+        `SELECT tag.value
+         FROM app.order_tag_assignments assignment
+         JOIN app.order_tags tag ON tag.id = assignment.order_tag_id
+         WHERE assignment.order_id = $1`,
+        [orderId],
+      );
+      const tagIds: string[] = [];
+      for (const value of canonical) {
+        await client.query(
+          `INSERT INTO app.order_tags (value) VALUES ($1) ON CONFLICT DO NOTHING`,
+          [value],
+        );
+        const tag = await client.query<{ id: string; value: string }>(
+          `SELECT id, value FROM app.order_tags WHERE lower(value) = lower($1)`,
+          [value],
+        );
+        const persisted = requiredRow(tag.rows[0], 'Could not persist the order tag.');
+        tagIds.push(persisted.id);
+      }
+      await client.query(`DELETE FROM app.order_tag_assignments WHERE order_id = $1`, [orderId]);
+      for (const tagId of tagIds) {
+        await client.query(
+          `INSERT INTO app.order_tag_assignments (
+             order_id, order_tag_id, created_by_staff_member_id
+           ) VALUES ($1, $2, $3)`,
+          [orderId, tagId, session.staffMemberId],
+        );
+      }
+      const previousValues = previous.rows.map((tag) => tag.value);
+      const previousKeys = new Set(previousValues.map((value) => value.toLowerCase()));
+      const nextKeys = new Set(canonical.map((value) => value.toLowerCase()));
+      await client.query(
+        `INSERT INTO app.order_operational_audits (
+           order_id, action, actor_type, actor_staff_member_id, metadata
+         ) VALUES ($1, 'order_tags_replaced', 'OPS', $2, $3::jsonb)`,
+        [
+          orderId,
+          session.staffMemberId,
+          JSON.stringify({
+            added: canonical.filter((value) => !previousKeys.has(value.toLowerCase())),
+            removed: previousValues.filter((value) => !nextKeys.has(value.toLowerCase())),
+          }),
+        ],
+      );
+      return canonical;
+    });
+  }
+
+  async listOrderTags(session: OrderDetailStaffSession, orderNumber: string): Promise<string[]> {
+    assertOrderDetailAccess(session);
+    const result = await this.pool.query<{ value: string }>(
+      `SELECT tag.value
+       FROM app.order_tag_assignments assignment
+       JOIN app.order_tags tag ON tag.id = assignment.order_tag_id
+       JOIN app.orders orders ON orders.id = assignment.order_id
+       WHERE orders.order_number = $1
+       ORDER BY lower(tag.value), tag.id`,
+      [orderNumber],
+    );
+    return result.rows.map((tag) => tag.value);
+  }
+
+  async listTimeline(
+    session: OrderDetailStaffSession,
+    orderNumber: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<AdminOrderTimelinePage> {
+    assertOrderDetailAccess(session);
+    const limit = Math.min(50, Math.max(1, Math.floor(options.limit ?? 10)));
+    const cursor = options.cursor ? decodeTimelineCursor(options.cursor) : null;
+    const result = await this.pool.query<{
+      id: string;
+      type: string;
+      occurred_at: Date;
+      source: AdminOrderTimelineEvent['source'];
+      actor_name: string | null;
+      description: string;
+      details: unknown;
+    }>(
+      `WITH target_order AS (
+         SELECT id, checkout_attempt_id, created_at FROM app.orders WHERE order_number = $1
+       ), timeline AS (
+         SELECT 'order:' || orders.id AS id, 'ORDER_CREATED'::text AS type,
+                orders.created_at AS occurred_at, 'CUSTOMER'::text AS source,
+                NULL::text AS actor_name, 'Order placed'::text AS description,
+                jsonb_build_object('orderNumber', $1::text) AS details
+         FROM target_order orders
+         UNION ALL
+         SELECT 'state:' || history.id, 'ORDER_STATE_CHANGED', history.created_at,
+                CASE WHEN history.actor_type = 'CUSTOMER' THEN 'CUSTOMER'
+                     WHEN history.actor_type = 'OPS' THEN 'STAFF' ELSE 'SYSTEM' END,
+                staff.normalized_email,
+                'Order state changed to ' || replace(lower(history.to_state), '_', ' '),
+                jsonb_build_object('fromState', history.from_state, 'toState', history.to_state,
+                                   'reasonCode', history.reason_code)
+         FROM app.order_state_history history
+         JOIN target_order orders ON orders.id = history.order_id
+         LEFT JOIN app.staff_members staff ON staff.id = history.actor_staff_member_id
+         UNION ALL
+         SELECT 'payment:' || payment.id, 'PAYMENT_' || payment.status, payment.created_at,
+                'PAYMENT_PROVIDER', NULL,
+                'Payment ' || replace(lower(payment.status), '_', ' '),
+                jsonb_build_object('amountCents', payment.amount_cents, 'currency', payment.currency)
+         FROM app.payments payment
+         JOIN target_order orders ON orders.checkout_attempt_id = payment.checkout_attempt_id
+         UNION ALL
+         SELECT 'refund:' || refund.id, 'REFUND_' || refund.status, refund.created_at,
+                'PAYMENT_PROVIDER', NULL,
+                'Refund ' || replace(lower(refund.status), '_', ' '),
+                jsonb_build_object('amountCents', refund.amount_cents, 'reasonCode', refund.reason_code)
+         FROM app.order_refunds refund JOIN target_order orders ON orders.id = refund.order_id
+         UNION ALL
+         SELECT 'printing:' || event.id, 'PRINTING_STATE_CHANGED', event.created_at,
+                CASE WHEN event.source = 'OPS' THEN 'STAFF'
+                     WHEN event.source IN ('WEBHOOK','POLLING') THEN 'PRINT_PROVIDER'
+                     ELSE 'SYSTEM' END,
+                staff.normalized_email,
+                'Printing state changed to ' || replace(lower(event.to_state), '_', ' '),
+                jsonb_build_object('fromState', event.from_state, 'toState', event.to_state,
+                                   'disposition', event.disposition)
+         FROM app.order_printing_status_events event
+         JOIN target_order orders ON orders.id = event.order_id
+         LEFT JOIN app.staff_members staff ON staff.id = event.actor_staff_member_id
+         UNION ALL
+         SELECT 'fulfillment:' || history.id, 'FULFILLMENT_STATE_CHANGED', history.created_at,
+                CASE WHEN history.source = 'OPS' THEN 'STAFF'
+                     WHEN history.source IN ('WEBHOOK','POLLING') THEN 'CARRIER'
+                     ELSE 'SYSTEM' END,
+                staff.normalized_email,
+                'Fulfillment state changed to ' || replace(lower(history.to_state), '_', ' '),
+                jsonb_build_object('fromState', history.from_state, 'toState', history.to_state)
+         FROM app.order_fulfillment_status_history history
+         JOIN target_order orders ON orders.id = history.order_id
+         LEFT JOIN app.staff_members staff ON staff.id = history.actor_staff_member_id
+         UNION ALL
+         SELECT 'shipment:' || shipment.id, 'SHIPMENT_' || shipment.status, shipment.updated_at,
+                'CARRIER', NULL,
+                'Shipment ' || replace(lower(shipment.status), '_', ' '),
+                jsonb_build_object('carrier', shipment.carrier, 'trackingNumber', shipment.tracking_number)
+         FROM app.order_shipments shipment JOIN target_order orders ON orders.id = shipment.order_id
+         UNION ALL
+         SELECT 'note:' || note.id, 'ORDER_NOTE_ADDED', note.created_at,
+                'STAFF', staff.normalized_email, 'Order note added',
+                jsonb_build_object('noteId', note.id)
+         FROM app.order_notes note
+         JOIN target_order orders ON orders.id = note.order_id
+         JOIN app.staff_members staff ON staff.id = note.created_by_staff_member_id
+         UNION ALL
+         SELECT 'audit:' || audit.id,
+                CASE WHEN audit.action = 'order_tags_replaced' THEN 'ORDER_TAGS_CHANGED'
+                     ELSE 'OPERATIONAL_ACTION' END,
+                audit.created_at,
+                CASE WHEN audit.actor_type = 'OPS' THEN 'STAFF'
+                     WHEN audit.actor_type IN ('WEBHOOK','POLLING') THEN 'PRINT_PROVIDER'
+                     ELSE 'SYSTEM' END,
+                staff.normalized_email,
+                CASE WHEN audit.action = 'order_tags_replaced' THEN 'Order tags changed'
+                     ELSE replace(lower(audit.action), '_', ' ') END,
+                jsonb_build_object('action', audit.action, 'reasonCode', audit.reason_code)
+         FROM app.order_operational_audits audit
+         JOIN target_order orders ON orders.id = audit.order_id
+         LEFT JOIN app.staff_members staff ON staff.id = audit.actor_staff_member_id
+         UNION ALL
+         SELECT 'delivery:' || delivery.id, 'MESSAGE_' || delivery.status, delivery.updated_at,
+                'SYSTEM', NULL,
+                replace(lower(delivery.message_type), '_', ' ') || ' email ' || lower(delivery.status),
+                jsonb_build_object('messageType', delivery.message_type,
+                                   'classification', delivery.classification,
+                                   'status', delivery.status)
+         FROM app.lifecycle_deliveries delivery
+         JOIN target_order orders ON orders.id = delivery.order_id
+       )
+       SELECT id, type, occurred_at, source, actor_name, description, details
+       FROM timeline
+       WHERE ($2::timestamptz IS NULL OR (occurred_at, id) < ($2::timestamptz, $3::text))
+       ORDER BY occurred_at DESC, id DESC
+       LIMIT $4`,
+      [orderNumber, cursor?.occurredAt ?? null, cursor?.id ?? null, limit + 1],
+    );
+    const hasNextPage = result.rows.length > limit;
+    const rows = result.rows.slice(0, limit);
+    const events = rows.map((event) => ({
+      id: event.id,
+      type: event.type,
+      occurredAt: event.occurred_at,
+      source: event.source,
+      actorName: event.actor_name,
+      description: event.description,
+      details: safeTimelineDetails(event.details),
+    }));
+    const last = rows.at(-1);
+    return {
+      events,
+      nextCursor:
+        hasNextPage && last
+          ? encodeTimelineCursor({ occurredAt: last.occurred_at.toISOString(), id: last.id })
+          : null,
+    };
+  }
+
   private async baseOrder(orderNumber: string): Promise<BaseOrderRow | null> {
     const result = await this.pool.query<BaseOrderRow>(
       `SELECT orders.id, orders.order_number, orders.customer_profile_id, orders.customer_email,
@@ -744,6 +1019,64 @@ function groupBy<T>(values: T[], key: (value: T) => string): Map<string, T[]> {
 
 function assertOrderDetailAccess(session: OrderDetailStaffSession): void {
   if (!session.staffMemberId) throw new Error('Admin access is restricted.');
+}
+
+function assertOrderDetailMutationAccess(session: OrderDetailStaffSession): void {
+  assertOrderDetailAccess(session);
+  if (session.role === 'READ_ONLY') throw new Error('This staff role has read-only access.');
+}
+
+function canonicalTags(values: string[]): string[] {
+  if (values.length > 50) throw new OrderDetailDataError('An order can have at most 50 tags.');
+  const canonical = new Map<string, string>();
+  for (const raw of values) {
+    const value = raw.trim();
+    if (!value) continue;
+    if (value.length > 80)
+      throw new OrderDetailDataError('Order tags cannot exceed 80 characters.');
+    const key = value.toLowerCase();
+    if (!canonical.has(key)) canonical.set(key, value);
+  }
+  return [...canonical.values()].sort((left, right) =>
+    left.localeCompare(right, 'en', { sensitivity: 'base' }),
+  );
+}
+
+function encodeTimelineCursor(cursor: { occurredAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeTimelineCursor(value: string): { occurredAt: Date; id: string } {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown;
+    if (
+      !isRecord(parsed) ||
+      typeof parsed.occurredAt !== 'string' ||
+      Number.isNaN(Date.parse(parsed.occurredAt)) ||
+      typeof parsed.id !== 'string' ||
+      !parsed.id
+    ) {
+      throw new Error('invalid');
+    }
+    return { occurredAt: new Date(parsed.occurredAt), id: parsed.id };
+  } catch {
+    throw new OrderDetailDataError('Timeline cursor is invalid.');
+  }
+}
+
+function safeTimelineDetails(value: unknown): Record<string, string | number | boolean | null> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string | number | boolean | null] =>
+        entry[1] === null || ['string', 'number', 'boolean'].includes(typeof entry[1]),
+    ),
+  );
+}
+
+function requiredRow<T>(row: T | undefined, message: string): T {
+  if (!row) throw new OrderDetailDataError(message);
+  return row;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
