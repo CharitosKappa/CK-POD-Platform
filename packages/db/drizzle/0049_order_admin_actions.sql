@@ -137,4 +137,4 @@ ALTER TABLE app.order_refunds
         OR status = 'FAILED'
       )
     )
-  );
+  ) NOT VALID;

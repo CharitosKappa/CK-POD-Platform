@@ -67,6 +67,9 @@ describe('required application tables', () => {
     );
     expect(sql).toContain('UNIQUE (order_id, idempotency_key)');
     expect(sql).toContain('CHECK (quantity > 0)');
+    expect(sql).toMatch(
+      /ADD CONSTRAINT order_refunds_destination_backing_check CHECK \([\s\S]+?\n  \) NOT VALID;/,
+    );
   });
 
   it('tracks every table created by the checked-in migrations', async () => {
