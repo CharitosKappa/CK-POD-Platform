@@ -472,18 +472,129 @@ suite('order archive transaction integration', () => {
     expect((await snapshot(loser.orderId)).order).toMatchObject({ archived_at: null });
   });
 
-  async function waitForDatabaseLock() {
+  async function waitForDatabaseLock(name = applicationName) {
     const deadline = Date.now() + 4000;
     while (Date.now() < deadline) {
-      const waiting = await pool.query(
-        `SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'`,
-        [applicationName],
+      const waiting = await pool.query<{ pid: number; blockers: number[] }>(
+        `SELECT pid,pg_blocking_pids(pid) AS blockers FROM pg_stat_activity
+         WHERE application_name=$1 AND wait_event_type='Lock'`,
+        [name],
       );
-      if (waiting.rows.length) return;
+      if (waiting.rows[0]) return waiting.rows[0];
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     throw new Error('Archive action did not wait on the held PostgreSQL row lock.');
   }
+
+  // Order→group versus group→order must not deadlock real action and provider transactions.
+  it.each(['archive', 'unarchive'] as const)(
+    'commits concurrent %s and provider reconciliation without a lock-order deadlock',
+    async (method) => {
+      const f = await fixture('FULFILLED', 'SHIPPED');
+      const actions = service();
+      if (method === 'unarchive') await actions.archive(staff, f.input());
+      const externalOrderId = `archive-reconcile-${randomUUID()}`;
+      await pool.query(`UPDATE app.order_fulfillment_groups SET external_order_id=$2 WHERE id=$1`, [
+        f.groupId,
+        externalOrderId,
+      ]);
+      const before = await snapshot(f.orderId);
+      const reconciliationName = `reconcile-test-${randomUUID()}`;
+      const reconciliationUrl = new URL(integrationDatabaseUrl!);
+      reconciliationUrl.searchParams.set('application_name', reconciliationName);
+      const reconciliationDatabase = createDatabaseClient(reconciliationUrl.toString());
+      const operations = new domain.OrderOperationsService(
+        reconciliationDatabase.pool,
+        new MemoryObjectStorage(),
+        new ArchiveFixtureFulfillment(),
+        { realProductionSubmissionEnabled: false, fulfillmentAdapter: 'fake' },
+      );
+      const gate = await pool.connect();
+      const input = f.input();
+      const gateKey = `order-admin-action:${input.idempotencyKey}`;
+      const eventId = randomUUID();
+      const trackingNumber = `TRACK-${randomUUID()}`;
+      let archive: Promise<PromiseSettledResult<domain.ArchiveResult>[]> | undefined;
+      let reconciliation: Promise<PromiseSettledResult<void>[]> | undefined;
+      let gateHeld = false;
+      try {
+        // Hold only the action's idempotency lock, so it pauses after acquiring its real order lock.
+        await gate.query('SELECT pg_advisory_lock(hashtext($1))', [gateKey]);
+        gateHeld = true;
+        archive = Promise.allSettled([actions[method](staff, input)]);
+        const waitingAction = await waitForDatabaseLock();
+        reconciliation = Promise.allSettled([
+          operations.reconcileStatus({
+            externalOrderId,
+            rawStatus: 'delivered',
+            source: 'WEBHOOK',
+            externalEventId: eventId,
+            tracking: { trackingNumber, carrier: 'Fixture Carrier' },
+          }),
+        ]);
+        const waitingReconciliation = await waitForDatabaseLock(reconciliationName);
+        expect(waitingReconciliation.blockers).toContain(waitingAction.pid);
+        // Previously reconciliation held the group here; releasing this gate closes the deadlock cycle.
+        await gate.query('SELECT pg_advisory_unlock(hashtext($1))', [gateKey]);
+        gateHeld = false;
+        const results = [...(await archive), ...(await reconciliation)];
+        expect(
+          results
+            .filter((result) => result.status === 'rejected')
+            .map((result) => ({
+              code: (result.reason as { code?: string }).code,
+              message: (result.reason as Error).message,
+            })),
+        ).toEqual([]);
+        expect(results).toMatchObject([
+          {
+            status: 'fulfilled',
+            value: { orderId: f.orderId, archived: method === 'archive', duplicate: false },
+          },
+          { status: 'fulfilled', value: undefined },
+        ]);
+      } finally {
+        if (gateHeld) await gate.query('SELECT pg_advisory_unlock(hashtext($1))', [gateKey]);
+        gate.release();
+        await archive;
+        await reconciliation;
+        await reconciliationDatabase.close();
+      }
+      const after = await snapshot(f.orderId);
+      expect(after.order).toMatchObject({
+        status: 'DELIVERED',
+        archived_at: method === 'archive' ? expect.any(Date) : null,
+        archived_by_staff_member_id: method === 'archive' ? staff.staffMemberId : null,
+      });
+      expect(after.groups).toMatchObject([
+        { printing_status: 'PRINTED', fulfillment_status: 'DELIVERED' },
+      ]);
+      expect(after.payments).toEqual(before.payments);
+      expect(after.refunds).toEqual(before.refunds);
+      expect(after.returns).toEqual(before.returns);
+      expect(await audits(f.orderId)).toHaveLength(method === 'archive' ? 1 : 2);
+      expect(
+        (
+          await pool.query(
+            `SELECT status,tracking_number,carrier FROM app.order_shipments
+        WHERE fulfillment_group_id=$1`,
+            [f.groupId],
+          )
+        ).rows,
+      ).toEqual([
+        { status: 'DELIVERED', tracking_number: trackingNumber, carrier: 'Fixture Carrier' },
+      ]);
+      expect(
+        (
+          await pool.query(
+            `SELECT normalized_status,disposition FROM app.order_fulfillment_status_events
+        WHERE order_id=$1 AND external_event_id=$2`,
+            [f.orderId, eventId],
+          )
+        ).rows,
+      ).toEqual([{ normalized_status: 'DELIVERED', disposition: 'APPLIED' }]);
+    },
+  );
 
   // The submitted action must wait, then read the latest values, not a pre-lock snapshot.
   it.each(['order', 'group'])(

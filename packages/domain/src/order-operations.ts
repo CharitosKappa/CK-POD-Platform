@@ -1086,19 +1086,33 @@ export class OrderOperationsService {
       }>(
         `SELECT fulfillment_group.order_id, fulfillment_group.id AS fulfillment_group_id
          FROM app.order_fulfillment_groups fulfillment_group
-          WHERE fulfillment_group.external_order_id = $1 FOR UPDATE`,
+          WHERE fulfillment_group.external_order_id = $1`,
         [input.externalOrderId],
       );
       const legacy = grouped.rows[0]
         ? null
         : await client.query<{ order_id: string; fulfillment_group_id: null }>(
             `SELECT order_id, NULL::uuid AS fulfillment_group_id
-             FROM app.external_fulfillment_orders WHERE external_order_id = $1 FOR UPDATE`,
+             FROM app.external_fulfillment_orders WHERE external_order_id = $1`,
             [input.externalOrderId],
           );
       const reference = grouped.rows[0] ?? legacy?.rows[0];
       if (!reference) return;
+      // Match staff mutations: acquire the order before any group/provider-reference lock.
       const order = await lockOrderById(client, reference.order_id);
+      const lockedReference = reference.fulfillment_group_id
+        ? await client.query(
+            `SELECT id FROM app.order_fulfillment_groups
+             WHERE id = $1 AND order_id = $2 AND external_order_id = $3 FOR UPDATE`,
+            [reference.fulfillment_group_id, order.id, input.externalOrderId],
+          )
+        : await client.query(
+            `SELECT id FROM app.external_fulfillment_orders
+             WHERE order_id = $1 AND external_order_id = $2 FOR UPDATE`,
+            [order.id, input.externalOrderId],
+          );
+      // The external reference can change while this transaction waits for the order.
+      if (!lockedReference.rows[0]) return;
       const target = normalizeExternalStatus(input.rawStatus);
       const printingTarget = normalizeExternalPrintingStatus(input.rawStatus);
       if (reference.fulfillment_group_id && printingTarget) {
