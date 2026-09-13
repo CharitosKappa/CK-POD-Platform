@@ -2070,12 +2070,12 @@ export class OrderOperationsService {
     actorType: 'SYSTEM' | 'OPS' | 'WEBHOOK' | 'POLLING' = actor ? 'OPS' : 'SYSTEM',
     cancellationAuthority = false,
   ) {
-    // Only confirmed provider cancellation conflicting with new shipment evidence may
-    // put a shipped order on attention hold. Its independent fulfillment evidence remains intact.
+    // Validated partial cancellation may require attention despite a refund-stage label
+    // or newer shipment evidence. Its independent layer evidence remains intact.
     const cancellationAttentionHold =
       cancellationAuthority &&
       target === 'ON_HOLD' &&
-      ['PARTIALLY_SHIPPED', 'SHIPPED', 'DELIVERED'].includes(order.status);
+      ['PARTIALLY_SHIPPED', 'SHIPPED', 'DELIVERED', 'REFUND_REQUIRED'].includes(order.status);
     // The cancellation authority has separately checked current Printing/Fulfillment and
     // all durable provider confirmations. Other workflows retain their existing state graph.
     const confirmedCancellation = cancellationAuthority && target === 'CANCELLED';
@@ -2360,8 +2360,11 @@ function groupReadinessBlockers(rows: GroupReadinessRow[]): string[] {
 
 async function assertCancellationResolved(client: SqlClient, orderId: string): Promise<void> {
   const cancellation = await client.query(
-    `SELECT id FROM app.order_cancellations
-    WHERE order_id=$1 AND status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') LIMIT 1`,
+    `SELECT id FROM app.order_cancellations cancellation
+    WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED')
+      OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt
+        WHERE attempt.order_cancellation_id=cancellation.id AND attempt.status='REQUESTED'
+        AND attempt.attempt_count>0)) LIMIT 1`,
     [orderId],
   );
   if (cancellation.rows.length)

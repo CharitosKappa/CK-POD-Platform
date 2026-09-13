@@ -63,6 +63,8 @@ export interface CancelOrderResult {
   status: CancellationStatus;
   orderStatus: string;
   unresolvedFulfillmentGroupIds: string[];
+  /** Unconfirmed started mutations: read-only reconciliation or manual resolution only. */
+  ambiguousFulfillmentGroupIds: string[];
   duplicate: boolean;
   refund: {
     destination: RefundDestination;
@@ -102,6 +104,7 @@ interface CancellationGroupRow {
   fulfillment_group_id: string;
   external_order_id: string | null;
   status: 'REQUESTED' | 'CANCELLED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'FAILED';
+  attempt_count: number;
 }
 
 interface LockedOrder {
@@ -176,8 +179,9 @@ export class OrderAdminActionsService {
     const lifecycle = dependencies.lifecycle ?? new LifecycleOrchestrator(this.pool);
     const client = await this.pool.connect();
     let workerLock: string | undefined;
+    let reservation: { cancellation: CancellationRow; execute: boolean; duplicate: boolean };
     try {
-      const reservation = await transactionOn(client, async () => {
+      reservation = await transactionOn(client, async () => {
         const order = await this.lockOrder(client, input.orderNumber);
         const retry = 'cancellationId' in input;
         const action = retry ? 'order_cancellation_retried' : 'order_cancellation_requested';
@@ -211,8 +215,8 @@ export class OrderAdminActionsService {
           return { cancellation, execute: false, duplicate: true };
 
         // A session lock spans external calls without holding a business transaction open.
-        // It is shared by every process and released on connection loss; persisted REQUESTED
-        // attempts can then be reconciled using the same provider key, without a lease race.
+        // It is shared by every process and released on connection loss. A prior started
+        // REQUESTED attempt must then be reconciled read-only, never mutated again blindly.
         const key = `order-cancellation:${order.id}`;
         const claim = await client.query<{ acquired: boolean }>(
           'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
@@ -388,26 +392,6 @@ export class OrderAdminActionsService {
           cancellation.status = outcome.status;
         });
       }
-      if (cancellation.status === 'SUCCEEDED') {
-        await this.settleCancellationRefund(
-          client,
-          session,
-          input.orderNumber,
-          cancellation,
-          dependencies.refunds,
-        );
-        if (cancellation.notify_customer) {
-          const delivery = (
-            await client.query<{ id: string }>(
-              `SELECT id FROM app.lifecycle_deliveries
-            WHERE idempotency_key=$1`,
-              [`cancellation-notification:${cancellation.id}`],
-            )
-          ).rows[0];
-          if (delivery) await lifecycle.dispatchDelivery(delivery.id);
-        }
-      }
-      return await this.cancellationResult(client, cancellation.id, reservation.duplicate);
     } finally {
       try {
         if (workerLock) await client.query('SELECT pg_advisory_unlock(hashtext($1))', [workerLock]);
@@ -415,6 +399,28 @@ export class OrderAdminActionsService {
         client.release();
       }
     }
+    // Downstream services own their transactions and pool acquisitions. Release the
+    // cancellation worker before entering those independently idempotent boundaries.
+    const cancellation = reservation.cancellation;
+    if (cancellation.status === 'SUCCEEDED') {
+      await this.settleCancellationRefund(
+        this.pool,
+        session,
+        input.orderNumber,
+        cancellation,
+        dependencies.refunds,
+      );
+      if (cancellation.notify_customer) {
+        const delivery = (
+          await this.pool.query<{ id: string }>(
+            `SELECT id FROM app.lifecycle_deliveries WHERE idempotency_key=$1`,
+            [`cancellation-notification:${cancellation.id}`],
+          )
+        ).rows[0];
+        if (delivery) await lifecycle.dispatchDelivery(delivery.id);
+      }
+    }
+    return this.cancellationResult(this.pool, cancellation.id, reservation.duplicate);
   }
 
   private async settleCancellationRefund(
@@ -509,9 +515,14 @@ export class OrderAdminActionsService {
     );
     for (const group of groups.rows) {
       const idempotencyKey = `cancel:${cancellation.id}:${group.fulfillment_group_id}`;
+      // Losing the DB session does not stop a provider POST already in flight. The
+      // durable started/no-result distinction survives that loss even when a new worker
+      // has the advisory claim. An unchanged GET is not proof that another POST is safe.
+      const reconcileOnly = group.status === 'REQUESTED' && group.attempt_count > 0;
       const eligible = await transactionOn(client, async () => {
         const order = await this.lockOrder(client, orderNumber);
         const eligibility = await this.loadEligibility(client, session, order);
+        if (reconcileOnly) return true;
         if (!eligibility.actions.cancel) {
           await client.query(
             `UPDATE app.order_cancellation_groups SET status='FAILED',provider_error_code='ORDER_NO_LONGER_ELIGIBLE',
@@ -531,16 +542,33 @@ export class OrderAdminActionsService {
       let state: CancellationGroupRow['status'];
       let errorCode: string | null = null;
       let occurredAt: Date | null = null;
+      let reconciliationErrorCode: string | null = null;
       try {
-        const response = await fulfillment.cancelOrder({
-          externalOrderId: group.external_order_id!,
-          idempotencyKey,
-        });
-        state = response.state;
-        occurredAt = response.occurredAt;
+        if (reconcileOnly) {
+          const response = await fulfillment.getOrderStatus({
+            externalOrderId: group.external_order_id!,
+          });
+          state =
+            response.externalOrderId === group.external_order_id &&
+            ['cancelled', 'canceled'].includes(response.state.trim().toLowerCase())
+              ? 'CANCELLED'
+              : 'REQUESTED';
+          occurredAt = state === 'CANCELLED' ? response.occurredAt : null;
+          if (state === 'REQUESTED') errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
+        } else {
+          const response = await fulfillment.cancelOrder({
+            externalOrderId: group.external_order_id!,
+            idempotencyKey,
+          });
+          state = response.state;
+          occurredAt = response.occurredAt;
+        }
       } catch (error) {
-        state = 'FAILED';
-        errorCode = normalizeFulfillmentError(error).code;
+        state = reconcileOnly ? 'REQUESTED' : 'FAILED';
+        if (reconcileOnly) {
+          errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
+          reconciliationErrorCode = normalizeFulfillmentError(error).code;
+        } else errorCode = normalizeFulfillmentError(error).code;
       }
       await transactionOn(client, async () => {
         await this.lockOrder(client, orderNumber);
@@ -550,7 +578,22 @@ export class OrderAdminActionsService {
         await client.query(
           `UPDATE app.order_cancellation_groups SET status=$2,provider_error_code=$3,
           response_metadata=$4::jsonb,updated_at=now() WHERE id=$1`,
-          [group.id, state, errorCode, JSON.stringify({ idempotencyKey, occurredAt })],
+          [
+            group.id,
+            state,
+            errorCode,
+            JSON.stringify({
+              idempotencyKey,
+              occurredAt,
+              ...(reconcileOnly
+                ? {
+                    reconciliation: 'READ_ONLY',
+                    requiresManualResolution: state === 'REQUESTED',
+                    reconciliationErrorCode,
+                  }
+                : {}),
+            }),
+          ],
         );
         await client.query(
           `INSERT INTO app.order_operational_audits
@@ -566,6 +609,9 @@ export class OrderAdminActionsService {
               status: state,
               providerErrorCode: errorCode,
               idempotencyKey,
+              ...(reconcileOnly
+                ? { reconciliation: 'READ_ONLY', requiresManualResolution: state === 'REQUESTED' }
+                : {}),
               note: cancellation.staff_note,
               source: 'ADMIN',
             }),
@@ -587,8 +633,9 @@ export class OrderAdminActionsService {
         [cancellationId],
       )
     ).rows[0]!;
-    const unresolved = await client.query<{ fulfillment_group_id: string }>(
-      `SELECT attempt.fulfillment_group_id
+    const unresolved = await client.query<{ fulfillment_group_id: string; ambiguous: boolean }>(
+      `SELECT attempt.fulfillment_group_id,
+        COALESCE(attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN',false) AS ambiguous
       FROM app.order_cancellation_groups attempt JOIN app.order_fulfillment_groups group_row ON group_row.id=attempt.fulfillment_group_id
       WHERE attempt.order_cancellation_id=$1 AND (attempt.status NOT IN ('CANCELLED','NOT_REQUIRED')
         OR group_row.printing_status IN ('SUBMITTING','IN_PRODUCTION','PRINTED')
@@ -619,6 +666,9 @@ export class OrderAdminActionsService {
       status: row.status,
       orderStatus: row.order_status,
       unresolvedFulfillmentGroupIds: unresolved.rows.map((group) => group.fulfillment_group_id),
+      ambiguousFulfillmentGroupIds: unresolved.rows
+        .filter((group) => group.ambiguous)
+        .map((group) => group.fulfillment_group_id),
       duplicate,
       refund: {
         destination: row.refund_destination,

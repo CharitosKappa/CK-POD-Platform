@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -181,23 +181,29 @@ suite('order archive transaction integration', () => {
     cancelOrder = vi
       .fn<domain.FulfillmentService['cancelOrder']>()
       .mockResolvedValue({ state: 'CANCELLED', occurredAt: new Date('2026-09-01') }),
-    options: { payments?: domain.PaymentService; lifecycle?: domain.LifecycleOrchestrator } = {},
+    options: {
+      payments?: domain.PaymentService;
+      lifecycle?: domain.LifecycleOrchestrator;
+      pool?: SqlPool;
+      fulfillment?: domain.FulfillmentService;
+    } = {},
   ) {
-    const fulfillment = new ArchiveFixtureFulfillment();
-    fulfillment.cancelOrder = cancelOrder;
+    const servicePool = options.pool ?? actionDatabase.pool;
+    const fulfillment = options.fulfillment ?? new ArchiveFixtureFulfillment();
+    if (!options.fulfillment) fulfillment.cancelOrder = cancelOrder;
     const payments = options.payments ?? new domain.FakePaymentService();
     const operations = new domain.OrderOperationsService(
-      actionDatabase.pool,
+      servicePool,
       new MemoryObjectStorage(),
       fulfillment,
       { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
     );
-    const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
-    const actions = new domain.OrderAdminActionsService(actionDatabase.pool, {
+    const refunds = new domain.OrderRefundService(servicePool, payments);
+    const actions = new domain.OrderAdminActionsService(servicePool, {
       fulfillment,
       operations,
       refunds,
-      lifecycle: options.lifecycle ?? new domain.LifecycleOrchestrator(actionDatabase.pool),
+      lifecycle: options.lifecycle ?? new domain.LifecycleOrchestrator(servicePool),
     });
     return { actions, cancelOrder, operations, payments, refunds };
   }
@@ -506,6 +512,92 @@ suite('order archive transaction integration', () => {
     expect(transport).toHaveBeenCalledTimes(3);
   });
 
+  it('holds a REFUND_REQUIRED partial cancellation without widening ordinary hold transitions', async () => {
+    const f = await fixture('UNFULFILLED', 'REFUND_REQUIRED', 'SUBMITTED');
+    const firstExternal = `refund-hold-first-${randomUUID()}`;
+    await externalGroup(f, firstExternal);
+    const unresolvedId = await secondGroup(f, `refund-hold-second-${randomUUID()}`);
+    const { actions, operations } = cancellationService(
+      vi.fn<domain.FulfillmentService['cancelOrder']>().mockImplementation(async (input) => ({
+        state: input.externalOrderId === firstExternal ? 'CANCELLED' : 'UNAVAILABLE',
+        occurredAt: null,
+      })),
+    );
+    await expect(operations.hold(staff, f.orderNumber, 'PRINTABILITY_CONCERN')).rejects.toThrow(
+      'Cannot move REFUND_REQUIRED to ON_HOLD',
+    );
+    const before = await snapshot(f.orderId);
+    const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
+    expect(result).toMatchObject({
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+      unresolvedFulfillmentGroupIds: [unresolvedId],
+    });
+    expect((await cancellationRows(f.orderId)).cancellations).toMatchObject([
+      { status: 'PARTIAL' },
+    ]);
+    expect(
+      (
+        await pool.query(`SELECT previous_state FROM app.order_holds WHERE order_id=$1`, [
+          f.orderId,
+        ])
+      ).rows,
+    ).toEqual([{ previous_state: 'REFUND_REQUIRED' }]);
+    const after = await snapshot(f.orderId);
+    expect(after.payments).toEqual(before.payments);
+    expect(after.refunds).toEqual(before.refunds);
+    expect(after.returns).toEqual(before.returns);
+    expect(after.items).toEqual(before.items);
+  });
+
+  it('completes refund and notification with a one-connection cancellation pool', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const isolated = createDatabaseClient(integrationDatabaseUrl!);
+    isolated.pool.options.max = 1;
+    // Bound the expected RED pool starvation without leaving a hung test worker.
+    isolated.pool.options.connectionTimeoutMillis = 1000;
+    const send = vi.fn<domain.LifecycleMessagingService['send']>().mockResolvedValue({
+      providerMessageId: 'one-connection-cancellation',
+    });
+    const { actions } = cancellationService(undefined, {
+      pool: isolated.pool,
+      lifecycle: new domain.LifecycleOrchestrator(isolated.pool, { send }),
+    });
+    const input = {
+      ...cancellationInput(f.orderNumber),
+      refundDestination: 'ORIGINAL_PAYMENT' as const,
+      refundAmountCents: 500,
+      notifyCustomer: true,
+    };
+    try {
+      const result = await actions.cancel(staff, input);
+      expect(result).toMatchObject({
+        status: 'SUCCEEDED',
+        orderStatus: 'CANCELLED',
+        refund: { status: 'SUCCEEDED', amountCents: 500 },
+      });
+      expect((await cancellationRows(f.orderId)).cancellations).toHaveLength(1);
+      expect((await snapshot(f.orderId)).refunds).toMatchObject([
+        { status: 'SUCCEEDED', amount_cents: 500 },
+      ]);
+      expect(
+        (
+          await pool.query(`SELECT status FROM app.lifecycle_deliveries WHERE order_id=$1`, [
+            f.orderId,
+          ])
+        ).rows,
+      ).toEqual([{ status: 'SENT' }]);
+      expect(await actions.cancel(staff, input)).toMatchObject({
+        duplicate: true,
+        refund: { status: 'SUCCEEDED' },
+      });
+      expect(send).toHaveBeenCalledOnce();
+      expect(isolated.pool.waitingCount).toBe(0);
+    } finally {
+      await isolated.close();
+    }
+  });
+
   it.each(['ORIGINAL_PAYMENT', 'STORE_CREDIT'] as const)(
     'executes %s refund after canonical cancellation exactly once',
     async (destination) => {
@@ -755,6 +847,111 @@ suite('order archive transaction integration', () => {
     });
     return { promise, resolve };
   }
+
+  it('fails closed after worker session loss while the original provider POST is pending', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    const externalOrderId = `session-loss-${randomUUID()}`;
+    await externalGroup(f, externalOrderId);
+    const workerName = `cancel-lost-worker-${randomUUID()}`;
+    const workerUrl = new URL(integrationDatabaseUrl!);
+    workerUrl.searchParams.set('application_name', workerName);
+    const isolated = createDatabaseClient(workerUrl.toString());
+    const disconnected = deferred<void>();
+    isolated.pool.on('connect', (client) => client.on('error', () => disconnected.resolve()));
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let postCount = 0;
+    let providerState = 'on-hold';
+    let originalPostPending = true;
+    const transport: typeof fetch = async (url, init) => {
+      const request = new Request(url, init);
+      if (request.method === 'POST') {
+        postCount += 1;
+        if (postCount === 1) {
+          entered.resolve();
+          await release.promise;
+          originalPostPending = false;
+          providerState = 'canceled';
+        }
+        return Response.json({ id: externalOrderId, status: 'canceled' });
+      }
+      return Response.json({ id: externalOrderId, status: providerState });
+    };
+    const adapter = () =>
+      new domain.PrintifyFulfillmentAdapter({
+        apiToken: 'fixture-only',
+        shopId: 'session-loss-shop',
+        baseUrl: 'https://print.example.test/v1',
+        fetch: transport,
+      });
+    const worker = cancellationService(undefined, { pool: isolated.pool, fulfillment: adapter() });
+    // Different adapter instance/process boundary: no in-memory cancellation map is shared.
+    const successor = cancellationService(undefined, { fulfillment: adapter() });
+    const original = Promise.allSettled([
+      worker.actions.cancel(staff, cancellationInput(f.orderNumber)),
+    ]);
+    try {
+      await entered.promise;
+      const cancellationId = (await cancellationRows(f.orderId)).cancellations[0]!.id;
+      const killed = await pool.query(
+        `SELECT pg_terminate_backend(pid) AS terminated FROM pg_stat_activity WHERE application_name=$1`,
+        [workerName],
+      );
+      expect(killed.rows).toEqual([{ terminated: true }]);
+      await disconnected.promise;
+      for (let retry = 0; retry < 2; retry += 1) {
+        const result = await successor.actions.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId,
+          idempotencyKey: randomUUID(),
+        });
+        expect(postCount).toBe(1);
+        expect(originalPostPending).toBe(true);
+        expect(result).toMatchObject({
+          status: 'FAILED',
+          orderStatus: 'SUBMITTED_TO_PRINTIFY',
+          unresolvedFulfillmentGroupIds: [f.groupId],
+          ambiguousFulfillmentGroupIds: [f.groupId],
+        });
+        expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+          {
+            status: 'REQUESTED',
+            attempt_count: 1,
+            provider_error_code: 'CANCELLATION_OUTCOME_UNKNOWN',
+            response_metadata: { requiresManualResolution: true },
+          },
+        ]);
+      }
+      await expect(successor.operations.submitProduction(staff, f.orderNumber)).rejects.toThrow(
+        'Cancellation must be resolved',
+      );
+      release.resolve();
+      expect(await original).toMatchObject([{ status: 'rejected' }]);
+      expect(
+        await successor.actions.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId,
+          idempotencyKey: randomUUID(),
+        }),
+      ).toMatchObject({
+        status: 'SUCCEEDED',
+        orderStatus: 'CANCELLED',
+        ambiguousFulfillmentGroupIds: [],
+      });
+      expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+        {
+          status: 'CANCELLED',
+          attempt_count: 1,
+          provider_error_code: null,
+        },
+      ]);
+      expect(postCount).toBe(1);
+    } finally {
+      release.resolve();
+      await original;
+      await isolated.close();
+    }
+  });
 
   it('serializes live duplicate cancellation and retry calls with a database worker claim', async () => {
     const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
