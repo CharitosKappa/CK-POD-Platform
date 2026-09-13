@@ -14,6 +14,7 @@ import {
 export type OrderDetailStaffSession = Omit<StaffSession, 'token'>;
 
 export class OrderDetailDataError extends Error {}
+export class OrderDetailAccessError extends Error {}
 
 export interface PostalAddressSnapshot {
   recipientName: string;
@@ -1018,12 +1019,13 @@ function groupBy<T>(values: T[], key: (value: T) => string): Map<string, T[]> {
 }
 
 function assertOrderDetailAccess(session: OrderDetailStaffSession): void {
-  if (!session.staffMemberId) throw new Error('Admin access is restricted.');
+  if (!session.staffMemberId) throw new OrderDetailAccessError('Admin access is restricted.');
 }
 
 function assertOrderDetailMutationAccess(session: OrderDetailStaffSession): void {
   assertOrderDetailAccess(session);
-  if (session.role === 'READ_ONLY') throw new Error('This staff role has read-only access.');
+  if (session.role === 'READ_ONLY')
+    throw new OrderDetailAccessError('This staff role has read-only access.');
 }
 
 function canonicalTags(values: string[]): string[] {

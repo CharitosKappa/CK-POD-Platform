@@ -11,6 +11,8 @@ import {
   FulfillmentAccessError,
   OrderOperationsAccessError,
   OrderTransitionError,
+  OrderDetailAccessError,
+  OrderDetailDataError,
   CustomerOperationsAccessError,
   CustomerOperationsConflictError,
   CustomerOperationsValidationError,
@@ -83,6 +85,15 @@ export function handleRouteError(error: unknown): NextResponse {
     return NextResponse.json(
       { error: 'You do not have access to fulfillment operations.' },
       { status: 403 },
+    );
+  }
+  if (error instanceof OrderDetailAccessError) {
+    return NextResponse.json({ error: error.message }, { status: 403 });
+  }
+  if (error instanceof OrderDetailDataError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.message === 'Order not found.' ? 404 : 400 },
     );
   }
   if (error instanceof OrderTransitionError) {

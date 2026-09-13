@@ -1,10 +1,6 @@
 import { NextResponse } from 'next/server';
 import { handleRouteError } from '../../../../../lib/http';
-import {
-  adminCommerceRuntime,
-  orderOperationsRuntime,
-  requireAdminSession,
-} from '../../../../../lib/platform';
+import { orderDetailRuntime, requireAdminSession } from '../../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
 export async function GET(
@@ -13,13 +9,9 @@ export async function GET(
 ) {
   try {
     const { orderNumber } = await context.params;
-    const session = await requireAdminSession();
-    const [commerce, operations] = await Promise.all([
-      adminCommerceRuntime().getOrder(session, orderNumber),
-      (await orderOperationsRuntime()).getOperationalOrder(session, orderNumber),
-    ]);
-    return commerce && operations
-      ? NextResponse.json({ order: { ...operations, ...commerce } })
+    const order = await orderDetailRuntime().getOrder(await requireAdminSession(), orderNumber);
+    return order
+      ? NextResponse.json({ order })
       : NextResponse.json({ error: 'Order not found.' }, { status: 404 });
   } catch (error) {
     return handleRouteError(error);
