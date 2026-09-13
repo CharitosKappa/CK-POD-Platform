@@ -16,6 +16,7 @@ import {
   IdentityService,
   MockupService,
   OrderOperationsService,
+  OrderDetailService,
   CxOperationsService,
   CustomerOperationsService,
   LifecycleOrchestrator,
@@ -158,6 +159,10 @@ export async function customerExportRuntime() {
 
 export function adminCommerceRuntime() {
   return new AdminCommerceService(databasePool());
+}
+
+export function orderDetailRuntime() {
+  return new OrderDetailService(databasePool());
 }
 
 export function staffIdentityRuntime() {

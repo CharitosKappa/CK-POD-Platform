@@ -67,6 +67,7 @@ export * from './mockups';
 export * from './commerce';
 export * from './order-operations';
 export * from './order-detail-contracts';
+export * from './order-detail';
 export * from './customer-operations';
 export * from './customer-exports';
 export * from './customer-contracts';

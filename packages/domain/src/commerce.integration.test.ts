@@ -18,6 +18,7 @@ import {
   OrderTransitionError,
 } from './order-operations.js';
 import { FakePrintifyFulfillmentAdapter } from './printify.js';
+import { OrderDetailService } from './order-detail.js';
 import { FulfillmentIntegrationError } from './fulfillment-contracts.js';
 import type { PaymentService } from './commerce-contracts.js';
 import type {
@@ -1078,6 +1079,29 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         (group) => group.id === fulfillmentGroupId,
       )?.shipments,
     ).toMatchObject([{ carrier: 'Fixture Carrier', status: 'DELIVERED' }]);
+    const orderDetail = new OrderDetailService(pool);
+    const adminProjection = await orderDetail.getOrder(staffSession, orderNumber);
+    expect(adminProjection).toMatchObject({
+      orderNumber,
+      paymentState: 'PAID',
+      printingState: 'PRINTED',
+      fulfillmentState: 'DELIVERED',
+      financials: { currency: 'USD' },
+    });
+    expect(adminProjection).not.toHaveProperty('status');
+    expect(adminProjection?.groups.find((group) => group.id === fulfillmentGroupId)).toMatchObject({
+      printingState: 'PRINTED',
+      fulfillmentState: 'DELIVERED',
+    });
+    expect(
+      await orderDetail.getPrintingGroup(staffSession, orderNumber, fulfillmentGroupId),
+    ).toMatchObject({
+      id: fulfillmentGroupId,
+      orderNumber,
+      printingState: 'PRINTED',
+      fulfillmentState: 'DELIVERED',
+    });
+    expect(await orderDetail.getPrintingGroup(staffSession, orderNumber, randomUUID())).toBeNull();
     const item = await pool.query<{ id: string }>(
       `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
       [orderNumber],
