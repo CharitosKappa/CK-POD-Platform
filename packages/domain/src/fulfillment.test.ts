@@ -134,6 +134,39 @@ describe('Printify fulfillment boundary', () => {
     expect(methods).toEqual(['GET']);
   });
 
+  // Break caught: request identity masquerades as verified provider identity during recovery.
+  it.each([
+    { name: 'mismatched', payload: { id: 'another-private-order', status: 'canceled' } },
+    { name: 'missing', payload: { status: 'canceled' } },
+  ])('rejects a $name response ID during read-only status verification', async ({ payload }) => {
+    const adapter = cancellationAdapter(async () =>
+      Response.json({
+        ...payload,
+        customer: { email: 'private-provider-customer@example.test' },
+      }),
+    );
+    const result = await adapter.getOrderStatus(cancellationInput).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(FulfillmentIntegrationError);
+    expect(result).toMatchObject({ code: 'INVALID_RESPONSE', retryable: false });
+    for (const representation of [String(result), JSON.stringify(result)]) {
+      expect(representation).not.toContain('another-private-order');
+      expect(representation).not.toContain('private-provider-customer');
+      expect(representation).not.toContain('server-only-secret');
+    }
+  });
+
+  it.each(['in-production', 'fulfilled', undefined])(
+    'preserves matching-identity non-cancellation status %s',
+    async (status) => {
+      const adapter = cancellationAdapter(async () => Response.json({ id: 'provider/1', status }));
+      await expect(adapter.getOrderStatus({ externalOrderId: 'provider/1' })).resolves.toEqual({
+        externalOrderId: 'provider/1',
+        state: status ?? 'UNKNOWN',
+        occurredAt: null,
+      });
+    },
+  );
+
   // Break caught: timeout/unknown errors leak transport secrets or resolve as cancellation.
   it.each([
     [new DOMException('server-only-secret', 'AbortError'), 'TIMEOUT'],

@@ -178,11 +178,20 @@ export class PrintifyFulfillmentAdapter implements FulfillmentService {
   }
 
   async getOrderStatus(input: { externalOrderId: string }): Promise<FulfillmentStatus> {
-    const response = await this.request<Record<string, unknown>>(
-      `/shops/${encodeURIComponent(this.options.shopId)}/orders/${encodeURIComponent(input.externalOrderId)}.json`,
+    const response = recordValue(
+      await this.request<unknown>(
+        `/shops/${encodeURIComponent(this.options.shopId)}/orders/${encodeURIComponent(input.externalOrderId)}.json`,
+      ),
     );
+    const externalOrderId = stringValue(response.id);
+    if (externalOrderId !== input.externalOrderId) {
+      throw new FulfillmentIntegrationError(
+        'INVALID_RESPONSE',
+        'Printify returned an invalid order identity.',
+      );
+    }
     return {
-      externalOrderId: input.externalOrderId,
+      externalOrderId,
       state: stringValue(response.status) ?? 'UNKNOWN',
       occurredAt: null,
     };

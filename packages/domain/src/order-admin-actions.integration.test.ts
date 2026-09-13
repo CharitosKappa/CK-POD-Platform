@@ -953,6 +953,92 @@ suite('order archive transaction integration', () => {
     }
   });
 
+  it.each(['mismatched', 'missing'] as const)(
+    'keeps recovery ambiguous without settlement for a %s provider response ID',
+    async (identity) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      const externalOrderId = `unconfirmed-identity-${randomUUID()}`;
+      await externalGroup(f, externalOrderId);
+      // Durable state from a started worker with no recorded provider result.
+      const cancellationId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO app.order_cancellations
+        (order_id,status,refund_destination,refund_amount_cents,reason_code,notify_customer,initiated_by_staff_member_id,idempotency_key)
+        VALUES ($1,'PROCESSING','ORIGINAL_PAYMENT',500,'CUSTOMER_CANCELLATION_REQUEST',true,$2,$3) RETURNING id`,
+          [f.orderId, staff.staffMemberId, randomUUID()],
+        )
+      ).rows[0]!.id;
+      await pool.query(
+        `INSERT INTO app.order_cancellation_groups
+        (order_cancellation_id,fulfillment_group_id,external_order_id,status,attempt_count,last_attempt_at)
+        VALUES ($1,$2,$3,'REQUESTED',1,now())`,
+        [cancellationId, f.groupId, externalOrderId],
+      );
+      const methods: string[] = [];
+      const fulfillment = new domain.PrintifyFulfillmentAdapter({
+        apiToken: 'fixture-only-secret',
+        shopId: 'identity-fixture',
+        baseUrl: 'https://print.example.test/v1',
+        fetch: async (url, init) => {
+          methods.push(new Request(url, init).method);
+          return Response.json({
+            ...(identity === 'mismatched' ? { id: 'another-private-order' } : {}),
+            status: 'canceled',
+            customer: { email: 'private-provider-customer@example.test' },
+          });
+        },
+      });
+      const payments = new domain.FakePaymentService();
+      const refund = vi.spyOn(payments, 'refund');
+      const send = vi.fn<domain.LifecycleMessagingService['send']>().mockResolvedValue({
+        providerMessageId: 'must-not-send',
+      });
+      const { actions } = cancellationService(undefined, {
+        fulfillment,
+        payments,
+        lifecycle: new domain.LifecycleOrchestrator(pool, { send }),
+      });
+      const before = await snapshot(f.orderId);
+      const result = await actions.retryCancellation(staff, {
+        orderNumber: f.orderNumber,
+        cancellationId,
+        idempotencyKey: randomUUID(),
+      });
+      expect(result).toMatchObject({
+        status: 'FAILED',
+        orderStatus: 'SUBMITTED_TO_PRINTIFY',
+        unresolvedFulfillmentGroupIds: [f.groupId],
+        ambiguousFulfillmentGroupIds: [f.groupId],
+      });
+      expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+        {
+          status: 'REQUESTED',
+          attempt_count: 1,
+          provider_error_code: 'CANCELLATION_OUTCOME_UNKNOWN',
+          response_metadata: {
+            requiresManualResolution: true,
+            reconciliationErrorCode: 'INVALID_RESPONSE',
+          },
+        },
+      ]);
+      expect(methods).toEqual(['GET']);
+      expect(await snapshot(f.orderId)).toEqual(before);
+      expect(refund).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE order_id=$1`, [f.orderId]))
+          .rows,
+      ).toEqual([]);
+      const audits = (
+        await pool.query(`SELECT metadata FROM app.order_operational_audits WHERE order_id=$1`, [
+          f.orderId,
+        ])
+      ).rows;
+      expect(JSON.stringify(audits)).not.toContain('another-private-order');
+      expect(JSON.stringify(audits)).not.toContain('private-provider-customer');
+    },
+  );
+
   it('serializes live duplicate cancellation and retry calls with a database worker claim', async () => {
     const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
     await externalGroup(f, `concurrent-${randomUUID()}`);
