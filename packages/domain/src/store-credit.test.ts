@@ -1,5 +1,6 @@
 import type { SqlPool } from '@let-it-be/db';
 import { describe, expect, it } from 'vitest';
+import * as storeCredit from './store-credit';
 
 import {
   parseUsdCents,
@@ -75,6 +76,25 @@ describe('USD amount parsing', () => {
 });
 
 describe('Store Credit adjustment authorization and validation', () => {
+  // Composed ledger writes need the same preflight protection as standalone adjustments.
+  it('validates the client-aware primitive before using its caller transaction', async () => {
+    expect(storeCredit.adjustStoreCreditWithClient).toBeTypeOf('function');
+    await expect(
+      storeCredit.adjustStoreCreditWithClient(
+        pool,
+        { ...actor, role: 'READ_ONLY' },
+        customerId,
+        input,
+      ),
+    ).rejects.toBeInstanceOf(StoreCreditAccessError);
+    await expect(
+      storeCredit.adjustStoreCreditWithClient(pool, actor, customerId, {
+        ...input,
+        amount: '1.001',
+      }),
+    ).rejects.toBeInstanceOf(StoreCreditValidationError);
+  });
+
   it.each(['PREPRESS', 'READ_ONLY'] as const)('denies %s staff adjustments', async (role) => {
     await expect(service.adjust({ ...actor, role }, customerId, input)).rejects.toBeInstanceOf(
       StoreCreditAccessError,

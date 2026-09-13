@@ -1,14 +1,21 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
-import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
+import {
+  createDatabaseClient,
+  integrationTestDatabaseUrl,
+  withTransaction,
+  type SqlPool,
+} from '@let-it-be/db';
 import { integrityViolationCounts } from '@let-it-be/db/integrity';
 import { MemoryObjectStorage } from '@let-it-be/storage';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AssetService } from './assets.js';
 import { CommerceAccessError, CommerceService, CommerceValidationError } from './commerce.js';
 import { IdentityService } from './identity.js';
-import { FakePaymentService, FakeTaxService } from './payments.js';
+import { FakePaymentService, FakeTaxService, StripePaymentService } from './payments.js';
+import * as domain from './index.js';
+import * as storeCredit from './store-credit.js';
 import { ProjectService } from './projects.js';
 import { MockupService } from './mockups.js';
 import { CxOperationsService } from './operations-analytics.js';
@@ -567,6 +574,447 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     await expect(commerce.getCart(account, cart.id)).resolves.toMatchObject({ id: cart.id });
   });
 
+  describe('shared order refund transaction boundary', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    async function fixture() {
+      const ready = await readyProject(pool, identity, projects, storage);
+      const cart = await commerce.createCart(ready.guest, {
+        projectId: ready.projectId,
+        size: 'M',
+        quantity: 1,
+      });
+      await commerce.approveProof(ready.guest, cart.id);
+      const addressId = await commerce.saveShippingAddress(ready.guest, cart.id, {
+        ...address(),
+        email: `refund-${randomUUID()}@example.test`,
+      });
+      const checkout = await commerce.startCheckout(ready.guest, cart.id, {
+        shippingAddressId: addressId,
+        billingAddress: null,
+        idempotencyKey: randomUUID(),
+      });
+      const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
+      const orderNumber = paid.orderNumber!;
+      const row = (
+        await pool.query<{
+          id: string;
+          customer_profile_id: string;
+          payment_id: string;
+          amount_cents: number;
+        }>(
+          `SELECT o.id, o.customer_profile_id, p.id AS payment_id, p.amount_cents
+          FROM app.orders o JOIN app.payments p ON p.checkout_attempt_id=o.checkout_attempt_id
+          WHERE o.order_number=$1`,
+          [orderNumber],
+        )
+      ).rows[0]!;
+      const staff = {
+        type: 'STAFF' as const,
+        role: 'OPERATIONS' as const,
+        staffMemberId: randomUUID(),
+        email: `refund-staff-${randomUUID()}@example.test`,
+      };
+      await pool.query(
+        `INSERT INTO app.staff_members (id,normalized_email,role,status)
+        VALUES ($1,$2,'OPERATIONS','ACTIVE')`,
+        [staff.staffMemberId, staff.email],
+      );
+      await pool.query(`UPDATE app.payments SET provider='STRIPE' WHERE id=$1`, [row.payment_id]);
+      const input = (amountCents = 1200, idempotencyKey: string = randomUUID()) => ({
+        orderNumber,
+        amountCents,
+        idempotencyKey,
+        reasonCode: 'CUSTOMER_REQUEST',
+        note: 'Support approved',
+      });
+      return { ...row, orderNumber, staff, input };
+    }
+
+    function service() {
+      expect(domain.OrderRefundService).toBeTypeOf('function');
+      return new domain.OrderRefundService(pool, new StripePaymentService('fixture', 'fixture'));
+    }
+
+    function transport(beforeResponse?: () => Promise<void>, fail = false) {
+      const requests: { amountCents: number; paymentId: string | null; key: string | null }[] = [];
+      vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        expect(url).toBe('https://api.stripe.com/v1/refunds');
+        expect(init.method).toBe('POST');
+        const form = new URLSearchParams(String(init.body));
+        const key = new Headers(init.headers).get('Idempotency-Key');
+        requests.push({
+          amountCents: Number(form.get('amount')),
+          paymentId: form.get('payment_intent'),
+          key,
+        });
+        await beforeResponse?.();
+        return new Response(JSON.stringify({ id: `re_${key}` }), { status: fail ? 503 : 200 });
+      });
+      return requests;
+    }
+
+    async function state(orderId: string) {
+      const refunds = await pool.query(`SELECT * FROM app.order_refunds WHERE order_id=$1`, [
+        orderId,
+      ]);
+      const ledger = await pool.query(
+        `SELECT l.* FROM app.store_credit_ledger l
+        JOIN app.store_credit_accounts a ON a.id=l.store_credit_account_id
+        JOIN app.orders o ON o.customer_profile_id=a.customer_profile_id WHERE o.id=$1`,
+        [orderId],
+      );
+      const balance = (
+        await pool.query<{ balance: number }>(
+          `SELECT coalesce(a.current_balance_cents,0) AS balance
+        FROM app.orders o LEFT JOIN app.store_credit_accounts a ON a.customer_profile_id=o.customer_profile_id
+        WHERE o.id=$1`,
+          [orderId],
+        )
+      ).rows[0]!.balance;
+      return { refunds: refunds.rows, ledger: ledger.rows, balance };
+    }
+
+    async function failSuccessAudit(orderId: string) {
+      const name = `refund_test_${randomBytes(8).toString('hex')}`;
+      await pool.query(`CREATE FUNCTION app.${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.order_id = '${orderId}'::uuid AND NEW.action='refund_succeeded' THEN
+          RAISE EXCEPTION 'fixture finalization failure'; END IF; RETURN NEW; END; $$`);
+      await pool.query(`CREATE TRIGGER ${name} BEFORE INSERT ON app.order_operational_audits
+        FOR EACH ROW EXECUTE FUNCTION app.${name}()`);
+      return async () => {
+        await pool.query(`DROP TRIGGER ${name} ON app.order_operational_audits`);
+        await pool.query(`DROP FUNCTION app.${name}()`);
+      };
+    }
+
+    // A lost actor/key/amount mapping would debit the provider incorrectly or corrupt the audit.
+    it('refunds original payment for staff with the persisted amount and unchanged provider key', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const requests = transport();
+      const input = f.input();
+      const first = await refunds.refundOriginalPayment(f.staff, input);
+      const duplicate = await refunds.refundOriginalPayment(f.staff, {
+        ...input,
+        amountCents: 100,
+      });
+      expect(first).toMatchObject({
+        destination: 'ORIGINAL_PAYMENT',
+        amountCents: 1200,
+        status: 'SUCCEEDED',
+        duplicate: false,
+        providerRefundId: `re_${input.idempotencyKey}`,
+      });
+      expect(duplicate).toEqual({ ...first, duplicate: true });
+      expect(requests).toEqual([
+        {
+          amountCents: 1200,
+          paymentId: expect.stringMatching(/^fake_pi_/),
+          key: input.idempotencyKey,
+        },
+      ]);
+      expect(await state(f.id)).toMatchObject({
+        balance: 0,
+        ledger: [],
+        refunds: [
+          {
+            id: first.refundId,
+            amount_cents: 1200,
+            initiated_by_staff_member_id: f.staff.staffMemberId,
+            initiated_by_user_id: null,
+            payment_id: f.payment_id,
+            status: 'SUCCEEDED',
+            notes: 'Support approved',
+          },
+        ],
+      });
+      expect(
+        (
+          await pool.query(
+            `SELECT actor_staff_member_id,actor_user_id FROM app.order_operational_audits
+        WHERE order_id=$1 AND action IN ('refund_requested','refund_succeeded')`,
+            [f.id],
+          )
+        ).rows,
+      ).toEqual([
+        { actor_staff_member_id: f.staff.staffMemberId, actor_user_id: null },
+        { actor_staff_member_id: f.staff.staffMemberId, actor_user_id: null },
+      ]);
+    });
+
+    // Accepting ordinary customers as operations actors would bypass the existing CX role check.
+    it('preserves USER CX authorization and the public CX provider result', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const requests = transport();
+      const email = `refund-user-${randomUUID()}@example.test`;
+      const account = await identity.register(
+        await identity.createGuestSession(),
+        email,
+        'correct-horse-battery-staple',
+      );
+      const actor = { type: 'USER' as const, userId: account.userId!, email };
+      await expect(refunds.refundOriginalPayment(actor, f.input())).rejects.toThrow(
+        'Operations access is restricted.',
+      );
+      await pool.query(`UPDATE app.users SET role='CX_OPS' WHERE id=$1`, [account.userId]);
+      const input = f.input(100);
+      const cx = new CxOperationsService(pool, new StripePaymentService('fixture', 'fixture'));
+      const first = await cx.refund(account, { ...input, notes: 'Legacy CX note' });
+      expect(first).toEqual({
+        providerRefundId: `re_${input.idempotencyKey}`,
+        duplicate: false,
+        status: 'SUCCEEDED',
+      });
+      expect(await cx.refund(account, input)).toEqual({ ...first, duplicate: true });
+      expect((await state(f.id)).refunds).toMatchObject([
+        {
+          initiated_by_user_id: account.userId,
+          initiated_by_staff_member_id: null,
+          notes: 'Legacy CX note',
+          amount_cents: 100,
+        },
+      ]);
+      expect(requests.map((request) => request.amountCents)).toEqual([100]);
+    });
+
+    // Reading only succeeded refunds or locking after the cap check would allow concurrent over-refunds.
+    it('counts pending and succeeded refunds across both destinations while the provider is in flight', async () => {
+      const f = await fixture();
+      const refunds = service();
+      await refunds.refundToStoreCredit(f.staff, f.input(200));
+      let started!: () => void;
+      let release!: () => void;
+      const inFlight = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const requests = transport(async () => {
+        started();
+        await gate;
+      });
+      const input = f.input(f.amount_cents - 300);
+      const pending = refunds.refundOriginalPayment(f.staff, input);
+      await inFlight;
+      try {
+        expect(await refunds.refundOriginalPayment(f.staff, input)).toMatchObject({
+          status: 'PENDING',
+          duplicate: true,
+        });
+        await expect(refunds.refundOriginalPayment(f.staff, f.input(101))).rejects.toThrow(
+          'Refund exceeds the captured payment.',
+        );
+        await expect(refunds.refundToStoreCredit(f.staff, f.input(101))).rejects.toThrow(
+          'Refund exceeds the captured payment.',
+        );
+        expect((await state(f.id)).refunds).toHaveLength(2);
+      } finally {
+        release();
+        await pending;
+      }
+      await refunds.refundToStoreCredit(f.staff, f.input(100));
+      expect((await state(f.id)).balance).toBe(300);
+      expect(requests.map((request) => request.amountCents)).toEqual([f.amount_cents - 300]);
+      await expect(refunds.refundToStoreCredit(f.staff, f.input(1))).rejects.toThrow(
+        'Refund exceeds the captured payment.',
+      );
+    });
+
+    // Duplicate or competing ledger refunds must serialize on the order, even for a brand-new account.
+    it('serializes competing Store Credit refunds and makes simultaneous retries apply once', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const input = f.input(1200);
+      const retries = await Promise.all([
+        refunds.refundToStoreCredit(f.staff, input),
+        refunds.refundToStoreCredit(f.staff, input),
+      ]);
+      expect(retries.map((refund) => refund.duplicate).sort()).toEqual([false, true]);
+      expect(retries[0]?.refundId).toBe(retries[1]?.refundId);
+      expect((await state(f.id)).balance).toBe(1200);
+      const outcomes = await Promise.allSettled([
+        refunds.refundToStoreCredit(f.staff, f.input(f.amount_cents - 1200)),
+        refunds.refundToStoreCredit(f.staff, f.input(f.amount_cents - 1200)),
+      ]);
+      const persisted = await state(f.id);
+      expect(persisted.balance).toBe(f.amount_cents);
+      expect(persisted.refunds).toHaveLength(2);
+      expect(persisted.ledger).toHaveLength(2);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toMatchObject([
+        { reason: new Error('Refund exceeds the captured payment.') },
+      ]);
+      expect(
+        await refunds.refundToStoreCredit(f.staff, { ...input, amountCents: 1 }),
+      ).toMatchObject({ refundId: retries[0]?.refundId, duplicate: true, amountCents: 1200 });
+      expect((await state(f.id)).balance).toBe(f.amount_cents);
+    });
+
+    // A Store Credit path calling the provider or failing to link its ledger can issue money twice.
+    it('commits the Store Credit balance, ledger, and refund link without Return or fulfillment changes', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const requests = transport();
+      const before = (
+        await pool.query(`SELECT * FROM app.order_fulfillment_groups WHERE order_id=$1`, [f.id])
+      ).rows;
+      const input = f.input(1200);
+      const first = await refunds.refundToStoreCredit(f.staff, input);
+      expect(first).toMatchObject({
+        amountCents: 1200,
+        destination: 'STORE_CREDIT',
+        status: 'SUCCEEDED',
+        duplicate: false,
+      });
+      expect(await refunds.refundOriginalPayment(f.staff, input)).toEqual({
+        ...first,
+        duplicate: true,
+      });
+      const persisted = await state(f.id);
+      expect(persisted.balance).toBe(1200);
+      expect(persisted.ledger).toMatchObject([
+        {
+          entry_type: 'CREDIT',
+          amount_cents: 1200,
+          balance_after_cents: 1200,
+          reason: 'REFUND',
+          actor_staff_member_id: f.staff.staffMemberId,
+        },
+      ]);
+      expect(persisted.refunds).toMatchObject([
+        {
+          id: first.refundId,
+          destination: 'STORE_CREDIT',
+          provider: null,
+          provider_refund_id: null,
+          store_credit_ledger_entry_id: (persisted.ledger[0] as { id: string }).id,
+        },
+      ]);
+      expect(requests).toEqual([]);
+      expect(
+        (await pool.query(`SELECT id FROM app.order_returns WHERE order_id=$1`, [f.id])).rows,
+      ).toEqual([]);
+      expect(
+        (await pool.query(`SELECT * FROM app.order_fulfillment_groups WHERE order_id=$1`, [f.id]))
+          .rows,
+      ).toEqual(before);
+      expect(
+        (await pool.query<{ status: string }>(`SELECT status FROM app.orders WHERE id=$1`, [f.id]))
+          .rows[0]?.status,
+      ).toBe('PAID');
+    });
+
+    // A provider rejection must release the reservation; retrying its key must not call the provider again.
+    it('persists failed provider refunds and allows a new operation to use the released amount', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const requests = transport(undefined, true);
+      const input = f.input(f.amount_cents);
+      await expect(refunds.refundOriginalPayment(f.staff, input)).rejects.toThrow(
+        'Stripe could not process the refund.',
+      );
+      expect(await refunds.refundOriginalPayment(f.staff, input)).toMatchObject({
+        status: 'FAILED',
+        duplicate: true,
+      });
+      expect(requests.map((request) => request.amountCents)).toEqual([f.amount_cents]);
+      await refunds.refundToStoreCredit(f.staff, f.input(f.amount_cents));
+      expect((await state(f.id)).balance).toBe(f.amount_cents);
+    });
+
+    // Committing the helper independently would leave spendable credit after the refund transaction fails.
+    it('rolls back Store Credit, its ledger, and its refund when finalization fails', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const removeFailure = await failSuccessAudit(f.id);
+      const input = f.input();
+      try {
+        await expect(refunds.refundToStoreCredit(f.staff, input)).rejects.toThrow(
+          'fixture finalization failure',
+        );
+        expect(await state(f.id)).toEqual({ balance: 0, ledger: [], refunds: [] });
+      } finally {
+        await removeFailure();
+      }
+      await refunds.refundToStoreCredit(f.staff, input);
+      expect((await state(f.id)).balance).toBe(1200);
+    });
+
+    // A database failure after external success must not free the reserved money for a second refund.
+    it('keeps a provider-success reservation pending if local finalization rolls back', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const requests = transport();
+      const removeFailure = await failSuccessAudit(f.id);
+      const input = f.input(f.amount_cents);
+      try {
+        await expect(refunds.refundOriginalPayment(f.staff, input)).rejects.toThrow(
+          'fixture finalization failure',
+        );
+      } finally {
+        await removeFailure();
+      }
+      expect((await state(f.id)).refunds).toMatchObject([
+        { status: 'PENDING', amount_cents: f.amount_cents },
+      ]);
+      expect(await refunds.refundOriginalPayment(f.staff, input)).toMatchObject({
+        status: 'PENDING',
+        duplicate: true,
+      });
+      await expect(refunds.refundToStoreCredit(f.staff, f.input(1))).rejects.toThrow(
+        'Refund exceeds the captured payment.',
+      );
+      expect(requests.map((request) => request.amountCents)).toEqual([f.amount_cents]);
+    });
+
+    // The helper must participate in its caller's transaction without an internal commit.
+    it('composes the ledger helper with a caller rollback and a later successful adjustment', async () => {
+      const f = await fixture();
+      expect(storeCredit.adjustStoreCreditWithClient).toBeTypeOf('function');
+      const input = {
+        direction: 'CREDIT' as const,
+        amount: '12.34',
+        reason: 'REFUND' as const,
+        idempotencyKey: randomUUID(),
+      };
+      await expect(
+        withTransaction(pool, async (client) => {
+          expect(
+            await storeCredit.adjustStoreCreditWithClient(
+              client,
+              f.staff,
+              f.customer_profile_id,
+              input,
+            ),
+          ).toMatchObject({ balanceCents: 1234, duplicate: false });
+          throw new Error('caller rollback');
+        }),
+      ).rejects.toThrow('caller rollback');
+      expect(await state(f.id)).toEqual({ balance: 0, ledger: [], refunds: [] });
+      await new storeCredit.StoreCreditService(pool).adjust(f.staff, f.customer_profile_id, input);
+      expect((await state(f.id)).balance).toBe(1234);
+    });
+
+    // USD-only credit cannot silently convert a persisted payment in another currency.
+    it('rejects currency mismatch and missing customer linkage without issuing Store Credit', async () => {
+      const f = await fixture();
+      const refunds = service();
+      await pool.query(`UPDATE app.payments SET currency='EUR' WHERE id=$1`, [f.payment_id]);
+      await expect(refunds.refundToStoreCredit(f.staff, f.input())).rejects.toThrow(
+        'Store Credit refunds require a USD order payment.',
+      );
+      await pool.query(`UPDATE app.payments SET currency='USD' WHERE id=$1`, [f.payment_id]);
+      await pool.query(`UPDATE app.orders SET customer_profile_id=NULL WHERE id=$1`, [f.id]);
+      await expect(refunds.refundToStoreCredit(f.staff, f.input())).rejects.toThrow(
+        'Order customer is unavailable.',
+      );
+      expect(await state(f.id)).toEqual({ balance: 0, ledger: [], refunds: [] });
+    });
+  });
+
   it('keeps CX refunds idempotent and reprints isolated from the original M7 production workflow', async () => {
     const ready = await readyProject(pool, identity, projects, storage);
     const cart = await commerce.createCart(ready.guest, {
@@ -589,9 +1037,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       'correct-horse-battery-staple',
     );
     await pool.query(`UPDATE app.users SET role = 'CX_OPS' WHERE id = $1`, [operator.userId]);
-    const payment = {
-      refund: vi.fn().mockResolvedValue({ providerRefundId: `refund-${orderNumber}` }),
-    } as unknown as PaymentService;
+    const payment = new FakePaymentService();
     const cx = new CxOperationsService(pool, payment);
 
     await expect(
@@ -641,7 +1087,15 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         idempotencyKey: `refund-${orderNumber}`,
       }),
     ]);
-    expect(payment.refund).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        await pool.query(
+          `SELECT r.amount_cents, r.status FROM app.order_refunds r JOIN app.orders o ON o.id=r.order_id
+       WHERE o.order_number=$1`,
+          [orderNumber],
+        )
+      ).rows,
+    ).toEqual([{ amount_cents: 100, status: 'SUCCEEDED' }]);
     expect([first.duplicate, duplicate.duplicate].filter(Boolean)).toHaveLength(1);
     await expect(
       cx.refund(operator, {

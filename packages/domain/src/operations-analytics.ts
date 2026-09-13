@@ -1,4 +1,5 @@
-import { type SqlPool, withTransaction } from '@let-it-be/db';
+import { type SqlPool } from '@let-it-be/db';
+import { OrderRefundService } from './order-refunds';
 import type { PaymentService } from './commerce-contracts';
 import type { ActiveSession } from './identity';
 import { hashLifecycleIdentifier } from './privacy-lifecycle';
@@ -17,12 +18,6 @@ export type LifecycleMessageType =
   | 'REVIEW_REQUEST'
   | 'REORDER_REVISIT';
 
-const refundReasonCodes = [
-  'CUSTOMER_REQUEST',
-  'DUPLICATE_CHARGE',
-  'PRODUCTION_DEFECT',
-  'CANCELLED',
-] as const;
 const reprintReasonCodes = [
   'PRODUCTION_DEFECT',
   'DAMAGED_IN_TRANSIT',
@@ -507,99 +502,20 @@ export class CxOperationsService {
       idempotencyKey: string;
     },
   ) {
-    await this.requireCx(session);
-    requireReason(input.reasonCode, refundReasonCodes, 'refund');
-    if (!session.userId || input.amountCents <= 0)
-      throw new Error('A positive refund amount is required.');
-    const reservation = await withTransaction(this.pool, async (client) => {
-      const order = await client.query<{
-        id: string;
-        payment_id: string;
-        provider: 'FAKE' | 'STRIPE';
-        provider_payment_id: string;
-        amount_cents: number;
-      }>(
-        `SELECT o.id, p.id AS payment_id, p.provider, p.provider_payment_id, p.amount_cents FROM app.orders o JOIN app.payments p ON p.checkout_attempt_id = o.checkout_attempt_id WHERE o.order_number = $1`,
-        [input.orderNumber],
-      );
-      const row = order.rows[0];
-      if (!row) throw new Error('Order payment is unavailable.');
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [row.id]);
-      const existing = await client.query<{ provider_refund_id: string | null; status: string }>(
-        `SELECT provider_refund_id, status FROM app.order_refunds WHERE idempotency_key = $1`,
-        [input.idempotencyKey],
-      );
-      if (existing.rows[0]) return { row, existing: existing.rows[0] };
-      const prior = await client.query<{ amount: string }>(
-        `SELECT coalesce(sum(amount_cents),0)::text AS amount FROM app.order_refunds WHERE order_id = $1 AND status IN ('PENDING','SUCCEEDED')`,
-        [row.id],
-      );
-      if (Number(prior.rows[0]?.amount ?? 0) + input.amountCents > row.amount_cents)
-        throw new Error('Refund exceeds the captured payment.');
-      await client.query(
-        `INSERT INTO app.order_refunds (order_id, payment_id, provider, idempotency_key, amount_cents, reason_code, status, notes, initiated_by_user_id)
-         VALUES ($1,$2,$3,$4,$5,$6,'PENDING',$7,$8)`,
-        [
-          row.id,
-          row.payment_id,
-          row.provider,
-          input.idempotencyKey,
-          input.amountCents,
-          input.reasonCode,
-          input.notes ?? null,
-          session.userId,
-        ],
-      );
-      await this.audit(client, row.id, 'refund_requested', session, input.reasonCode, {
-        amountCents: input.amountCents,
-        idempotencyKey: input.idempotencyKey,
-      });
-      return { row, existing: null };
-    });
-    if (reservation.existing)
-      return {
-        providerRefundId: reservation.existing.provider_refund_id,
-        duplicate: true,
-        status: reservation.existing.status,
-      };
-    try {
-      const provider = await this.payments.refund({
-        providerPaymentId: reservation.row.provider_payment_id,
-        amountCents: input.amountCents,
-        idempotencyKey: input.idempotencyKey,
-      });
-      await withTransaction(this.pool, async (client) => {
-        await client.query(
-          `UPDATE app.order_refunds SET provider_refund_id = $2, status = 'SUCCEEDED', completed_at = now() WHERE idempotency_key = $1 AND status = 'PENDING'`,
-          [input.idempotencyKey, provider.providerRefundId],
-        );
-        await this.audit(
-          client,
-          reservation.row.id,
-          'refund_succeeded',
-          session,
-          input.reasonCode,
-          { amountCents: input.amountCents, providerRefundId: provider.providerRefundId },
-        );
-      });
-      await this.analytics.emit({
-        name: 'refund',
-        idempotencyKey: `analytics:${input.idempotencyKey}`,
-        orderId: reservation.row.id,
-        dimensions: { amountCents: input.amountCents, reasonCode: input.reasonCode },
-      });
-      return {
-        providerRefundId: provider.providerRefundId,
-        duplicate: false,
-        status: 'SUCCEEDED' as const,
-      };
-    } catch (error) {
-      await this.pool.query(
-        `UPDATE app.order_refunds SET status = 'FAILED' WHERE idempotency_key = $1 AND status = 'PENDING'`,
-        [input.idempotencyKey],
-      );
-      throw error;
-    }
+    const user = await this.requireCx(session);
+    const refund = await new OrderRefundService(
+      this.pool,
+      this.payments,
+      this.analytics,
+    ).refundOriginalPayment(
+      { type: 'USER', userId: session.userId!, email: user.email },
+      { ...input, ...(input.notes === undefined ? {} : { note: input.notes }) },
+    );
+    return {
+      providerRefundId: refund.providerRefundId,
+      duplicate: refund.duplicate,
+      status: refund.status,
+    };
   }
 
   async createReprint(
@@ -792,12 +708,13 @@ export class CxOperationsService {
 
   private async requireCx(session: ActiveSession) {
     if (!session.userId) throw new Error('Operations access is restricted.');
-    const result = await this.pool.query<{ role: string }>(
-      `SELECT role FROM app.users WHERE id = $1`,
+    const result = await this.pool.query<{ role: string; email: string }>(
+      `SELECT role, email FROM app.users WHERE id = $1`,
       [session.userId],
     );
     if (!['ADMIN', 'CX_OPS', 'FULFILLMENT_ADMIN'].includes(result.rows[0]?.role ?? ''))
       throw new Error('Operations access is restricted.');
+    return result.rows[0]!;
   }
 
   private async audit(
