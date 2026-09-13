@@ -990,16 +990,68 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       source: 'WEBHOOK',
       externalEventId: providerEventId,
     });
+    const independentProductionState = await pool.query<{
+      printing_status: string;
+      fulfillment_status: string;
+    }>(
+      `SELECT printing_status, fulfillment_status
+       FROM app.order_fulfillment_groups
+       WHERE id = $1`,
+      [fulfillmentGroupId],
+    );
+    expect(independentProductionState.rows[0]).toEqual({
+      printing_status: 'IN_PRODUCTION',
+      fulfillment_status: 'UNFULFILLED',
+    });
+    const printingEventCount = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM app.order_printing_status_events
+       WHERE fulfillment_group_id = $1 AND external_event_id = $2`,
+      [fulfillmentGroupId, providerEventId],
+    );
+    expect(printingEventCount.rows[0]?.count).toBe('1');
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('IN_PRODUCTION');
-    await operations.reconcileStatus({
+    const trackingNumber = `TRACK-${randomBytes(4).toString('hex')}`;
+    const shippedEvent = {
       externalOrderId: first.externalOrderId,
       rawStatus: 'shipped',
-      source: 'POLLING',
+      source: 'POLLING' as const,
+      externalEventId: `ops-shipped-${randomBytes(5).toString('hex')}`,
       tracking: {
-        trackingNumber: `TRACK-${randomBytes(4).toString('hex')}`,
+        trackingNumber,
         carrier: 'Fixture Carrier',
       },
+    };
+    await operations.reconcileStatus(shippedEvent);
+    await operations.reconcileStatus(shippedEvent);
+    const independentShippedState = await pool.query<{
+      printing_status: string;
+      fulfillment_status: string;
+    }>(
+      `SELECT printing_status, fulfillment_status
+       FROM app.order_fulfillment_groups
+       WHERE id = $1`,
+      [fulfillmentGroupId],
+    );
+    expect(independentShippedState.rows[0]).toEqual({
+      printing_status: 'PRINTED',
+      fulfillment_status: 'FULFILLED',
     });
+    const shipmentAndHistory = await pool.query<{
+      shipments: number;
+      history: number;
+      printing_events: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM app.order_shipments
+          WHERE fulfillment_group_id = $1 AND tracking_number = $2) AS shipments,
+         (SELECT count(*)::int FROM app.order_fulfillment_status_history
+          WHERE fulfillment_group_id = $1 AND to_state = 'FULFILLED') AS history,
+         (SELECT count(*)::int FROM app.order_printing_status_events
+          WHERE fulfillment_group_id = $1 AND external_event_id = $3) AS printing_events`,
+      [fulfillmentGroupId, trackingNumber, shippedEvent.externalEventId],
+    );
+    expect(shipmentAndHistory.rows[0]).toEqual({ shipments: 1, history: 1, printing_events: 1 });
     expect((await commerce.getOrder(ready.guest, orderNumber))?.status).toBe('PARTIALLY_SHIPPED');
     await operations.reconcileStatus({
       externalOrderId: first.externalOrderId,
@@ -1025,7 +1077,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       (await operations.listFulfillmentGroups(account, orderNumber)).find(
         (group) => group.id === fulfillmentGroupId,
       )?.shipments,
-    ).toMatchObject([{ carrier: 'Fixture Carrier', status: 'SHIPPED' }]);
+    ).toMatchObject([{ carrier: 'Fixture Carrier', status: 'DELIVERED' }]);
     const item = await pool.query<{ id: string }>(
       `SELECT id FROM app.order_items WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)`,
       [orderNumber],

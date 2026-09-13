@@ -16,6 +16,7 @@ import {
 import { PolicyService } from './policy';
 import type { PolicyOutcome } from './policy';
 import type { LifecycleOrchestrator } from './operations-analytics';
+import type { FulfillmentState, PrintingGroupState } from './order-detail-contracts';
 
 export const canonicalOrderStates = [
   'DRAFT',
@@ -543,6 +544,26 @@ export class OrderOperationsService {
         [first.fulfillment_group_id, ready ? 'READY_FOR_PRODUCTION' : 'PENDING'],
       );
       const order = await lockOrder(client, input.orderNumber);
+      const currentPrintingState = await lockPrintingGroupState(
+        client,
+        order.id,
+        first.fulfillment_group_id,
+      );
+      if (
+        ['NOT_STARTED', 'READY_FOR_PRODUCTION', 'FAILED'].includes(
+          currentPrintingState.printingStatus,
+        )
+      ) {
+        await transitionPrintingGroup(client, {
+          orderId: order.id,
+          fulfillmentGroupId: first.fulfillment_group_id,
+          from: currentPrintingState.printingStatus,
+          to: ready ? 'READY_FOR_PRODUCTION' : 'NOT_STARTED',
+          source: actorIds(session).staffMemberId ? 'OPS' : 'SYSTEM',
+          actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+          metadata: { blockers: uniqueBlockers },
+        });
+      }
       if (ready && order.status === 'ROUTING') {
         const pendingGroups = await client.query<{ count: number }>(
           `SELECT count(*)::int AS count FROM app.order_fulfillment_groups
@@ -869,6 +890,18 @@ export class OrderOperationsService {
     const action = await this.beginAction(orderNumber, 'SUBMIT_TO_PRODUCTION', session);
     if (action.status === 'SUCCEEDED')
       return { externalOrderId: external.externalOrderId, duplicate: true };
+    await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, orderNumber);
+      await transitionOrderPrintingGroups(client, order.id, 'SUBMITTING', session, {
+        externalOrderId: external.externalOrderId,
+      });
+      await client.query(
+        `UPDATE app.order_fulfillment_groups
+         SET external_order_id = COALESCE(external_order_id, $2), updated_at = now()
+         WHERE order_id = $1`,
+        [order.id, external.externalOrderId],
+      );
+    });
     try {
       await this.fulfillment.submitProduction({
         idempotencyKey: action.idempotencyKey,
@@ -877,6 +910,15 @@ export class OrderOperationsService {
       await withTransaction(this.pool, async (client) => {
         await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         const order = await lockOrder(client, orderNumber);
+        await transitionOrderPrintingGroups(client, order.id, 'SUBMITTED', session, {
+          externalOrderId: external.externalOrderId,
+        });
+        await client.query(
+          `UPDATE app.order_fulfillment_groups
+           SET status = 'SUBMITTED', updated_at = now()
+           WHERE order_id = $1`,
+          [order.id],
+        );
         await this.transitionLocked(
           client,
           order,
@@ -894,7 +936,15 @@ export class OrderOperationsService {
       });
       return { externalOrderId: external.externalOrderId, duplicate: false };
     } catch (error) {
-      await this.failAction(action.id, normalizeFulfillmentError(error));
+      const normalized = normalizeFulfillmentError(error);
+      await this.failAction(action.id, normalized);
+      await withTransaction(this.pool, async (client) => {
+        const order = await lockOrder(client, orderNumber);
+        await transitionOrderPrintingGroups(client, order.id, 'FAILED', session, {
+          errorCode: normalized.code,
+          errorMessage: normalized.message,
+        });
+      });
       throw error;
     }
   }
@@ -931,6 +981,23 @@ export class OrderOperationsService {
     if (action.status === 'SUCCEEDED') {
       return { externalOrderId: external.externalOrderId, duplicate: true };
     }
+    await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, input.orderNumber);
+      const currentPrintingState = await lockPrintingGroupState(
+        client,
+        order.id,
+        input.fulfillmentGroupId,
+      );
+      await transitionPrintingGroup(client, {
+        orderId: order.id,
+        fulfillmentGroupId: input.fulfillmentGroupId,
+        from: currentPrintingState.printingStatus,
+        to: 'SUBMITTING',
+        source: actorIds(session).staffMemberId ? 'OPS' : 'SYSTEM',
+        actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+        metadata: { externalOrderId: external.externalOrderId },
+      });
+    });
     try {
       await this.fulfillment.submitProduction({
         idempotencyKey: action.idempotencyKey,
@@ -939,6 +1006,20 @@ export class OrderOperationsService {
       await withTransaction(this.pool, async (client) => {
         await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         const order = await lockOrder(client, input.orderNumber);
+        const currentPrintingState = await lockPrintingGroupState(
+          client,
+          order.id,
+          input.fulfillmentGroupId,
+        );
+        await transitionPrintingGroup(client, {
+          orderId: order.id,
+          fulfillmentGroupId: input.fulfillmentGroupId,
+          from: currentPrintingState.printingStatus,
+          to: 'SUBMITTED',
+          source: actorIds(session).staffMemberId ? 'OPS' : 'SYSTEM',
+          actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+          metadata: { externalOrderId: external.externalOrderId },
+        });
         await client.query(
           `UPDATE app.order_fulfillment_groups
            SET status = 'SUBMITTED', updated_at = now()
@@ -961,13 +1042,26 @@ export class OrderOperationsService {
       });
       return { externalOrderId: external.externalOrderId, duplicate: false };
     } catch (error) {
-      await this.failAction(action.id, normalizeFulfillmentError(error));
-      await this.pool.query(
-        `UPDATE app.order_fulfillment_groups
-         SET status = 'FAILED', updated_at = now()
-         WHERE id = $1 AND status IN ('PENDING', 'READY_FOR_PRODUCTION')`,
-        [input.fulfillmentGroupId],
-      );
+      const normalized = normalizeFulfillmentError(error);
+      await this.failAction(action.id, normalized);
+      await withTransaction(this.pool, async (client) => {
+        const order = await lockOrder(client, input.orderNumber);
+        const currentPrintingState = await lockPrintingGroupState(
+          client,
+          order.id,
+          input.fulfillmentGroupId,
+        );
+        await transitionPrintingGroup(client, {
+          orderId: order.id,
+          fulfillmentGroupId: input.fulfillmentGroupId,
+          from: currentPrintingState.printingStatus,
+          to: 'FAILED',
+          source: actorIds(session).staffMemberId ? 'OPS' : 'SYSTEM',
+          actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+          metadata: { errorCode: normalized.code, errorMessage: normalized.message },
+        });
+        await updateLegacyFulfillmentGroupStatus(client, input.fulfillmentGroupId, 'FAILED');
+      });
       throw error;
     }
   }
@@ -1006,21 +1100,39 @@ export class OrderOperationsService {
       if (!reference) return;
       const order = await lockOrderById(client, reference.order_id);
       const target = normalizeExternalStatus(input.rawStatus);
-      if (reference.fulfillment_group_id && target) {
-        await client.query(
-          `UPDATE app.order_fulfillment_groups SET status = $2, updated_at = now() WHERE id = $1`,
-          [reference.fulfillment_group_id, fulfillmentGroupStatus(target)],
+      const printingTarget = normalizeExternalPrintingStatus(input.rawStatus);
+      if (reference.fulfillment_group_id && printingTarget) {
+        const currentPrintingState = await lockPrintingGroupState(
+          client,
+          order.id,
+          reference.fulfillment_group_id,
         );
+        await transitionPrintingGroup(client, {
+          orderId: order.id,
+          fulfillmentGroupId: reference.fulfillment_group_id,
+          from: currentPrintingState.printingStatus,
+          to: printingTarget,
+          source: input.source,
+          externalEventId: input.externalEventId ?? undefined,
+          rawStatus: input.rawStatus,
+          metadata: { externalOrderId: input.externalOrderId },
+        });
       }
+      let shipmentId: string | undefined;
       if (reference.fulfillment_group_id && input.tracking?.trackingNumber) {
-        await client.query(
+        const shipmentState = target === 'DELIVERED' ? 'DELIVERED' : 'SHIPPED';
+        const shipment = await client.query<{ id: string }>(
           `INSERT INTO app.order_shipments (
              order_id, fulfillment_group_id, external_order_id, carrier, service,
-             tracking_number, tracking_url, shipped_at, status
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), 'SHIPPED')
+             tracking_number, tracking_url, shipped_at, delivered_at, status
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(),
+                     CASE WHEN $8 = 'DELIVERED' THEN now() ELSE NULL END, $8)
            ON CONFLICT (fulfillment_group_id, tracking_number) WHERE fulfillment_group_id IS NOT NULL AND tracking_number IS NOT NULL
            DO UPDATE SET carrier = EXCLUDED.carrier, service = EXCLUDED.service,
-                         tracking_url = EXCLUDED.tracking_url, status = 'SHIPPED', updated_at = now()`,
+                         tracking_url = EXCLUDED.tracking_url,
+                         delivered_at = COALESCE(order_shipments.delivered_at, EXCLUDED.delivered_at),
+                         status = EXCLUDED.status, updated_at = now()
+           RETURNING id`,
           [
             order.id,
             reference.fulfillment_group_id,
@@ -1029,8 +1141,34 @@ export class OrderOperationsService {
             input.tracking.service ?? null,
             input.tracking.trackingNumber,
             input.tracking.trackingUrl ?? null,
+            shipmentState,
           ],
         );
+        shipmentId = shipment.rows[0]?.id;
+      } else if (reference.fulfillment_group_id && target === 'DELIVERED') {
+        const shipment = await client.query<{ id: string }>(
+          `UPDATE app.order_shipments
+           SET delivered_at = COALESCE(delivered_at, now()), status = 'DELIVERED', updated_at = now()
+           WHERE fulfillment_group_id = $1
+           RETURNING id`,
+          [reference.fulfillment_group_id],
+        );
+        shipmentId = shipment.rows[0]?.id;
+      }
+      if (reference.fulfillment_group_id) {
+        await reconcileFulfillmentGroup(client, reference.fulfillment_group_id, input.source, {
+          providerEvidence:
+            target === 'DELIVERED' ? 'DELIVERED' : target === 'SHIPPED' ? 'FULFILLED' : undefined,
+          shipmentId,
+          metadata: { rawStatus: input.rawStatus, externalOrderId: input.externalOrderId },
+        });
+        if (target) {
+          await updateLegacyFulfillmentGroupStatus(
+            client,
+            reference.fulfillment_group_id,
+            fulfillmentGroupStatus(target),
+          );
+        }
       }
       const aggregateTarget = reference.fulfillment_group_id
         ? await aggregateOrderFulfillmentStatus(client, order.id)
@@ -2059,6 +2197,231 @@ function resumeTarget(previous: CanonicalOrderState): CanonicalOrderState {
       ? 'ROUTING'
       : 'PREPRESS_REVIEW';
 }
+
+interface LockedPrintingGroupState {
+  printingStatus: PrintingGroupState;
+  fulfillmentStatus: FulfillmentState;
+}
+
+async function lockPrintingGroupState(
+  client: SqlClient,
+  orderId: string,
+  fulfillmentGroupId: string,
+): Promise<LockedPrintingGroupState> {
+  const result = await client.query<{
+    printing_status: PrintingGroupState;
+    fulfillment_status: FulfillmentState;
+  }>(
+    `SELECT printing_status, fulfillment_status
+     FROM app.order_fulfillment_groups
+     WHERE id = $1 AND order_id = $2
+     FOR UPDATE`,
+    [fulfillmentGroupId, orderId],
+  );
+  const row = required(result.rows[0], 'Fulfillment group not found for this order.');
+  return {
+    printingStatus: row.printing_status,
+    fulfillmentStatus: row.fulfillment_status,
+  };
+}
+
+type LayerEventSource = 'SYSTEM' | 'OPS' | 'WEBHOOK' | 'POLLING';
+type LayerEventDisposition = 'APPLIED' | 'DUPLICATE' | 'CONFLICT' | 'UNKNOWN';
+
+async function transitionPrintingGroup(
+  client: SqlClient,
+  input: {
+    orderId: string;
+    fulfillmentGroupId: string;
+    from: PrintingGroupState;
+    to: PrintingGroupState;
+    source: LayerEventSource;
+    externalEventId?: string | undefined;
+    rawStatus?: string | undefined;
+    actorStaffMemberId?: string | undefined;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<LayerEventDisposition> {
+  const current = await lockPrintingGroupState(client, input.orderId, input.fulfillmentGroupId);
+  if (input.externalEventId) {
+    const existing = await client.query<{ id: string }>(
+      `SELECT id FROM app.order_printing_status_events
+       WHERE fulfillment_group_id = $1 AND external_event_id = $2`,
+      [input.fulfillmentGroupId, input.externalEventId],
+    );
+    if (existing.rows[0]) return 'DUPLICATE';
+  }
+
+  const expectedStateMatches = current.printingStatus === input.from;
+  const disposition: LayerEventDisposition =
+    current.printingStatus === input.to
+      ? 'DUPLICATE'
+      : expectedStateMatches
+        ? 'APPLIED'
+        : 'CONFLICT';
+  if (disposition === 'DUPLICATE' && !input.externalEventId && !input.rawStatus) {
+    return disposition;
+  }
+
+  if (disposition === 'APPLIED') {
+    await client.query(
+      `UPDATE app.order_fulfillment_groups
+       SET printing_status = $2,
+           last_provider_sync_at = CASE WHEN $3 IN ('WEBHOOK', 'POLLING') THEN now() ELSE last_provider_sync_at END,
+           updated_at = now()
+       WHERE id = $1`,
+      [input.fulfillmentGroupId, input.to, input.source],
+    );
+  } else if (input.source === 'WEBHOOK' || input.source === 'POLLING') {
+    await client.query(
+      `UPDATE app.order_fulfillment_groups
+       SET last_provider_sync_at = now(), updated_at = now()
+       WHERE id = $1`,
+      [input.fulfillmentGroupId],
+    );
+  }
+
+  await client.query(
+    `INSERT INTO app.order_printing_status_events (
+       order_id, fulfillment_group_id, from_state, to_state, source,
+       external_event_id, raw_status, disposition, actor_staff_member_id, metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
+    [
+      input.orderId,
+      input.fulfillmentGroupId,
+      current.printingStatus,
+      disposition === 'APPLIED' ? input.to : current.printingStatus,
+      input.source,
+      input.externalEventId ?? null,
+      input.rawStatus ?? null,
+      disposition,
+      input.actorStaffMemberId ?? null,
+      JSON.stringify({
+        ...(input.metadata ?? {}),
+        expectedFrom: input.from,
+        requestedTo: input.to,
+      }),
+    ],
+  );
+  return disposition;
+}
+
+async function transitionOrderPrintingGroups(
+  client: SqlClient,
+  orderId: string,
+  target: PrintingGroupState,
+  actor: OrderOperationsActor | null,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const groups = await client.query<{
+    id: string;
+    printing_status: PrintingGroupState;
+  }>(
+    `SELECT id, printing_status
+     FROM app.order_fulfillment_groups
+     WHERE order_id = $1
+     ORDER BY created_at, id
+     FOR UPDATE`,
+    [orderId],
+  );
+  for (const group of groups.rows) {
+    await transitionPrintingGroup(client, {
+      orderId,
+      fulfillmentGroupId: group.id,
+      from: group.printing_status,
+      to: target,
+      source: actorIds(actor).staffMemberId ? 'OPS' : 'SYSTEM',
+      actorStaffMemberId: actorIds(actor).staffMemberId ?? undefined,
+      metadata,
+    });
+  }
+}
+
+async function reconcileFulfillmentGroup(
+  client: SqlClient,
+  fulfillmentGroupId: string,
+  source: 'SYSTEM' | 'WEBHOOK' | 'POLLING',
+  evidence: {
+    providerEvidence?: 'FULFILLED' | 'DELIVERED' | undefined;
+    shipmentId?: string | undefined;
+    actorStaffMemberId?: string | undefined;
+    metadata?: Record<string, unknown>;
+  } = {},
+): Promise<FulfillmentState> {
+  const group = await client.query<{
+    order_id: string;
+    fulfillment_status: FulfillmentState;
+  }>(
+    `SELECT order_id, fulfillment_status
+     FROM app.order_fulfillment_groups
+     WHERE id = $1
+     FOR UPDATE`,
+    [fulfillmentGroupId],
+  );
+  const current = required(group.rows[0], 'Fulfillment group not found.');
+  const shipments = await client.query<{ delivered: number; shipped: number }>(
+    `SELECT
+       count(*) FILTER (WHERE delivered_at IS NOT NULL OR lower(status) = 'delivered')::int AS delivered,
+       count(*) FILTER (WHERE shipped_at IS NOT NULL OR lower(status) IN ('shipped', 'delivered'))::int AS shipped
+     FROM app.order_shipments
+     WHERE fulfillment_group_id = $1`,
+    [fulfillmentGroupId],
+  );
+  const shipmentEvidence = shipments.rows[0];
+  const target: FulfillmentState =
+    evidence.providerEvidence === 'DELIVERED' || (shipmentEvidence?.delivered ?? 0) > 0
+      ? 'DELIVERED'
+      : evidence.providerEvidence === 'FULFILLED' || (shipmentEvidence?.shipped ?? 0) > 0
+        ? 'FULFILLED'
+        : current.fulfillment_status;
+
+  if (target === current.fulfillment_status) return target;
+  await client.query(
+    `UPDATE app.order_fulfillment_groups
+     SET fulfillment_status = $2, updated_at = now()
+     WHERE id = $1`,
+    [fulfillmentGroupId, target],
+  );
+  await client.query(
+    `INSERT INTO app.order_fulfillment_status_history (
+       order_id, fulfillment_group_id, from_state, to_state, source,
+       shipment_id, actor_staff_member_id, metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+    [
+      current.order_id,
+      fulfillmentGroupId,
+      current.fulfillment_status,
+      target,
+      source,
+      evidence.shipmentId ?? null,
+      evidence.actorStaffMemberId ?? null,
+      JSON.stringify(evidence.metadata ?? {}),
+    ],
+  );
+  return target;
+}
+
+async function updateLegacyFulfillmentGroupStatus(
+  client: SqlClient,
+  fulfillmentGroupId: string,
+  status:
+    | 'PENDING'
+    | 'READY_FOR_PRODUCTION'
+    | 'SUBMITTED'
+    | 'IN_PRODUCTION'
+    | 'SHIPPED'
+    | 'DELIVERED'
+    | 'FAILED'
+    | 'CANCELLED',
+): Promise<void> {
+  await client.query(
+    `UPDATE app.order_fulfillment_groups
+     SET status = $2, updated_at = now()
+     WHERE id = $1`,
+    [fulfillmentGroupId, status],
+  );
+}
+
 async function aggregateOrderFulfillmentStatus(
   client: SqlClient,
   orderId: string,
@@ -2100,6 +2463,17 @@ function normalizeExternalStatus(value: string): CanonicalOrderState | null {
   if (['in_production', 'printing'].includes(status)) return 'IN_PRODUCTION';
   if (status === 'shipped') return 'SHIPPED';
   if (status === 'delivered') return 'DELIVERED';
+  if (['cancelled', 'canceled'].includes(status)) return 'CANCELLED';
+  if (status === 'failed') return 'FAILED';
+  return null;
+}
+function normalizeExternalPrintingStatus(value: string): PrintingGroupState | null {
+  const status = value.toLowerCase();
+  if (['submitted', 'sent_to_production', 'sending_to_production'].includes(status))
+    return 'SUBMITTED';
+  if (['in_production', 'printing'].includes(status)) return 'IN_PRODUCTION';
+  if (['printed', 'shipped', 'delivered'].includes(status)) return 'PRINTED';
+  if (['on_hold', 'hold'].includes(status)) return 'ON_HOLD';
   if (['cancelled', 'canceled'].includes(status)) return 'CANCELLED';
   if (status === 'failed') return 'FAILED';
   return null;
