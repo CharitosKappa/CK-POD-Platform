@@ -43,6 +43,32 @@ describe('required application tables', () => {
     expect(requiredApplicationTables).toContain('order_exports');
   });
 
+  it('includes the order admin action persistence tables', () => {
+    for (const table of [
+      'order_cancellations',
+      'order_cancellation_groups',
+      'order_returns',
+      'order_return_items',
+      'order_return_events',
+      'order_revisions',
+    ]) {
+      expect(requiredApplicationTables).toContain(table);
+    }
+  });
+
+  it('enforces the order admin action migration contracts', async () => {
+    const sql = await readFile(`${migrationsDirectory}/0049_order_admin_actions.sql`, 'utf8');
+
+    expect(sql).toContain(
+      "CHECK (status IN ('REQUESTED','PROCESSING','SUCCEEDED','PARTIAL','FAILED'))",
+    );
+    expect(sql).toContain(
+      "CHECK (state IN ('REQUESTED','APPROVED','IN_TRANSIT','RECEIVED','CLOSED','REJECTED'))",
+    );
+    expect(sql).toContain('UNIQUE (order_id, idempotency_key)');
+    expect(sql).toContain('CHECK (quantity > 0)');
+  });
+
   it('tracks every table created by the checked-in migrations', async () => {
     const migrationFiles = (await readdir(migrationsDirectory)).filter((fileName) =>
       fileName.endsWith('.sql'),
