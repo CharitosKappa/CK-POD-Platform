@@ -24,6 +24,71 @@ integrationSuite('M9 analytics and lifecycle integration', () => {
 
   afterAll(async () => close());
 
+  it('reserves a transactional outbox in the caller transaction and dispatches its stored payload only once', async () => {
+    const send = vi
+      .fn<LifecycleMessagingService['send']>()
+      .mockResolvedValue({ providerMessageId: 'outbox-message' });
+    const lifecycle = new LifecycleOrchestrator(pool, { send }, 'FAKE');
+    expect(lifecycle.enqueueTransactionalWithClient).toBeTypeOf('function');
+    const input = {
+      type: 'ORDER_CANCELLATION' as const,
+      recipientEmail: `outbox-${randomBytes(6).toString('hex')}@example.test`,
+      idempotencyKey: `outbox-${randomBytes(6).toString('hex')}`,
+      payload: { orderNumber: '#outbox', preferredLocale: 'injected' },
+    };
+    await pool.query(
+      `INSERT INTO app.customer_profiles (normalized_email,first_seen_source,preferred_locale,preferred_locale_source)
+      VALUES ($1,'CHECKOUT','en','ADMIN')`,
+      [input.recipientEmail],
+    );
+    const client = await pool.connect();
+    let deliveryId: string;
+    try {
+      await client.query('BEGIN');
+      deliveryId = await lifecycle.enqueueTransactionalWithClient(client, input);
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE id=$1`, [deliveryId]))
+          .rows,
+      ).toEqual([]);
+      expect(send).not.toHaveBeenCalled();
+      await client.query('ROLLBACK');
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE id=$1`, [deliveryId]))
+          .rows,
+      ).toEqual([]);
+      await client.query('BEGIN');
+      deliveryId = await lifecycle.enqueueTransactionalWithClient(client, input);
+      expect(await lifecycle.enqueueTransactionalWithClient(client, input)).toBe(deliveryId);
+      await client.query('COMMIT');
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+    await Promise.all([
+      lifecycle.dispatchDelivery(deliveryId!),
+      lifecycle.dispatchDelivery(deliveryId!),
+    ]);
+    expect(
+      (
+        await pool.query(
+          `SELECT status,payload,provider_message_id FROM app.lifecycle_deliveries WHERE id=$1`,
+          [deliveryId!],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        status: 'SENT',
+        payload: { orderNumber: '#outbox', preferredLocale: 'en' },
+        provider_message_id: 'outbox-message',
+      },
+    ]);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]![0]).toMatchObject({
+      preferredLocale: 'en',
+      type: 'ORDER_CANCELLATION',
+    });
+  });
+
   it('deduplicates platform analytics and exposes unavailable economics honestly', async () => {
     const analytics = new AnalyticsEventService(pool);
     const key = `analytics-m9-${randomBytes(6).toString('hex')}`;

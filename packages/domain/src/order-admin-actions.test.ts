@@ -102,3 +102,93 @@ describe('order archive action preflight', () => {
     },
   );
 });
+
+describe('cancellation outcome orchestration', () => {
+  // A local-only group must not count as a provider success when another provider refuses.
+  it.each([
+    { states: ['NOT_REQUIRED'], status: 'SUCCEEDED', orderStatus: 'CANCELLED', unresolved: [] },
+    {
+      states: ['CANCELLED', 'NOT_REQUIRED'],
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      unresolved: [],
+    },
+    {
+      states: ['UNAVAILABLE', 'NOT_REQUIRED'],
+      status: 'FAILED',
+      orderStatus: 'PAID',
+      unresolved: ['group-0'],
+    },
+    { states: ['FAILED'], status: 'FAILED', orderStatus: 'PAID', unresolved: ['group-0'] },
+    {
+      states: ['CANCELLED', 'FAILED'],
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+      unresolved: ['group-1'],
+    },
+    {
+      states: ['CANCELLED', 'REQUESTED'],
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+      unresolved: ['group-1'],
+    },
+  ])('orchestrates $states as $status', ({ states, status, orderStatus, unresolved }) => {
+    expect(domain.resolveCancellationOutcome).toBeTypeOf('function');
+    expect(
+      domain.resolveCancellationOutcome(
+        'PAID',
+        states.map((state, index) => ({
+          fulfillmentGroupId: `group-${index}`,
+          status: state,
+        })) as never,
+      ),
+    ).toEqual({ status, orderStatus, unresolvedFulfillmentGroupIds: unresolved });
+  });
+
+  it('requires authorization and valid refund intent before any database work', async () => {
+    const actions = service();
+    expect(actions.cancel).toBeTypeOf('function');
+    const cancelInput = {
+      ...input,
+      refundDestination: 'LATER' as const,
+      refundAmountCents: 0,
+      notifyCustomer: true,
+    };
+    for (const role of ['PREPRESS', 'READ_ONLY'] as const) {
+      await expect(actions.cancel({ ...staff, role }, cancelInput)).rejects.toBeInstanceOf(
+        domain.OrderAdminActionAccessError,
+      );
+      await expect(
+        actions.retryCancellation(
+          { ...staff, role },
+          {
+            orderNumber: '#1',
+            cancellationId: staff.staffMemberId,
+            idempotencyKey: input.idempotencyKey,
+          },
+        ),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionAccessError);
+    }
+    for (const invalid of [
+      { refundDestination: 'RETURN' },
+      { refundAmountCents: -1 },
+      { refundAmountCents: 1.5 },
+      { refundDestination: 'ORIGINAL_PAYMENT', refundAmountCents: 0 },
+      { refundDestination: 'LATER', refundAmountCents: 100 },
+      { notifyCustomer: 'yes' },
+      { staffNote: 'x'.repeat(1001) },
+      { idempotencyKey: 'short' },
+      { reasonCode: '' },
+    ])
+      await expect(
+        actions.cancel(staff, { ...cancelInput, ...invalid } as never),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    await expect(
+      actions.retryCancellation(staff, {
+        orderNumber: '#1',
+        cancellationId: 'invalid',
+        idempotencyKey: input.idempotencyKey,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+  });
+});

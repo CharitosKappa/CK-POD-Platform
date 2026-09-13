@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import * as domain from './index';
 import type { AdminStaffSession } from './admin-commerce';
@@ -55,7 +55,7 @@ suite('order archive transaction integration', () => {
   }
 
   // Real commerce creates valid independent payment, item, and fulfillment records.
-  async function fixture(fulfillment = 'DELIVERED', canonical = 'PAID') {
+  async function fixture(fulfillment = 'DELIVERED', canonical = 'PAID', printing = 'PRINTED') {
     const identity = new domain.IdentityService(pool);
     const guest = await identity.createGuestSession();
     const project = await new domain.ProjectService(pool).create(guest, {
@@ -117,9 +117,9 @@ suite('order archive transaction integration', () => {
       )
     ).rows[0]!.id;
     const groups = await pool.query<{ id: string }>(
-      `UPDATE app.order_fulfillment_groups SET printing_status='PRINTED',fulfillment_status=$2
+      `UPDATE app.order_fulfillment_groups SET printing_status=$3,fulfillment_status=$2
        WHERE order_id=$1 RETURNING id`,
-      [orderId, fulfillment],
+      [orderId, fulfillment, printing],
     );
     expect(groups.rows).toHaveLength(1);
     const itemId = (
@@ -176,6 +176,1036 @@ suite('order archive transaction integration', () => {
       )
     ).rows;
   }
+
+  function cancellationService(
+    cancelOrder = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockResolvedValue({ state: 'CANCELLED', occurredAt: new Date('2026-09-01') }),
+    options: { payments?: domain.PaymentService; lifecycle?: domain.LifecycleOrchestrator } = {},
+  ) {
+    const fulfillment = new ArchiveFixtureFulfillment();
+    fulfillment.cancelOrder = cancelOrder;
+    const payments = options.payments ?? new domain.FakePaymentService();
+    const operations = new domain.OrderOperationsService(
+      actionDatabase.pool,
+      new MemoryObjectStorage(),
+      fulfillment,
+      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+    );
+    const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
+    const actions = new domain.OrderAdminActionsService(actionDatabase.pool, {
+      fulfillment,
+      operations,
+      refunds,
+      lifecycle: options.lifecycle ?? new domain.LifecycleOrchestrator(actionDatabase.pool),
+    });
+    return { actions, cancelOrder, operations, payments, refunds };
+  }
+  function cancellationInput(orderNumber: string) {
+    return {
+      orderNumber,
+      refundDestination: 'LATER' as const,
+      refundAmountCents: 0,
+      reasonCode: 'CUSTOMER_CANCELLATION_REQUEST',
+      staffNote: 'Customer requested cancellation',
+      notifyCustomer: false,
+      idempotencyKey: randomUUID(),
+    };
+  }
+  async function cancellationRows(orderId: string) {
+    return {
+      cancellations: (
+        await pool.query(
+          `SELECT * FROM app.order_cancellations WHERE order_id=$1 ORDER BY created_at,id`,
+          [orderId],
+        )
+      ).rows,
+      attempts: (
+        await pool.query(
+          `SELECT g.* FROM app.order_cancellation_groups g JOIN app.order_cancellations c
+        ON c.id=g.order_cancellation_id WHERE c.order_id=$1 ORDER BY g.fulfillment_group_id`,
+          [orderId],
+        )
+      ).rows,
+    };
+  }
+  async function externalGroup(f: Awaited<ReturnType<typeof fixture>>, externalOrderId: string) {
+    await pool.query(`UPDATE app.order_fulfillment_groups SET external_order_id=$2 WHERE id=$1`, [
+      f.groupId,
+      externalOrderId,
+    ]);
+  }
+  async function secondGroup(f: Awaited<ReturnType<typeof fixture>>, externalOrderId: string) {
+    return (
+      await pool.query<{ id: string }>(
+        `INSERT INTO app.order_fulfillment_groups
+      (order_id,group_key,adapter_type,provider_id,qualification_id,shipping_snapshot,status,printing_status,fulfillment_status,external_order_id)
+      SELECT order_id,$2,adapter_type,provider_id,qualification_id,shipping_snapshot,'SUBMITTED','SUBMITTED','UNFULFILLED',$3
+      FROM app.order_fulfillment_groups WHERE id=$1 RETURNING id`,
+        [f.groupId, randomUUID(), externalOrderId],
+      )
+    ).rows[0]!.id;
+  }
+
+  async function productionFixture() {
+    const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+    const providerId = `cancellation-provider-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO app.print_providers (id,adapter_type,external_id,display_name)
+      VALUES ($1,'PRINTIFY',$1,'Cancellation fixture')`,
+      [providerId],
+    );
+    const qualificationId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO app.provider_qualifications
+      (provider_id,product_model_id,decoration_method,qualification_status,active,technical_compatible,g3_reviewed,physical_test_status)
+      SELECT $2,product_model_id,'DTG','QUALIFIED',true,true,true,'PASSED' FROM app.order_items WHERE id=$1 RETURNING id`,
+        [f.itemId, providerId],
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `INSERT INTO app.provider_variants (provider_id,product_variant_id,external_variant_id)
+      SELECT $2,product_variant_id,'fixture-variant' FROM app.order_items WHERE id=$1`,
+      [f.itemId, providerId],
+    );
+    await pool.query(
+      `INSERT INTO app.provider_profile_mappings (qualification_id,production_profile_id)
+      SELECT $2,prepress.production_profile_id FROM app.prepress_runs prepress JOIN app.order_items item ON item.prepress_run_id=prepress.id
+      WHERE item.id=$1`,
+      [f.itemId, qualificationId],
+    );
+    await pool.query(
+      `UPDATE app.order_fulfillment_groups SET qualification_id=$2,provider_id=$3 WHERE id=$1`,
+      [f.groupId, qualificationId, providerId],
+    );
+    await pool.query(
+      `UPDATE app.prepress_runs SET production_master_asset_id=preview_asset_id
+      WHERE id=(SELECT prepress_run_id FROM app.order_items WHERE id=$1)`,
+      [f.itemId],
+    );
+    const derivativeId = (
+      await pool.query<{ id: string }>(
+        `INSERT INTO app.provider_derivatives
+      (prepress_run_id,qualification_id,production_master_asset_id,derivative_asset_id,status,requirement_snapshot)
+      SELECT prepress.id,$2,prepress.preview_asset_id,prepress.preview_asset_id,'READY','{}'::jsonb FROM app.prepress_runs prepress
+      JOIN app.order_items item ON item.prepress_run_id=prepress.id WHERE item.id=$1 RETURNING id`,
+        [f.itemId, qualificationId],
+      )
+    ).rows[0]!.id;
+    await pool.query(
+      `INSERT INTO app.order_reviews (order_id,stage,outcome,reason_code,actor_staff_member_id)
+      VALUES ($1,'PREPRESS','APPROVED','PRINTABILITY_CONCERN',$2),($1,'COMPLIANCE','APPROVED','MODERATION_REVIEW',$2)`,
+      [f.orderId, staff.staffMemberId],
+    );
+    const policy = new domain.PolicyService(pool);
+    const evaluation = await policy.evaluateFinalArtworkForOrder(f.orderNumber);
+    await policy.recordHumanDecision({
+      evaluationId: evaluation.id,
+      orderId: f.orderId,
+      actorUserId: null,
+      actorStaffMemberId: staff.staffMemberId,
+      decision: 'APPROVED',
+      reasonCode: 'MODERATION_REVIEW',
+    });
+    return { ...f, qualificationId, derivativeId };
+  }
+
+  it.each([
+    'PAID',
+    'PREPRESS_REVIEW',
+    'COMPLIANCE_REVIEW',
+    'ROUTING',
+    'READY_FOR_PRODUCTION',
+    'FAILED',
+    'IN_PRODUCTION',
+    'REPRINT_REQUIRED',
+    'REFUND_REQUIRED',
+  ])(
+    'cancels local-only %s through canonical history and leaves money/items/returns unchanged',
+    async (canonical) => {
+      const f = await fixture('UNFULFILLED', canonical, 'NOT_STARTED');
+      const { actions, cancelOrder } = cancellationService();
+      expect(actions.cancel).toBeTypeOf('function');
+      const before = await snapshot(f.orderId);
+      const input = cancellationInput(f.orderNumber);
+      const result = await actions.cancel(staff, input);
+      expect(result).toMatchObject({
+        status: 'SUCCEEDED',
+        orderStatus: 'CANCELLED',
+        duplicate: false,
+        unresolvedFulfillmentGroupIds: [],
+        refund: { status: 'LATER', refundId: null },
+      });
+      const after = await snapshot(f.orderId);
+      expect(after.order).toMatchObject({ status: 'CANCELLED', archived_at: null });
+      expect(after.payments).toEqual(before.payments);
+      expect(after.refunds).toEqual(before.refunds);
+      expect(after.returns).toEqual(before.returns);
+      expect(after.items).toEqual(before.items);
+      expect(after.history).toContainEqual(
+        expect.objectContaining({
+          from_state: canonical,
+          to_state: 'CANCELLED',
+          actor_staff_member_id: staff.staffMemberId,
+          reason_code: input.reasonCode,
+        }),
+      );
+      expect(cancelOrder).not.toHaveBeenCalled();
+      expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+        { status: 'NOT_REQUIRED', attempt_count: 0 },
+      ]);
+      expect(after.groups).toMatchObject([
+        { status: 'CANCELLED', printing_status: 'CANCELLED', fulfillment_status: 'CANCELLED' },
+      ]);
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE order_id=$1`, [f.orderId]))
+          .rows,
+      ).toEqual([]);
+      expect(await actions.cancel(staff, input)).toMatchObject({ ...result, duplicate: true });
+      expect((await cancellationRows(f.orderId)).cancellations).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ['FULFILLED', 'NOT_STARTED'],
+    ['DELIVERED', 'NOT_STARTED'],
+    ['PARTIALLY_FULFILLED', 'NOT_STARTED'],
+    ['UNFULFILLED', 'SUBMITTING'],
+    ['UNFULFILLED', 'IN_PRODUCTION'],
+    ['UNFULFILLED', 'PRINTED'],
+  ])('rejects cancellation for %s/%s without effects', async (fulfillment, printing) => {
+    const f = await fixture(fulfillment, 'PAID', printing);
+    const { actions, cancelOrder } = cancellationService();
+    expect(actions.cancel).toBeTypeOf('function');
+    const before = await snapshot(f.orderId);
+    await expect(actions.cancel(staff, cancellationInput(f.orderNumber))).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+    expect(await snapshot(f.orderId)).toEqual(before);
+    expect(await cancellationRows(f.orderId)).toEqual({ cancellations: [], attempts: [] });
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('cancels a submitted provider group once with a durable per-group key', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    await externalGroup(f, `cancel-${randomUUID()}`);
+    const { actions, cancelOrder } = cancellationService();
+    expect(actions.cancel).toBeTypeOf('function');
+    const input = cancellationInput(f.orderNumber);
+    const result = await actions.cancel(staff, input);
+    expect(result).toMatchObject({
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      unresolvedFulfillmentGroupIds: [],
+    });
+    expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+      { status: 'CANCELLED', attempt_count: 1 },
+    ]);
+    await expect(actions.cancel(staff, input)).resolves.toMatchObject({
+      duplicate: true,
+      status: 'SUCCEEDED',
+    });
+    expect(cancelOrder).toHaveBeenCalledOnce();
+    expect(cancelOrder.mock.calls[0]![0].idempotencyKey).toBe(
+      `cancel:${result.cancellationId}:${f.groupId}`,
+    );
+  });
+
+  it.each(['refusal', 'timeout'])(
+    'preserves the active order on provider %s and allows only explicit retry',
+    async (failure) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      await externalGroup(f, `failure-${randomUUID()}`);
+      const transport = vi.fn<domain.FulfillmentService['cancelOrder']>();
+      if (failure === 'refusal')
+        transport.mockResolvedValue({ state: 'UNAVAILABLE', occurredAt: null });
+      else
+        transport.mockRejectedValue(
+          new domain.FulfillmentIntegrationError('TIMEOUT', 'Fixture timeout'),
+        );
+      const { actions } = cancellationService(transport);
+      expect(actions.cancel).toBeTypeOf('function');
+      const before = await snapshot(f.orderId);
+      const input = cancellationInput(f.orderNumber);
+      const result = await actions.cancel(staff, input);
+      expect(result).toMatchObject({
+        status: 'FAILED',
+        orderStatus: 'SUBMITTED_TO_PRINTIFY',
+        unresolvedFulfillmentGroupIds: [f.groupId],
+      });
+      expect(await snapshot(f.orderId)).toEqual(before);
+      await actions.cancel(staff, input);
+      expect(transport).toHaveBeenCalledOnce();
+      transport.mockResolvedValue({ state: 'CANCELLED', occurredAt: null });
+      expect(
+        await actions.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId: result.cancellationId,
+          idempotencyKey: randomUUID(),
+        }),
+      ).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
+      expect(transport.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
+        `cancel:${result.cancellationId}:${f.groupId}`,
+        `cancel:${result.cancellationId}:${f.groupId}`,
+      ]);
+    },
+  );
+
+  it('holds partial cancellation and retries only the unresolved provider group', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    const firstExternal = `first-${randomUUID()}`;
+    const secondExternal = `second-${randomUUID()}`;
+    await externalGroup(f, firstExternal);
+    const second = await secondGroup(f, secondExternal);
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockImplementation(async ({ externalOrderId }) => ({
+        state: externalOrderId === firstExternal ? 'CANCELLED' : 'UNAVAILABLE',
+        occurredAt: null,
+      }));
+    const { actions } = cancellationService(transport);
+    expect(actions.cancel).toBeTypeOf('function');
+    const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
+    expect(result).toMatchObject({
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+      unresolvedFulfillmentGroupIds: [second],
+    });
+    expect((await snapshot(f.orderId)).order).toMatchObject({ status: 'ON_HOLD' });
+    expect(
+      (
+        await pool.query(
+          `SELECT previous_state,reason_code FROM app.order_holds WHERE order_id=$1 AND resumed_at IS NULL`,
+          [f.orderId],
+        )
+      ).rows,
+    ).toEqual([
+      { previous_state: 'SUBMITTED_TO_PRINTIFY', reason_code: 'CUSTOMER_CANCELLATION_REQUEST' },
+    ]);
+    expect(transport).toHaveBeenCalledTimes(2);
+    transport.mockResolvedValue({ state: 'CANCELLED', occurredAt: null });
+    const retry = {
+      orderNumber: f.orderNumber,
+      cancellationId: result.cancellationId,
+      idempotencyKey: randomUUID(),
+    };
+    expect(await actions.retryCancellation(staff, retry)).toMatchObject({
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      unresolvedFulfillmentGroupIds: [],
+    });
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(transport.mock.calls[2]![0]).toEqual({
+      externalOrderId: secondExternal,
+      idempotencyKey: `cancel:${result.cancellationId}:${second}`,
+    });
+    expect(await actions.retryCancellation(staff, retry)).toMatchObject({
+      status: 'SUCCEEDED',
+      duplicate: true,
+    });
+    expect(transport).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['ORIGINAL_PAYMENT', 'STORE_CREDIT'] as const)(
+    'executes %s refund after canonical cancellation exactly once',
+    async (destination) => {
+      const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+      const payments = new domain.FakePaymentService();
+      const refund = vi.spyOn(payments, 'refund').mockImplementation(async () => {
+        expect((await snapshot(f.orderId)).order).toMatchObject({ status: 'CANCELLED' });
+        return { providerRefundId: `refund-${randomUUID()}` };
+      });
+      const { actions } = cancellationService(undefined, { payments });
+      const before = await snapshot(f.orderId);
+      const input = {
+        ...cancellationInput(f.orderNumber),
+        refundDestination: destination,
+        refundAmountCents: 500,
+      };
+      const result = await actions.cancel(staff, input);
+      expect(result).toMatchObject({
+        status: 'SUCCEEDED',
+        orderStatus: 'CANCELLED',
+        refund: {
+          destination,
+          amountCents: 500,
+          status: 'SUCCEEDED',
+          refundId: expect.any(String),
+          retryable: false,
+        },
+      });
+      const after = await snapshot(f.orderId);
+      expect(after.payments).toEqual(before.payments);
+      expect(after.items).toEqual(before.items);
+      expect(after.returns).toEqual(before.returns);
+      expect(after.refunds).toMatchObject([
+        {
+          amount_cents: 500,
+          destination,
+          status: 'SUCCEEDED',
+          initiated_by_staff_member_id: staff.staffMemberId,
+        },
+      ]);
+      if (destination === 'STORE_CREDIT') {
+        expect(after.refunds[0]).toMatchObject({
+          provider: null,
+          store_credit_ledger_entry_id: expect.any(String),
+        });
+        expect(
+          (
+            await pool.query(
+              `SELECT amount_cents,reason FROM app.store_credit_ledger WHERE id=$1`,
+              [after.refunds[0]!.store_credit_ledger_entry_id],
+            )
+          ).rows,
+        ).toEqual([{ amount_cents: 500, reason: 'REFUND' }]);
+        expect(refund).not.toHaveBeenCalled();
+      } else expect(refund).toHaveBeenCalledOnce();
+      expect(await actions.cancel(staff, input)).toMatchObject({ ...result, duplicate: true });
+      expect((await snapshot(f.orderId)).refunds).toHaveLength(1);
+    },
+  );
+
+  it('reports payment failure separately and preserves an actionable manual refund after cancellation', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const payments = new domain.FakePaymentService();
+    const refund = vi
+      .spyOn(payments, 'refund')
+      .mockRejectedValue(new Error('Fixture payment transport unavailable'));
+    const { actions, refunds } = cancellationService(undefined, { payments });
+    const input = {
+      ...cancellationInput(f.orderNumber),
+      refundDestination: 'ORIGINAL_PAYMENT' as const,
+      refundAmountCents: 500,
+    };
+    const result = await actions.cancel(staff, input);
+    expect(result).toMatchObject({
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      refund: { status: 'FAILED', retryable: true },
+    });
+    expect((await snapshot(f.orderId)).refunds).toMatchObject([
+      { status: 'FAILED', amount_cents: 500 },
+    ]);
+    expect(await actions.cancel(staff, input)).toMatchObject({ ...result, duplicate: true });
+    expect(refund).toHaveBeenCalledOnce();
+    expect(
+      (
+        await pool.query(
+          `SELECT metadata FROM app.order_operational_audits WHERE order_id=$1
+      AND action='order_cancellation_refund_failed'`,
+          [f.orderId],
+        )
+      ).rows,
+    ).toMatchObject([
+      {
+        metadata: {
+          cancellationId: result.cancellationId,
+          destination: 'ORIGINAL_PAYMENT',
+          refundStatus: 'FAILED',
+        },
+      },
+    ]);
+    refund.mockResolvedValue({ providerRefundId: `recovered-${randomUUID()}` });
+    expect(
+      await refunds.refundOriginalPayment(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        {
+          orderNumber: f.orderNumber,
+          amountCents: 500,
+          reasonCode: 'CANCELLED',
+          idempotencyKey: randomUUID(),
+        },
+      ),
+    ).toMatchObject({ status: 'SUCCEEDED' });
+    expect((await snapshot(f.orderId)).order).toMatchObject({ status: 'CANCELLED' });
+  });
+
+  it('keeps non-USD Store Credit unavailable without undoing the separate cancellation', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    await pool.query(
+      `UPDATE app.payments SET currency='EUR' WHERE checkout_attempt_id=(SELECT checkout_attempt_id FROM app.orders WHERE id=$1)`,
+      [f.orderId],
+    );
+    const { actions } = cancellationService();
+    const result = await actions.cancel(staff, {
+      ...cancellationInput(f.orderNumber),
+      refundDestination: 'STORE_CREDIT',
+      refundAmountCents: 500,
+    });
+    expect(result).toMatchObject({
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      refund: { status: 'FAILED', refundId: null, retryable: true },
+    });
+    expect((await snapshot(f.orderId)).refunds).toEqual([]);
+  });
+
+  it.each(['sent', 'failed'] as const)(
+    'commits notification intent before dispatch and exposes %s delivery in the timeline',
+    async (outcome) => {
+      const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+      const send = vi
+        .fn<domain.LifecycleMessagingService['send']>()
+        .mockImplementation(async (input) => {
+          expect((await snapshot(f.orderId)).order).toMatchObject({ status: 'CANCELLED' });
+          const rows = (
+            await pool.query(
+              `SELECT status,payload FROM app.lifecycle_deliveries WHERE order_id=$1`,
+              [f.orderId],
+            )
+          ).rows;
+          expect(rows).toMatchObject([
+            { status: 'RETRYING', payload: { preferredLocale: 'en', orderNumber: f.orderNumber } },
+          ]);
+          expect(input).toMatchObject({
+            type: 'ORDER_CANCELLATION',
+            preferredLocale: 'en',
+            classification: 'TRANSACTIONAL',
+          });
+          expect(input.payload).not.toHaveProperty('staffNote');
+          if (outcome === 'failed') throw new Error('Fixture email unavailable');
+          return { providerMessageId: 'cancellation-mail' };
+        });
+      const lifecycle = new domain.LifecycleOrchestrator(actionDatabase.pool, { send });
+      const { actions } = cancellationService(undefined, { lifecycle });
+      const input = { ...cancellationInput(f.orderNumber), notifyCustomer: true };
+      const result = await actions.cancel(staff, input);
+      expect(result).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
+      expect(send).toHaveBeenCalledOnce();
+      expect(
+        (
+          await pool.query(
+            `SELECT status,payload FROM app.lifecycle_deliveries WHERE order_id=$1`,
+            [f.orderId],
+          )
+        ).rows,
+      ).toMatchObject([
+        {
+          status: outcome.toUpperCase(),
+          payload: { preferredLocale: 'en', cancellationId: result.cancellationId },
+        },
+      ]);
+      const timeline = await new domain.OrderDetailService(pool).listTimeline(staff, f.orderNumber);
+      expect(timeline.events).toContainEqual(
+        expect.objectContaining({ type: `MESSAGE_${outcome.toUpperCase()}` }),
+      );
+      await actions.cancel(staff, input);
+      expect(send).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    'rolls canonical finalization back when its outbox cannot persist, then recovers without recalling confirmed providers (new production evidence: %s)',
+    async (newProductionEvidence) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      await externalGroup(f, `outbox-${randomUUID()}`);
+      const { actions, cancelOrder } = cancellationService();
+      const input = { ...cancellationInput(f.orderNumber), notifyCustomer: true };
+      const name = `cancel_outbox_${randomUUID().replaceAll('-', '')}`;
+      await pool.query(`CREATE FUNCTION app.${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.order_id='${f.orderId}'::uuid THEN RAISE EXCEPTION 'fixture outbox unavailable'; END IF; RETURN NEW; END; $$`);
+      try {
+        await pool.query(
+          `CREATE TRIGGER ${name} BEFORE INSERT ON app.lifecycle_deliveries FOR EACH ROW EXECUTE FUNCTION app.${name}()`,
+        );
+        await expect(actions.cancel(staff, input)).rejects.toThrow('fixture outbox unavailable');
+        expect((await snapshot(f.orderId)).order).toMatchObject({
+          status: 'SUBMITTED_TO_PRINTIFY',
+        });
+        expect(await cancellationRows(f.orderId)).toMatchObject({
+          cancellations: [{ status: 'PROCESSING' }],
+          attempts: [{ status: 'CANCELLED' }],
+        });
+        expect(
+          (
+            await pool.query(`SELECT * FROM app.lifecycle_deliveries WHERE order_id=$1`, [
+              f.orderId,
+            ])
+          ).rows,
+        ).toEqual([]);
+      } finally {
+        await pool.query(`DROP TRIGGER IF EXISTS ${name} ON app.lifecycle_deliveries`);
+        await pool.query(`DROP FUNCTION app.${name}()`);
+      }
+      if (newProductionEvidence) {
+        await pool.query(`UPDATE app.orders SET status='IN_PRODUCTION' WHERE id=$1`, [f.orderId]);
+        await pool.query(
+          `UPDATE app.order_fulfillment_groups SET printing_status='IN_PRODUCTION' WHERE id=$1`,
+          [f.groupId],
+        );
+      }
+      expect(await actions.cancel(staff, input)).toMatchObject({
+        status: newProductionEvidence ? 'PARTIAL' : 'SUCCEEDED',
+        orderStatus: newProductionEvidence ? 'ON_HOLD' : 'CANCELLED',
+      });
+      expect(cancelOrder).toHaveBeenCalledOnce();
+    },
+  );
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((complete) => {
+      resolve = complete;
+    });
+    return { promise, resolve };
+  }
+
+  it('serializes live duplicate cancellation and retry calls with a database worker claim', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    await externalGroup(f, `concurrent-${randomUUID()}`);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return { state: 'CANCELLED', occurredAt: null };
+      });
+    const { actions } = cancellationService(transport);
+    const input = cancellationInput(f.orderNumber);
+    const operation = actions.cancel(staff, input);
+    try {
+      await entered.promise;
+      const rows = await cancellationRows(f.orderId);
+      expect(rows).toMatchObject({
+        cancellations: [{ status: 'PROCESSING' }],
+        attempts: [{ status: 'REQUESTED', attempt_count: 1 }],
+      });
+      const concurrent = cancellationService(transport).actions;
+      expect(await concurrent.cancel(staff, input)).toMatchObject({
+        status: 'PROCESSING',
+        orderStatus: 'SUBMITTED_TO_PRINTIFY',
+        duplicate: true,
+      });
+      expect(
+        await concurrent.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId: rows.cancellations[0]!.id,
+          idempotencyKey: randomUUID(),
+        }),
+      ).toMatchObject({ status: 'PROCESSING', duplicate: true });
+      expect(transport).toHaveBeenCalledOnce();
+      const worker = await pool.query(
+        `SELECT activity.state FROM pg_locks locks JOIN pg_stat_activity activity ON activity.pid=locks.pid
+        WHERE locks.locktype='advisory' AND locks.granted AND activity.application_name=$1 AND activity.state='idle'`,
+        [applicationName],
+      );
+      expect(worker.rows.length).toBeGreaterThan(0);
+    } finally {
+      release.resolve();
+    }
+    expect(await operation).toMatchObject({
+      status: 'SUCCEEDED',
+      orderStatus: 'CANCELLED',
+      duplicate: false,
+    });
+    expect((await cancellationRows(f.orderId)).cancellations).toHaveLength(1);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('serializes concurrent retries and never calls the already-cancelled provider again', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    const first = `retry-first-${randomUUID()}`;
+    const second = `retry-second-${randomUUID()}`;
+    await externalGroup(f, first);
+    const secondId = await secondGroup(f, second);
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockImplementation(async ({ externalOrderId }) => ({
+        state: externalOrderId === first ? 'CANCELLED' : 'UNAVAILABLE',
+        occurredAt: null,
+      }));
+    const { actions } = cancellationService(transport);
+    const partial = await actions.cancel(staff, cancellationInput(f.orderNumber));
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    transport.mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return { state: 'CANCELLED', occurredAt: null };
+    });
+    const retry = {
+      orderNumber: f.orderNumber,
+      cancellationId: partial.cancellationId,
+      idempotencyKey: randomUUID(),
+    };
+    const operation = actions.retryCancellation(staff, retry);
+    try {
+      await entered.promise;
+      expect(
+        await cancellationService(transport).actions.retryCancellation(staff, retry),
+      ).toMatchObject({
+        status: 'PROCESSING',
+        duplicate: true,
+        unresolvedFulfillmentGroupIds: [secondId],
+      });
+    } finally {
+      release.resolve();
+    }
+    expect(await operation).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
+    expect(
+      transport.mock.calls.map(([input]) => input.externalOrderId).filter((id) => id === first),
+    ).toHaveLength(1);
+    expect(
+      transport.mock.calls.map(([input]) => input.externalOrderId).filter((id) => id === second),
+    ).toHaveLength(2);
+  });
+
+  it('blocks both production entry points and hold resumption while a cancellation needs resolution', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    const first = `blocked-first-${randomUUID()}`;
+    await externalGroup(f, first);
+    await secondGroup(f, `blocked-second-${randomUUID()}`);
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockImplementation(async ({ externalOrderId }) => ({
+        state: externalOrderId === first ? 'CANCELLED' : 'UNAVAILABLE',
+        occurredAt: null,
+      }));
+    const { actions, operations } = cancellationService(transport);
+    expect(await actions.cancel(staff, cancellationInput(f.orderNumber))).toMatchObject({
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+    });
+    const before = await snapshot(f.orderId);
+    await expect(operations.submitProduction(staff, f.orderNumber)).rejects.toThrow(
+      'Cancellation must be resolved before production can continue.',
+    );
+    await expect(
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).rejects.toThrow('Cancellation must be resolved before production can continue.');
+    await expect(operations.resume(staff, f.orderNumber)).rejects.toThrow(
+      'Cancellation must be resolved before production can continue.',
+    );
+    expect(await snapshot(f.orderId)).toEqual(before);
+  });
+
+  it.each(['IN_PRODUCTION', 'SHIPPED', 'DELIVERED'])(
+    'revalidates provider-era %s evidence and holds a conflicting cancellation without rewinding Printing',
+    async (canonical) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      await externalGroup(f, `stale-${randomUUID()}`);
+      const { actions, operations } = cancellationService(
+        vi.fn<domain.FulfillmentService['cancelOrder']>().mockImplementation(async () => {
+          await pool.query(
+            `UPDATE app.order_fulfillment_groups SET printing_status=$2,fulfillment_status=$3 WHERE id=$1`,
+            [
+              f.groupId,
+              canonical === 'IN_PRODUCTION' ? 'IN_PRODUCTION' : 'PRINTED',
+              canonical === 'IN_PRODUCTION'
+                ? 'UNFULFILLED'
+                : canonical === 'SHIPPED'
+                  ? 'FULFILLED'
+                  : 'DELIVERED',
+            ],
+          );
+          await pool.query(`UPDATE app.orders SET status=$2 WHERE id=$1`, [f.orderId, canonical]);
+          return { state: 'CANCELLED', occurredAt: null };
+        }),
+      );
+      const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
+      expect(result).toMatchObject({
+        status: 'PARTIAL',
+        orderStatus: 'ON_HOLD',
+        unresolvedFulfillmentGroupIds: [f.groupId],
+      });
+      expect((await snapshot(f.orderId)).groups).toMatchObject([
+        {
+          printing_status: canonical === 'IN_PRODUCTION' ? 'IN_PRODUCTION' : 'PRINTED',
+          fulfillment_status:
+            canonical === 'IN_PRODUCTION'
+              ? 'UNFULFILLED'
+              : canonical === 'SHIPPED'
+                ? 'FULFILLED'
+                : 'DELIVERED',
+        },
+      ]);
+      await expect(operations.resume(staff, f.orderNumber)).rejects.toThrow(
+        'Cancellation must be resolved',
+      );
+    },
+  );
+
+  it('locks current order/group evidence before reservation and rejects a production action already in flight', async () => {
+    const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+    await pool.query(
+      `INSERT INTO app.order_fulfillment_actions
+      (order_id,fulfillment_group_id,action,idempotency_key,status,attempt_count,requested_by_staff_member_id)
+      VALUES ($1,$2,'CREATE_EXTERNAL_ORDER',$3,'PROCESSING',1,$4)`,
+      [f.orderId, f.groupId, randomUUID(), staff.staffMemberId],
+    );
+    const { actions, cancelOrder } = cancellationService();
+    await expect(actions.cancel(staff, cancellationInput(f.orderNumber))).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+    expect(await cancellationRows(f.orderId)).toEqual({ cancellations: [], attempts: [] });
+    expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(['order', 'group'])(
+    'waits for the %s lock and refuses fresh cancellation-ineligible evidence',
+    async (locked) => {
+      const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+      const { actions, cancelOrder } = cancellationService();
+      const holder = await pool.connect();
+      let operation: Promise<PromiseSettledResult<domain.CancelOrderResult>[]> | undefined;
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          locked === 'order'
+            ? `SELECT id FROM app.orders WHERE id=$1 FOR UPDATE`
+            : `SELECT id FROM app.order_fulfillment_groups WHERE order_id=$1 FOR UPDATE`,
+          [f.orderId],
+        );
+        operation = Promise.allSettled([actions.cancel(staff, cancellationInput(f.orderNumber))]);
+        await waitForDatabaseLock();
+        await holder.query(
+          `UPDATE app.order_fulfillment_groups SET printing_status='IN_PRODUCTION' WHERE order_id=$1`,
+          [f.orderId],
+        );
+        await holder.query('COMMIT');
+        expect(await operation).toMatchObject([
+          { status: 'rejected', reason: expect.any(domain.OrderAdminActionConflictError) },
+        ]);
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+        await operation;
+      }
+      expect(await cancellationRows(f.orderId)).toEqual({ cancellations: [], attempts: [] });
+      expect(cancelOrder).not.toHaveBeenCalled();
+    },
+  );
+
+  it('revalidates every provider claim and skips a group that starts production during an earlier cancellation', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    await externalGroup(f, `per-claim-one-${randomUUID()}`);
+    await secondGroup(f, `per-claim-two-${randomUUID()}`);
+    const groups = (
+      await pool.query<{ id: string; external_order_id: string }>(
+        `SELECT id,external_order_id FROM app.order_fulfillment_groups
+      WHERE order_id=$1 ORDER BY id`,
+        [f.orderId],
+      )
+    ).rows;
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockImplementation(async () => {
+        await pool.query(
+          `UPDATE app.order_fulfillment_groups SET printing_status='IN_PRODUCTION' WHERE id=$1`,
+          [groups[1]!.id],
+        );
+        await pool.query(`UPDATE app.orders SET status='IN_PRODUCTION' WHERE id=$1`, [f.orderId]);
+        return { state: 'CANCELLED', occurredAt: null };
+      });
+    const result = await cancellationService(transport).actions.cancel(
+      staff,
+      cancellationInput(f.orderNumber),
+    );
+    expect(result).toMatchObject({
+      status: 'PARTIAL',
+      orderStatus: 'ON_HOLD',
+      unresolvedFulfillmentGroupIds: [groups[1]!.id],
+    });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(transport.mock.calls[0]![0].externalOrderId).toBe(groups[0]!.external_order_id);
+    expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+      { status: 'CANCELLED', attempt_count: 1 },
+      { status: 'FAILED', attempt_count: 0, provider_error_code: 'ORDER_NO_LONGER_ELIGIBLE' },
+    ]);
+  });
+
+  it('cancels a legacy external order created before its single group acquired the provider reference', async () => {
+    const f = await productionFixture();
+    const external = `legacy-cancel-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO app.external_fulfillment_orders
+      (order_id,adapter_type,qualification_id,provider_derivative_id,external_order_id,provider_snapshot)
+      VALUES ($1,'PRINTIFY',$2,$3,$4,'{}'::jsonb)`,
+      [f.orderId, f.qualificationId, f.derivativeId, external],
+    );
+    const { actions, cancelOrder } = cancellationService();
+    const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
+    expect(result).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
+    expect(cancelOrder).toHaveBeenCalledOnce();
+    expect(cancelOrder.mock.calls[0]![0].externalOrderId).toBe(external);
+    expect(
+      (
+        await pool.query(
+          `SELECT submission_state FROM app.external_fulfillment_orders WHERE order_id=$1`,
+          [f.orderId],
+        )
+      ).rows,
+    ).toEqual([{ submission_state: 'CANCELLED' }]);
+  });
+
+  it('takes the order lock before the group when persisting readiness', async () => {
+    const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+    const { operations } = cancellationService();
+    const holder = await pool.connect();
+    let operation: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT id FROM app.orders WHERE id=$1 FOR UPDATE`, [f.orderId]);
+      operation = Promise.allSettled([
+        operations.evaluateFulfillmentGroupReadiness(staff, {
+          orderNumber: f.orderNumber,
+          fulfillmentGroupId: f.groupId,
+        }),
+      ]);
+      await waitForDatabaseLock();
+      await expect(
+        holder.query(`SELECT id FROM app.order_fulfillment_groups WHERE id=$1 FOR UPDATE NOWAIT`, [
+          f.groupId,
+        ]),
+      ).resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+      await operation;
+    }
+    expect(await operation).toMatchObject([{ status: 'fulfilled' }]);
+  });
+
+  it('takes the order lock before committing a newly created group provider reference', async () => {
+    const f = await productionFixture();
+    const fulfillment = new ArchiveFixtureFulfillment();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const createOrder = fulfillment.createOrder.bind(fulfillment);
+    fulfillment.createOrder = vi
+      .fn<domain.FulfillmentService['createOrder']>()
+      .mockImplementation(async (input) => {
+        entered.resolve();
+        await release.promise;
+        return createOrder(input);
+      });
+    const operations = new domain.OrderOperationsService(
+      actionDatabase.pool,
+      new MemoryObjectStorage(),
+      fulfillment,
+      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+    );
+    expect(
+      await operations.evaluateFulfillmentGroupReadiness(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ).toEqual({ ready: true, blockers: [] });
+    const operation = Promise.allSettled([
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ]);
+    const holder = await pool.connect();
+    try {
+      await entered.promise;
+      await holder.query('BEGIN');
+      await holder.query(`SELECT id FROM app.orders WHERE id=$1 FOR UPDATE`, [f.orderId]);
+      release.resolve();
+      await waitForDatabaseLock();
+      await expect(
+        holder.query(`SELECT id FROM app.order_fulfillment_groups WHERE id=$1 FOR UPDATE NOWAIT`, [
+          f.groupId,
+        ]),
+      ).resolves.toMatchObject({ rowCount: 1 });
+      expect(
+        (
+          await pool.query(
+            `SELECT external_order_id FROM app.order_fulfillment_groups WHERE id=$1`,
+            [f.groupId],
+          )
+        ).rows,
+      ).toEqual([{ external_order_id: null }]);
+    } finally {
+      release.resolve();
+      await holder.query('ROLLBACK');
+      holder.release();
+      await operation;
+    }
+    const completed = await operation;
+    expect(
+      completed.filter((result) => result.status === 'rejected').map((result) => result.reason),
+    ).toEqual([]);
+    expect(completed).toMatchObject([
+      { status: 'fulfilled', value: { duplicate: false, externalOrderId: expect.any(String) } },
+    ]);
+  });
+
+  it.each([false, true])(
+    'does not refund or notify when provider cancellation remains unresolved (partial: %s)',
+    async (partial) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      const first = `no-effects-${randomUUID()}`;
+      await externalGroup(f, first);
+      const second = await secondGroup(f, `no-effects-second-${randomUUID()}`);
+      const transport = vi
+        .fn<domain.FulfillmentService['cancelOrder']>()
+        .mockImplementation(async ({ externalOrderId }) => ({
+          state: partial && externalOrderId === first ? 'CANCELLED' : 'UNAVAILABLE',
+          occurredAt: null,
+        }));
+      const before = await snapshot(f.orderId);
+      const result = await cancellationService(transport).actions.cancel(staff, {
+        ...cancellationInput(f.orderNumber),
+        refundDestination: 'ORIGINAL_PAYMENT',
+        refundAmountCents: 500,
+        notifyCustomer: true,
+      });
+      expect(result).toMatchObject({
+        status: partial ? 'PARTIAL' : 'FAILED',
+        orderStatus: partial ? 'ON_HOLD' : 'SUBMITTED_TO_PRINTIFY',
+      });
+      expect(result.unresolvedFulfillmentGroupIds).toContain(second);
+      const after = await snapshot(f.orderId);
+      expect(after.payments).toEqual(before.payments);
+      expect(after.refunds).toEqual(before.refunds);
+      expect(after.returns).toEqual(before.returns);
+      expect(after.items).toEqual(before.items);
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE order_id=$1`, [f.orderId]))
+          .rows,
+      ).toEqual([]);
+    },
+  );
+
+  it('binds cancellation keys to the requested order and action and rejects a second aggregate', async () => {
+    const first = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const second = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = cancellationService();
+    const input = cancellationInput(first.orderNumber);
+    const results = await Promise.allSettled([
+      actions.cancel(staff, input),
+      actions.cancel(staff, { ...input, orderNumber: second.orderNumber }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toMatchObject([
+      { reason: expect.any(domain.OrderAdminActionConflictError) },
+    ]);
+    const winner = results[0]!.status === 'fulfilled' ? first : second;
+    await expect(
+      actions.cancel(staff, cancellationInput(winner.orderNumber)),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    await expect(
+      actions.archive(staff, {
+        orderNumber: winner.orderNumber,
+        reasonCode: input.reasonCode,
+        idempotencyKey: input.idempotencyKey,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    expect((await cancellationRows(winner.orderId)).cancellations).toHaveLength(1);
+  });
 
   // Incorrectly deriving archive from the canonical or Printing state rejects fulfilled groups.
   it.each(['FULFILLED', 'DELIVERED'])(

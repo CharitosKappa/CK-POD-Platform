@@ -17,6 +17,7 @@ import { PolicyService } from './policy';
 import type { PolicyOutcome } from './policy';
 import type { LifecycleOrchestrator } from './operations-analytics';
 import type { FulfillmentState, PrintingGroupState } from './order-detail-contracts';
+import type { CancellationStatus } from './order-admin-actions-contracts';
 
 export const canonicalOrderStates = [
   'DRAFT',
@@ -42,6 +43,32 @@ export type ReviewStage = 'PREPRESS' | 'COMPLIANCE';
 export type ReviewOutcome = 'APPROVED' | 'HELD' | 'REJECTED';
 export type OperationalRole = 'ADMIN' | 'CX_OPS' | 'PREPRESS_REVIEWER';
 export type OrderOperationsActor = ActiveSession | Omit<StaffSession, 'token'>;
+
+/** Provider confirmation, rather than local-only groups, determines partial success. */
+export function resolveCancellationOutcome(
+  orderStatus: string,
+  groups: readonly { fulfillmentGroupId: string; status: string }[],
+): {
+  status: CancellationStatus;
+  orderStatus: string;
+  unresolvedFulfillmentGroupIds: string[];
+} {
+  const unresolvedFulfillmentGroupIds = groups
+    .filter((group) => !['CANCELLED', 'NOT_REQUIRED'].includes(group.status))
+    .map((group) => group.fulfillmentGroupId);
+  const status =
+    unresolvedFulfillmentGroupIds.length === 0
+      ? 'SUCCEEDED'
+      : groups.some((group) => group.status === 'CANCELLED')
+        ? 'PARTIAL'
+        : 'FAILED';
+  return {
+    status,
+    orderStatus:
+      status === 'SUCCEEDED' ? 'CANCELLED' : status === 'PARTIAL' ? 'ON_HOLD' : orderStatus,
+    unresolvedFulfillmentGroupIds,
+  };
+}
 
 export const operationalReasonCodes = [
   'LOW_RESOLUTION',
@@ -181,6 +208,139 @@ export class OrderOperationsService {
     this.routing = new FulfillmentRoutingService(pool, fulfillment);
     this.derivatives = new ProviderDerivativeService(pool, storage);
     this.fulfillmentActionLeaseMs = configuration.fulfillmentActionLeaseMs ?? 5 * 60 * 1000;
+  }
+
+  /** Called within the cancellation's transaction. Canonical state remains owned here. */
+  async finalizeCancellationWithClient(
+    client: SqlClient,
+    session: OrderOperationsActor,
+    input: { orderNumber: string; cancellationId: string },
+  ) {
+    await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    const order = await lockOrder(client, input.orderNumber);
+    const groups = await client.query<{
+      id: string;
+      printing_status: PrintingGroupState;
+      fulfillment_status: FulfillmentState;
+    }>(
+      `SELECT id,printing_status,fulfillment_status FROM app.order_fulfillment_groups WHERE order_id=$1 ORDER BY id FOR UPDATE`,
+      [order.id],
+    );
+    const cancellation = required(
+      (
+        await client.query<{ id: string; reason_code: string; staff_note: string | null }>(
+          `SELECT id,reason_code,staff_note FROM app.order_cancellations WHERE id=$1 AND order_id=$2 FOR UPDATE`,
+          [input.cancellationId, order.id],
+        )
+      ).rows[0],
+      'Cancellation not found for this order.',
+    );
+    const attempts = await client.query<{ fulfillment_group_id: string; status: string }>(
+      `SELECT fulfillment_group_id,status FROM app.order_cancellation_groups WHERE order_cancellation_id=$1
+       ORDER BY fulfillment_group_id FOR UPDATE`,
+      [cancellation.id],
+    );
+    if (
+      groups.rows.length !== attempts.rows.length ||
+      groups.rows.some((g) => !attempts.rows.some((a) => a.fulfillment_group_id === g.id))
+    )
+      throw new OrderTransitionError('Cancellation group evidence is incomplete.');
+    let outcome = resolveCancellationOutcome(
+      order.status,
+      attempts.rows.map((row) => ({
+        fulfillmentGroupId: row.fulfillment_group_id,
+        status: row.status,
+      })),
+    );
+    const conflictingGroups = groups.rows.filter(
+      (group) =>
+        ['SUBMITTING', 'IN_PRODUCTION', 'PRINTED'].includes(group.printing_status) ||
+        !['UNFULFILLED', 'CANCELLED'].includes(group.fulfillment_status),
+    );
+    if (
+      conflictingGroups.length &&
+      attempts.rows.some((attempt) => attempt.status === 'CANCELLED')
+    ) {
+      outcome = {
+        status: 'PARTIAL',
+        orderStatus: 'ON_HOLD',
+        unresolvedFulfillmentGroupIds: [
+          ...new Set([
+            ...outcome.unresolvedFulfillmentGroupIds,
+            ...conflictingGroups.map((group) => group.id),
+          ]),
+        ],
+      };
+    } else if (conflictingGroups.length) {
+      outcome = {
+        status: 'FAILED',
+        orderStatus: order.status,
+        unresolvedFulfillmentGroupIds: conflictingGroups.map((group) => group.id),
+      };
+    }
+    for (const group of groups.rows) {
+      const attempt = attempts.rows.find((row) => row.fulfillment_group_id === group.id)!;
+      if (conflictingGroups.some((conflict) => conflict.id === group.id)) continue;
+      if (
+        attempt.status !== 'CANCELLED' &&
+        !(outcome.status === 'SUCCEEDED' && attempt.status === 'NOT_REQUIRED')
+      )
+        continue;
+      await transitionPrintingGroup(client, {
+        orderId: order.id,
+        fulfillmentGroupId: group.id,
+        from: group.printing_status,
+        to: 'CANCELLED',
+        source: 'OPS',
+        actorStaffMemberId: actorIds(session).staffMemberId ?? undefined,
+        metadata: { cancellationId: cancellation.id },
+      });
+      await client.query(
+        `UPDATE app.order_fulfillment_groups SET status='CANCELLED',fulfillment_status='CANCELLED',
+        updated_at=now() WHERE id=$1`,
+        [group.id],
+      );
+      if (group.fulfillment_status !== 'CANCELLED')
+        await client.query(
+          `INSERT INTO app.order_fulfillment_status_history
+        (order_id,fulfillment_group_id,from_state,to_state,source,actor_staff_member_id,metadata)
+        VALUES ($1,$2,$3,'CANCELLED','OPS',$4,$5::jsonb)`,
+          [
+            order.id,
+            group.id,
+            group.fulfillment_status,
+            actorIds(session).staffMemberId,
+            JSON.stringify({ cancellationId: cancellation.id }),
+          ],
+        );
+    }
+    await client.query(
+      `UPDATE app.external_fulfillment_orders external_order SET submission_state='CANCELLED',updated_at=now()
+      FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=$1
+      AND attempt.status='CANCELLED' AND external_order.order_id=$2 AND external_order.external_order_id=attempt.external_order_id`,
+      [cancellation.id, order.id],
+    );
+    if (outcome.status === 'SUCCEEDED' && order.status !== 'CANCELLED')
+      await this.transitionLocked(
+        client,
+        order,
+        'CANCELLED',
+        session,
+        cancellation.reason_code,
+        cancellation.staff_note ?? undefined,
+        'OPS',
+        true,
+      );
+    if (outcome.status === 'PARTIAL' && order.status !== 'ON_HOLD')
+      await this.holdLocked(
+        client,
+        order,
+        session,
+        cancellation.reason_code,
+        cancellation.staff_note ?? undefined,
+        true,
+      );
+    return outcome;
   }
 
   async listReviewQueue(
@@ -513,6 +673,8 @@ export class OrderOperationsService {
     const uniqueBlockers = [...new Set(blockers)];
     const ready = uniqueBlockers.length === 0;
     await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, input.orderNumber);
+      await assertCancellationResolved(client, order.id);
       await client.query(
         `INSERT INTO app.order_fulfillment_group_readiness_evaluations (
            fulfillment_group_id, ready, blockers, snapshot, created_by_user_id, created_by_staff_member_id
@@ -543,7 +705,6 @@ export class OrderOperationsService {
          WHERE id = $1 AND status IN ('PENDING', 'FAILED', 'READY_FOR_PRODUCTION')`,
         [first.fulfillment_group_id, ready ? 'READY_FOR_PRODUCTION' : 'PENDING'],
       );
-      const order = await lockOrder(client, input.orderNumber);
       const currentPrintingState = await lockPrintingGroupState(
         client,
         order.id,
@@ -683,6 +844,7 @@ export class OrderOperationsService {
     let next: CanonicalOrderState | undefined;
     await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
+      await assertCancellationResolved(client, order.id);
       if (order.status !== 'ON_HOLD')
         throw new OrderTransitionError('Only a held order can be resumed.');
       const hold = await client.query<{ previous_state: CanonicalOrderState }>(
@@ -865,6 +1027,9 @@ export class OrderOperationsService {
     orderNumber: string,
   ): Promise<{ externalOrderId: string; duplicate: boolean }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await withTransaction(this.pool, async (client) => {
+      await assertCancellationResolved(client, (await lockOrder(client, orderNumber)).id);
+    });
     if (
       this.configuration.fulfillmentAdapter === 'printify' &&
       !this.configuration.realProductionSubmissionEnabled
@@ -958,6 +1123,9 @@ export class OrderOperationsService {
     input: { orderNumber: string; fulfillmentGroupId: string },
   ): Promise<{ externalOrderId: string; duplicate: boolean }> {
     await this.requireRole(session, ['ADMIN', 'CX_OPS']);
+    await withTransaction(this.pool, async (client) => {
+      await assertCancellationResolved(client, (await lockOrder(client, input.orderNumber)).id);
+    });
     if (
       this.configuration.fulfillmentAdapter === 'printify' &&
       !this.configuration.realProductionSubmissionEnabled
@@ -1478,6 +1646,7 @@ export class OrderOperationsService {
         })),
       });
       await withTransaction(this.pool, async (client) => {
+        await lockOrder(client, group.orderNumber);
         await this.finishAction(client, action.id, 'SUCCEEDED', result.externalOrderId);
         await client.query(
           `UPDATE app.order_fulfillment_groups
@@ -1570,6 +1739,7 @@ export class OrderOperationsService {
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
+      await assertCancellationResolved(client, order.id);
       if (!['READY_FOR_PRODUCTION', 'SUBMITTED_TO_PRINTIFY'].includes(order.status)) {
         throw new OrderTransitionError(
           'Group fulfillment actions require an order that is ready for production.',
@@ -1688,6 +1858,7 @@ export class OrderOperationsService {
   ) {
     return withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, orderNumber);
+      await assertCancellationResolved(client, order.id);
       if (order.status !== 'READY_FOR_PRODUCTION') {
         throw new OrderTransitionError(
           'External fulfillment actions require an order that is ready for production.',
@@ -1897,8 +2068,22 @@ export class OrderOperationsService {
     reasonCode: string | null,
     reason?: string,
     actorType: 'SYSTEM' | 'OPS' | 'WEBHOOK' | 'POLLING' = actor ? 'OPS' : 'SYSTEM',
+    cancellationAuthority = false,
   ) {
-    if (!canTransition(order.status, target))
+    // Only confirmed provider cancellation conflicting with new shipment evidence may
+    // put a shipped order on attention hold. Its independent fulfillment evidence remains intact.
+    const cancellationAttentionHold =
+      cancellationAuthority &&
+      target === 'ON_HOLD' &&
+      ['PARTIALLY_SHIPPED', 'SHIPPED', 'DELIVERED'].includes(order.status);
+    // The cancellation authority has separately checked current Printing/Fulfillment and
+    // all durable provider confirmations. Other workflows retain their existing state graph.
+    const confirmedCancellation = cancellationAuthority && target === 'CANCELLED';
+    if (
+      !canTransition(order.status, target) &&
+      !cancellationAttentionHold &&
+      !confirmedCancellation
+    )
       throw new OrderTransitionError(`Cannot move ${order.status} to ${target}.`);
     await client.query(`UPDATE app.orders SET status = $2, updated_at = now() WHERE id = $1`, [
       order.id,
@@ -1935,8 +2120,9 @@ export class OrderOperationsService {
     client: SqlClient,
     order: LockedOrder,
     session: OrderOperationsActor,
-    reasonCode: OperationalReasonCode,
+    reasonCode: string,
     notes?: string,
+    cancellationConflict = false,
   ) {
     if (order.status === 'ON_HOLD')
       throw new OrderTransitionError('This order is already on hold.');
@@ -1963,7 +2149,16 @@ export class OrderOperationsService {
         actorIds(session).staffMemberId,
       ],
     );
-    await this.transitionLocked(client, order, 'ON_HOLD', session, reasonCode, notes);
+    await this.transitionLocked(
+      client,
+      order,
+      'ON_HOLD',
+      session,
+      reasonCode,
+      notes,
+      'OPS',
+      cancellationConflict,
+    );
   }
   private async audit(
     client: SqlClient,
@@ -2161,6 +2356,16 @@ function groupReadinessBlockers(rows: GroupReadinessRow[]): string[] {
     if (!row.qualification_profile_id) blockers.push('PROVIDER_PROFILE');
   }
   return blockers;
+}
+
+async function assertCancellationResolved(client: SqlClient, orderId: string): Promise<void> {
+  const cancellation = await client.query(
+    `SELECT id FROM app.order_cancellations
+    WHERE order_id=$1 AND status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') LIMIT 1`,
+    [orderId],
+  );
+  if (cancellation.rows.length)
+    throw new OrderTransitionError('Cancellation must be resolved before production can continue.');
 }
 
 async function lockOrder(client: SqlClient, orderNumber: string): Promise<LockedOrder> {

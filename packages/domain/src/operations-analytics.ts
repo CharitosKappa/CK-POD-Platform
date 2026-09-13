@@ -1,4 +1,4 @@
-import { type SqlPool } from '@let-it-be/db';
+import { type SqlClient, type SqlPool } from '@let-it-be/db';
 import { OrderRefundService } from './order-refunds';
 import type { PaymentService } from './commerce-contracts';
 import type { ActiveSession } from './identity';
@@ -13,6 +13,7 @@ export type LifecycleMessageType =
   | 'CART_ABANDONMENT'
   | 'CHECKOUT_ABANDONMENT'
   | 'ORDER_CONFIRMATION'
+  | 'ORDER_CANCELLATION'
   | 'SHIPPING_CONFIRMATION'
   | 'DELIVERY_CONFIRMATION'
   | 'REVIEW_REQUEST'
@@ -249,6 +250,88 @@ export class LifecycleOrchestrator {
     private readonly provider: 'FAKE' | 'KLAVIYO' = 'FAKE',
     private readonly marketingEnabled = true,
   ) {}
+
+  /** Reserves transactional intent atomically with the caller's business changes. */
+  async enqueueTransactionalWithClient(
+    client: SqlClient,
+    input: {
+      type: LifecycleMessageType;
+      recipientEmail: string;
+      idempotencyKey: string;
+      orderId?: string;
+      payload: Record<string, unknown>;
+    },
+  ): Promise<string> {
+    const locale = await client.query<{ preferred_locale: CustomerLocale }>(
+      `SELECT COALESCE(
+        (SELECT customer.preferred_locale FROM app.orders orders JOIN app.customer_profiles customer
+          ON customer.id=orders.customer_profile_id WHERE orders.id=$1::uuid),
+        (SELECT preferred_locale FROM app.customer_profiles WHERE normalized_email=lower(trim($2))),
+        'en') AS preferred_locale`,
+      [input.orderId ?? null, input.recipientEmail],
+    );
+    const payload = { ...input.payload, preferredLocale: locale.rows[0]!.preferred_locale };
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO app.lifecycle_deliveries (message_type,channel,classification,recipient_email,order_id,
+       idempotency_key,provider,status,payload) VALUES ($1,'EMAIL','TRANSACTIONAL',$2,$3,$4,$5,'PENDING',$6::jsonb)
+       ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      [
+        input.type,
+        input.recipientEmail,
+        input.orderId ?? null,
+        input.idempotencyKey,
+        this.provider,
+        JSON.stringify(payload),
+      ],
+    );
+    if (inserted.rows[0]) return inserted.rows[0].id;
+    const existing = await client.query<{ id: string }>(
+      'SELECT id FROM app.lifecycle_deliveries WHERE idempotency_key=$1',
+      [input.idempotencyKey],
+    );
+    if (!existing.rows[0]) throw new Error('Lifecycle delivery reservation is unavailable.');
+    return existing.rows[0].id;
+  }
+
+  /** Call after the enqueue transaction commits. The persisted claim excludes concurrent sends. */
+  async dispatchDelivery(deliveryId: string): Promise<void> {
+    const claimed = await this.pool.query<{
+      id: string;
+      message_type: LifecycleMessageType;
+      classification: LifecycleClassification;
+      recipient_email: string;
+      idempotency_key: string;
+      payload: Record<string, unknown> & { preferredLocale: CustomerLocale };
+    }>(
+      `UPDATE app.lifecycle_deliveries SET status='RETRYING',updated_at=now()
+       WHERE id=$1 AND provider=$2 AND status='PENDING'
+       RETURNING id,message_type,classification,recipient_email,idempotency_key,payload`,
+      [deliveryId, this.provider],
+    );
+    const row = claimed.rows[0];
+    if (!row) return;
+    try {
+      const sent = await this.messaging.send({
+        type: row.message_type,
+        classification: row.classification,
+        recipientEmail: row.recipient_email,
+        idempotencyKey: row.idempotency_key,
+        preferredLocale: row.payload.preferredLocale,
+        payload: row.payload,
+      });
+      await this.pool.query(
+        `UPDATE app.lifecycle_deliveries SET status='SENT',provider_message_id=$2,
+        sent_at=now(),updated_at=now() WHERE id=$1 AND status='RETRYING'`,
+        [row.id, sent.providerMessageId],
+      );
+    } catch {
+      await this.pool.query(
+        `UPDATE app.lifecycle_deliveries SET status='FAILED',updated_at=now()
+        WHERE id=$1 AND status='RETRYING'`,
+        [row.id],
+      );
+    }
+  }
 
   async trigger(input: {
     type: LifecycleMessageType;
