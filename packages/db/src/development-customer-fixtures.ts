@@ -10,13 +10,17 @@ export type DevelopmentCustomerFixture = Readonly<{
   postalCode: string;
   countryCode: 'US';
   preferredLocale: 'en';
-  emailMarketingStatus: 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
-  smsMarketingStatus: 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
+  emailMarketingStatus: 'NOT_SUBSCRIBED' | 'SUBSCRIBED' | 'UNSUBSCRIBED';
+  smsMarketingStatus: 'NOT_SUBSCRIBED' | 'SUBSCRIBED' | 'UNSUBSCRIBED';
   tags: readonly string[];
   note?: string;
   firstSeenDaysAgo: number;
   lastSeenHoursAgo: number;
 }>;
+
+export function isPricedDevelopmentOrder(order: Readonly<{ totalCents: string | null }>): boolean {
+  return typeof order.totalCents === 'string' && /^[1-9]\d*$/.test(order.totalCents);
+}
 
 let developmentCustomerSequence = 0;
 
@@ -89,9 +93,9 @@ function customer(
     countryCode: 'US',
     preferredLocale: 'en',
     emailMarketingStatus:
-      index % 3 === 0 ? 'SUBSCRIBED' : index % 3 === 1 ? 'NOT_SUBSCRIBED' : 'UNKNOWN',
+      index % 3 === 0 ? 'SUBSCRIBED' : index % 3 === 1 ? 'NOT_SUBSCRIBED' : 'UNSUBSCRIBED',
     smsMarketingStatus:
-      index % 4 === 0 ? 'SUBSCRIBED' : index % 4 === 1 ? 'NOT_SUBSCRIBED' : 'UNKNOWN',
+      index % 4 === 0 ? 'SUBSCRIBED' : index % 4 === 1 ? 'NOT_SUBSCRIBED' : 'UNSUBSCRIBED',
     tags,
     ...(note ? { note } : {}),
     firstSeenDaysAgo,

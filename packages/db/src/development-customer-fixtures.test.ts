@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertDevelopmentCustomerResetTarget,
   developmentCustomerFixtures,
+  isPricedDevelopmentOrder,
 } from './development-customer-fixtures';
 
 describe('development customer fixtures', () => {
@@ -15,6 +16,21 @@ describe('development customer fixtures', () => {
     expect(developmentCustomerFixtures.every((customer) => customer.preferredLocale === 'en')).toBe(
       true,
     );
+    expect(
+      new Set(developmentCustomerFixtures.map((customer) => customer.emailMarketingStatus)),
+    ).toEqual(new Set(['NOT_SUBSCRIBED', 'SUBSCRIBED', 'UNSUBSCRIBED']));
+    expect(
+      new Set(developmentCustomerFixtures.map((customer) => customer.smsMarketingStatus)),
+    ).toEqual(new Set(['NOT_SUBSCRIBED', 'SUBSCRIBED', 'UNSUBSCRIBED']));
+  });
+
+  it('accepts only orders with a positive integer total for customer spend fixtures', () => {
+    expect(isPricedDevelopmentOrder({ totalCents: '4899' })).toBe(true);
+    expect(isPricedDevelopmentOrder({ totalCents: null })).toBe(false);
+    expect(isPricedDevelopmentOrder({ totalCents: '' })).toBe(false);
+    expect(isPricedDevelopmentOrder({ totalCents: '0' })).toBe(false);
+    expect(isPricedDevelopmentOrder({ totalCents: '-100' })).toBe(false);
+    expect(isPricedDevelopmentOrder({ totalCents: 'not-a-number' })).toBe(false);
   });
 
   it('allows only the local development database and rejects test or remote targets', () => {

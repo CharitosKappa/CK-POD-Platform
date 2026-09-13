@@ -15,6 +15,7 @@ const integrationTests = [
   'packages/domain/src/customer-exports.integration.test.ts',
   'packages/domain/src/customer-reconciliation.integration.test.ts',
   'packages/domain/src/customer-addresses.integration.test.ts',
+  'packages/domain/src/customer-consent.integration.test.ts',
   'packages/domain/src/store-credit.integration.test.ts',
 ];
 

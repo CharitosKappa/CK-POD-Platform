@@ -309,6 +309,13 @@
       "when": 1789321000000,
       "tag": "0044_customer_directory_search",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789322000000,
+      "tag": "0045_customer_marketing_consent_states",
+      "breakpoints": true
     }
   ]
 }

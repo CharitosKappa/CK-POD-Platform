@@ -2,6 +2,7 @@ import { createDatabaseClient, type SqlClient } from '../packages/db/src/index';
 import {
   assertDevelopmentCustomerResetTarget,
   developmentCustomerFixtures,
+  isPricedDevelopmentOrder,
   type DevelopmentCustomerFixture,
 } from '../packages/db/src/development-customer-fixtures';
 
@@ -28,13 +29,16 @@ async function resetCustomers() {
        SET recipient_email=archived.customer_email,updated_at=now()
        FROM archived_orders archived WHERE delivery.order_id=archived.id`,
     );
-    const orders = await client.query<{ id: string }>(
-      `SELECT id FROM app.orders
+    const orders = await client.query<{ id: string; totalCents: string | null }>(
+      `SELECT id, pricing_snapshot->>'totalCents' AS "totalCents" FROM app.orders
        WHERE status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')
+         AND pricing_snapshot->>'totalCents' ~ '^[1-9][0-9]*$'
          AND NOT EXISTS (SELECT 1 FROM app.order_refunds WHERE order_id=orders.id)
          AND NOT EXISTS (SELECT 1 FROM app.order_reprints WHERE original_order_id=orders.id)
        ORDER BY created_at DESC, id DESC LIMIT 12`,
     );
+    if (!orders.rows.every(isPricedDevelopmentOrder))
+      throw new Error('Development customer orders must have a positive integer total.');
     await client.query('DELETE FROM app.customer_exports');
     await client.query('DELETE FROM app.customer_notes');
     await client.query('DELETE FROM app.customer_profiles');

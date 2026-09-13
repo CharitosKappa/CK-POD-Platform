@@ -8,6 +8,20 @@ import { requiredApplicationTables } from './required-tables.js';
 const migrationsDirectory = fileURLToPath(new URL('../drizzle', import.meta.url));
 
 describe('required application tables', () => {
+  it('registers every checked-in SQL migration in the Drizzle journal', async () => {
+    const legacyUnjournaledDataFixes = new Set(['0027_cart_design_preview_prepress_fallback']);
+    const migrationTags = (await readdir(migrationsDirectory))
+      .filter((fileName) => fileName.endsWith('.sql'))
+      .map((fileName) => fileName.replace(/\.sql$/, ''))
+      .filter((tag) => !legacyUnjournaledDataFixes.has(tag))
+      .sort();
+    const journal = JSON.parse(
+      await readFile(`${migrationsDirectory}/meta/_journal.json`, 'utf8'),
+    ) as { entries: Array<{ tag: string }> };
+
+    expect(journal.entries.map((entry) => entry.tag).sort()).toEqual(migrationTags);
+  });
+
   it('includes the independent Store Credit tables', () => {
     expect(requiredApplicationTables).toContain('store_credit_accounts');
     expect(requiredApplicationTables).toContain('store_credit_ledger');

@@ -28,7 +28,7 @@ describe('hybrid customer exports', () => {
               phone: null,
               location: 'Athens, GR',
               email_marketing_status: 'SUBSCRIBED',
-              sms_marketing_status: 'UNKNOWN',
+              sms_marketing_status: 'UNSUBSCRIBED',
               order_count: 2,
               total_spent_cents: 7998,
               last_order_at: now,

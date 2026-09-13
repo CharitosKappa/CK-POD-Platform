@@ -34,8 +34,18 @@ export const customerSorts = [
 ] as const;
 export type CustomerSort = (typeof customerSorts)[number];
 
-export const marketingStatuses = ['UNKNOWN', 'NOT_SUBSCRIBED', 'SUBSCRIBED'] as const;
+export const marketingStatuses = ['NOT_SUBSCRIBED', 'SUBSCRIBED', 'UNSUBSCRIBED'] as const;
 export type MarketingStatus = (typeof marketingStatuses)[number];
+
+export function resolveMarketingStatus(
+  previous: MarketingStatus | null,
+  subscribed: boolean,
+): MarketingStatus {
+  if (subscribed) return 'SUBSCRIBED';
+  return previous === 'SUBSCRIBED' || previous === 'UNSUBSCRIBED'
+    ? 'UNSUBSCRIBED'
+    : 'NOT_SUBSCRIBED';
+}
 
 export const customerLocales = ['en'] as const;
 export type CustomerLocale = (typeof customerLocales)[number];

@@ -5,9 +5,11 @@ import {
   customerViews,
   detectCustomerLocale,
   escapeCustomerCsv,
+  marketingStatuses,
   normalizeCustomerLocale,
   normalizeCustomerEmail,
   normalizeCustomerTag,
+  resolveMarketingStatus,
 } from './customer-contracts';
 
 describe('customer contracts', () => {
@@ -79,5 +81,18 @@ describe('customer contracts', () => {
       'HIGH_VALUE',
       'EMAIL_SUBSCRIBERS',
     ]);
+  });
+
+  it('models marketing consent without an ambiguous unknown state', () => {
+    expect(marketingStatuses).toEqual(['NOT_SUBSCRIBED', 'SUBSCRIBED', 'UNSUBSCRIBED']);
+  });
+
+  it('preserves whether an unchecked customer previously subscribed', () => {
+    expect(resolveMarketingStatus(null, false)).toBe('NOT_SUBSCRIBED');
+    expect(resolveMarketingStatus('NOT_SUBSCRIBED', false)).toBe('NOT_SUBSCRIBED');
+    expect(resolveMarketingStatus('NOT_SUBSCRIBED', true)).toBe('SUBSCRIBED');
+    expect(resolveMarketingStatus('SUBSCRIBED', false)).toBe('UNSUBSCRIBED');
+    expect(resolveMarketingStatus('UNSUBSCRIBED', false)).toBe('UNSUBSCRIBED');
+    expect(resolveMarketingStatus('UNSUBSCRIBED', true)).toBe('SUBSCRIBED');
   });
 });

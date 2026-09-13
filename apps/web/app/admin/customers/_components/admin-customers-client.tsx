@@ -17,6 +17,10 @@ import type {
   CustomerView,
   MarketingStatus,
 } from './customer-types';
+import {
+  emailSubscriptionStatusClass,
+  formatEmailSubscriptionStatus,
+} from './customer-email-subscription-status';
 import { parseCustomerListUrlState, writeCustomerListUrlState } from './customer-list-url-state';
 import { canManageCustomers, useAdminRole } from '../../admin-role';
 
@@ -292,7 +296,10 @@ export function AdminCustomersClient() {
           ...(debouncedQuery ? { query: debouncedQuery } : {}),
           ...(hasOrders ? { minOrders: 1 } : {}),
           ...(subscription
-            ? { emailMarketingStatus: subscription as 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED' }
+            ? {
+                emailMarketingStatus: subscription as
+                  'NOT_SUBSCRIBED' | 'SUBSCRIBED' | 'UNSUBSCRIBED',
+              }
             : {}),
           ...(location.trim() ? { location: location.trim() } : {}),
         },
@@ -489,7 +496,7 @@ export function AdminCustomersClient() {
                   <option value="">Any</option>
                   <option value="SUBSCRIBED">Subscribed</option>
                   <option value="NOT_SUBSCRIBED">Not subscribed</option>
-                  <option value="UNKNOWN">Unknown</option>
+                  <option value="UNSUBSCRIBED">Unsubscribed</option>
                 </select>
               </label>
               <label>
@@ -980,9 +987,9 @@ function CustomerRow({
       {columns.includes('subscription') ? (
         <td className="customer-subscription-column" data-label="Email subscription">
           <span
-            className={`customer-subscription ${customer.emailMarketingStatus === 'SUBSCRIBED' ? 'subscribed' : ''}`}
+            className={`customer-subscription ${emailSubscriptionStatusClass(customer.emailMarketingStatus)}`}
           >
-            {statusLabel(customer.emailMarketingStatus)}
+            {formatEmailSubscriptionStatus(customer.emailMarketingStatus)}
           </span>
         </td>
       ) : null}
@@ -1027,12 +1034,6 @@ function CustomerRow({
       ) : null}
     </tr>
   );
-}
-
-function statusLabel(status: string) {
-  if (status === 'SUBSCRIBED') return 'Subscribed';
-  if (status === 'NOT_SUBSCRIBED') return 'Not subscribed';
-  return 'Unknown';
 }
 
 function formatCustomerTimestamp(value: string) {

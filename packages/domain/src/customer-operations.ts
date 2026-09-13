@@ -10,6 +10,7 @@ import {
   normalizeCustomerEmail as normalizeEmailContract,
   normalizeCustomerLocale,
   normalizeCustomerTag,
+  resolveMarketingStatus,
   type CustomerProfileInput,
   type CustomerAddressMutationInput,
   type CustomerLocale,
@@ -806,6 +807,20 @@ export class CustomerOperationsService {
         [id],
       );
       if (!current.rows[0]) throw new CustomerOperationsValidationError('Customer not found.');
+      const emailMarketingStatus =
+        input.emailMarketingStatus === undefined
+          ? current.rows[0].email_marketing_status
+          : resolveMarketingStatus(
+              current.rows[0].email_marketing_status,
+              profile.emailMarketingStatus === 'SUBSCRIBED',
+            );
+      const smsMarketingStatus =
+        input.smsMarketingStatus === undefined
+          ? current.rows[0].sms_marketing_status
+          : resolveMarketingStatus(
+              current.rows[0].sms_marketing_status,
+              profile.smsMarketingStatus === 'SUBSCRIBED',
+            );
       const duplicate = await client.query<{ id: string }>(
         `SELECT id FROM app.customer_profiles WHERE normalized_email=$1 AND id<>$2`,
         [profile.email, id],
@@ -816,8 +831,7 @@ export class CustomerOperationsService {
           duplicate.rows[0].id,
         );
       if (
-        (profile.emailMarketingStatus === 'SUBSCRIBED' ||
-          profile.smsMarketingStatus === 'SUBSCRIBED') &&
+        (emailMarketingStatus === 'SUBSCRIBED' || smsMarketingStatus === 'SUBSCRIBED') &&
         current.rows[0].user_id
       ) {
         const suppressed = await client.query<{ blocked: boolean }>(
@@ -833,8 +847,14 @@ export class CustomerOperationsService {
       await client.query(
         `UPDATE app.customer_profiles
          SET normalized_email=$2,first_name=$3,last_name=$4,phone=$5,
-             email_marketing_status=$6,email_marketing_updated_at=now(),
-             sms_marketing_status=$7,sms_marketing_updated_at=now(),
+             email_marketing_updated_at=CASE
+               WHEN email_marketing_status IS DISTINCT FROM $6 THEN now()
+               ELSE email_marketing_updated_at END,
+             email_marketing_status=$6,
+             sms_marketing_updated_at=CASE
+               WHEN sms_marketing_status IS DISTINCT FROM $7 THEN now()
+               ELSE sms_marketing_updated_at END,
+             sms_marketing_status=$7,
              preferred_locale=coalesce($8,preferred_locale),
              preferred_locale_source=CASE WHEN $8::text IS NULL THEN preferred_locale_source ELSE 'ADMIN' END,
              preferred_locale_updated_at=CASE WHEN $8::text IS NULL THEN preferred_locale_updated_at ELSE now() END,
@@ -846,14 +866,14 @@ export class CustomerOperationsService {
           profile.firstName,
           profile.lastName,
           profile.phone,
-          profile.emailMarketingStatus,
-          profile.smsMarketingStatus,
+          emailMarketingStatus,
+          smsMarketingStatus,
           profile.preferredLocale,
         ],
       );
       const consentChanged =
-        current.rows[0].email_marketing_status !== profile.emailMarketingStatus ||
-        current.rows[0].sms_marketing_status !== profile.smsMarketingStatus;
+        current.rows[0].email_marketing_status !== emailMarketingStatus ||
+        current.rows[0].sms_marketing_status !== smsMarketingStatus;
       const changedFields = profileChangedFields(current.rows[0], profile);
       await this.writeAddress(client, id, profile, true);
       if (input.tags) await this.writeTags(client, id, profile.tags, true);
@@ -877,8 +897,22 @@ export class CustomerOperationsService {
           [
             id,
             JSON.stringify({
-              emailMarketingStatus: profile.emailMarketingStatus,
-              smsMarketingStatus: profile.smsMarketingStatus,
+              ...(current.rows[0].email_marketing_status !== emailMarketingStatus
+                ? {
+                    email: {
+                      previousStatus: current.rows[0].email_marketing_status,
+                      newStatus: emailMarketingStatus,
+                    },
+                  }
+                : {}),
+              ...(current.rows[0].sms_marketing_status !== smsMarketingStatus
+                ? {
+                    sms: {
+                      previousStatus: current.rows[0].sms_marketing_status,
+                      newStatus: smsMarketingStatus,
+                    },
+                  }
+                : {}),
               source: 'ADMIN',
             }),
             actor.staffMemberId,

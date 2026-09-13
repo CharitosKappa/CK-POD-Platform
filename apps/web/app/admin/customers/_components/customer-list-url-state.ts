@@ -32,7 +32,7 @@ const sorts = new Set<CustomerSort>([
   'CUSTOMER_UPDATED_ASC',
   'CUSTOMER_UPDATED_DESC',
 ]);
-const subscriptions = new Set<MarketingStatus>(['UNKNOWN', 'NOT_SUBSCRIBED', 'SUBSCRIBED']);
+const subscriptions = new Set<MarketingStatus>(['NOT_SUBSCRIBED', 'SUBSCRIBED', 'UNSUBSCRIBED']);
 
 export type CustomerListUrlState = Readonly<{
   query: string;

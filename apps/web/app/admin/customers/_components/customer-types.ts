@@ -1,4 +1,4 @@
-export type MarketingStatus = 'UNKNOWN' | 'NOT_SUBSCRIBED' | 'SUBSCRIBED';
+export type MarketingStatus = 'NOT_SUBSCRIBED' | 'SUBSCRIBED' | 'UNSUBSCRIBED';
 export type CustomerLocale = 'en';
 export type CustomerLocaleSource = 'DEFAULT' | 'BROWSER' | 'CUSTOMER' | 'ADMIN';
 export type CustomerView =

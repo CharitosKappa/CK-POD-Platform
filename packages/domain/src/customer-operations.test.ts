@@ -168,7 +168,7 @@ describe('customer detail commerce summary', () => {
               saved_design_count: 1,
               last_design_at: createdAt,
               email_marketing_status: 'SUBSCRIBED',
-              sms_marketing_status: 'UNKNOWN',
+              sms_marketing_status: 'NOT_SUBSCRIBED',
               preferred_locale: 'en',
               preferred_locale_source: 'BROWSER',
             },
@@ -440,6 +440,115 @@ describe('customer timeline pagination', () => {
 });
 
 describe('customer profile data integrity', () => {
+  it('does not change consent when a partial profile update omits marketing fields', async () => {
+    const customerId = '00000000-0000-4000-8000-000000000099';
+    const query = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {
+      void parameters;
+      if (sql.includes('SELECT profile.id'))
+        return {
+          rows: [
+            {
+              id: customerId,
+              user_id: null,
+              normalized_email: 'ari@example.test',
+              first_name: 'Ari',
+              last_name: 'Tsoukala',
+              phone: null,
+              email_marketing_status: 'SUBSCRIBED',
+              sms_marketing_status: 'UNSUBSCRIBED',
+              preferred_locale: 'en',
+              address_recipient_name: null,
+              address_phone: null,
+              line1: null,
+              line2: null,
+              city: null,
+              state_code: null,
+              postal_code: null,
+              country_code: null,
+            },
+          ],
+        };
+      if (sql.includes('SELECT id FROM app.customer_profiles')) return { rows: [] };
+      return { rows: [], rowCount: 1 };
+    });
+    const client = { query, release: vi.fn() };
+    const pool = { query, connect: vi.fn().mockResolvedValue(client) } as unknown as SqlPool;
+    const service = new CustomerOperationsService(pool);
+
+    await service.updateCustomer(actor, customerId, {
+      email: 'ari@example.test',
+      firstName: 'Ari',
+      lastName: 'Tsoukala',
+    });
+
+    const profileUpdate = query.mock.calls.find(([sql]) =>
+      String(sql).includes('UPDATE app.customer_profiles'),
+    );
+    expect(profileUpdate?.[1]?.[5]).toBe('SUBSCRIBED');
+    expect(profileUpdate?.[1]?.[6]).toBe('UNSUBSCRIBED');
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("VALUES ($1,'CONSENT_UPDATED'")),
+    ).toBe(false);
+  });
+
+  it('records an explicit withdrawal as unsubscribed without changing an untouched channel', async () => {
+    const customerId = '00000000-0000-4000-8000-000000000099';
+    const query = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {
+      void parameters;
+      if (sql.includes('SELECT profile.id'))
+        return {
+          rows: [
+            {
+              id: customerId,
+              user_id: null,
+              normalized_email: 'ari@example.test',
+              first_name: 'Ari',
+              last_name: 'Tsoukala',
+              phone: null,
+              email_marketing_status: 'SUBSCRIBED',
+              sms_marketing_status: 'NOT_SUBSCRIBED',
+              preferred_locale: 'en',
+              address_recipient_name: null,
+              address_phone: null,
+              line1: null,
+              line2: null,
+              city: null,
+              state_code: null,
+              postal_code: null,
+              country_code: null,
+            },
+          ],
+        };
+      if (sql.includes('SELECT id FROM app.customer_profiles')) return { rows: [] };
+      return { rows: [], rowCount: 1 };
+    });
+    const client = { query, release: vi.fn() };
+    const pool = { query, connect: vi.fn().mockResolvedValue(client) } as unknown as SqlPool;
+    const service = new CustomerOperationsService(pool);
+
+    await service.updateCustomer(actor, customerId, {
+      email: 'ari@example.test',
+      firstName: 'Ari',
+      lastName: 'Tsoukala',
+      emailMarketingStatus: 'NOT_SUBSCRIBED',
+      smsMarketingStatus: 'NOT_SUBSCRIBED',
+    });
+
+    const profileUpdate = query.mock.calls.find(([sql]) =>
+      String(sql).includes('UPDATE app.customer_profiles'),
+    );
+    expect(profileUpdate?.[1]?.[5]).toBe('UNSUBSCRIBED');
+    expect(profileUpdate?.[1]?.[6]).toBe('NOT_SUBSCRIBED');
+
+    const consentWrite = query.mock.calls.find(([sql]) =>
+      String(sql).includes("VALUES ($1,'CONSENT_UPDATED'"),
+    );
+    expect(JSON.parse(String(consentWrite?.[1]?.[1]))).toEqual({
+      email: { previousStatus: 'SUBSCRIBED', newStatus: 'UNSUBSCRIBED' },
+      source: 'ADMIN',
+    });
+  });
+
   it('updates the default address without deleting a second saved address', async () => {
     const customerId = '00000000-0000-4000-8000-000000000099';
     const query = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {

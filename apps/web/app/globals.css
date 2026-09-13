@@ -2891,12 +2891,24 @@ select:focus-visible {
   align-items: center;
   gap: 6px;
 }
-.customer-subscription.subscribed::before {
+.customer-subscription::before {
   width: 7px;
   height: 7px;
+  flex: 0 0 7px;
   border-radius: 50%;
-  background: #5f8a62;
   content: '';
+}
+
+.customer-subscription.subscribed::before {
+  background: #5f8a62;
+}
+
+.customer-subscription.not-subscribed::before {
+  background: #92918b;
+}
+
+.customer-subscription.unsubscribed::before {
+  background: #d58a25;
 }
 .customer-tags {
   display: flex;

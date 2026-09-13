@@ -99,6 +99,25 @@ describe('customer timeline presentation', () => {
     });
   });
 
+  it('describes marketing consent transitions per channel', () => {
+    expect(
+      timelineContent({
+        id: 'consent:event-1',
+        eventType: 'CONSENT_UPDATED',
+        body: null,
+        metadata: {
+          email: { previousStatus: 'SUBSCRIBED', newStatus: 'UNSUBSCRIBED' },
+          source: 'ADMIN',
+        },
+        actorLabel: 'admin@letitbe.local',
+        createdAt: '2026-09-11T18:57:00Z',
+      }),
+    ).toEqual({
+      title: 'Marketing preferences updated',
+      description: 'Email: Subscribed → Unsubscribed',
+    });
+  });
+
   it('describes address-book changes with location and default context', () => {
     const base = {
       id: 'address:event-1',

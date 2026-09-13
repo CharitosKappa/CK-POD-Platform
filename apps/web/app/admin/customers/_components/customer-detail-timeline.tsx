@@ -136,8 +136,8 @@ export function timelineContent(entry: TimelineEntry): {
     return {
       title: 'Marketing preferences updated',
       description: [
-        labelPair('Email', metadata.emailMarketingStatus),
-        labelPair('SMS', metadata.smsMarketingStatus),
+        consentTransition('Email', metadata.email, metadata.emailMarketingStatus),
+        consentTransition('SMS', metadata.sms, metadata.smsMarketingStatus),
       ]
         .filter(Boolean)
         .join(' · '),
@@ -262,8 +262,11 @@ function sourceDescription(metadata: Record<string, unknown>) {
   const source = textValue(metadata.source);
   return source ? `Source: ${humanize(source)}.` : null;
 }
-function labelPair(label: string, value: unknown) {
-  const formatted = statusValue(value);
+function consentTransition(label: string, value: unknown, legacyValue: unknown) {
+  const transition = recordValue(value);
+  const formatted = transition
+    ? transitionValue(transition.previousStatus, transition.newStatus)
+    : statusValue(legacyValue);
   return formatted ? `${label}: ${formatted}` : null;
 }
 function transitionValue(from: unknown, to: unknown) {
@@ -286,6 +289,11 @@ function listValue(value: unknown) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
+}
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 function statusValue(value: unknown) {
   const text = textValue(value);

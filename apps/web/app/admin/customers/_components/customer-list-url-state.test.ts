@@ -44,4 +44,14 @@ describe('customer list URL state', () => {
       location: '',
     });
   });
+
+  it('accepts unsubscribed and rejects the removed legacy unknown filter', () => {
+    expect(
+      parseCustomerListUrlState(new URLSearchParams('subscription=UNSUBSCRIBED'), defaults)
+        .subscription,
+    ).toBe('UNSUBSCRIBED');
+    expect(
+      parseCustomerListUrlState(new URLSearchParams('subscription=UNKNOWN'), defaults).subscription,
+    ).toBe('');
+  });
 });
