@@ -12,6 +12,7 @@ export async function GET(request: Request) {
         limit: Number(search.get('limit') ?? 30),
         ...(search.get('q') ? { query: search.get('q')! } : {}),
         ...(search.get('view') ? { view: search.get('view')! } : {}),
+        ...(search.get('customerId') ? { customerId: search.get('customerId')! } : {}),
       }),
     );
   } catch (error) {

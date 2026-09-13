@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { createEmptyEditorDocument } from '@let-it-be/editor-schema';
 import { InMemoryJobQueue } from '@let-it-be/queue';
 import { MemoryObjectStorage } from '@let-it-be/storage';
@@ -11,7 +11,7 @@ import { IdentityService } from './identity.js';
 import { PrepressService, startPrepressConsumer } from './prepress.js';
 import { ProjectService } from './projects.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('prepress and production rendering integration', () => {

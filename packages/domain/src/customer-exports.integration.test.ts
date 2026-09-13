@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
-import { createDatabaseClient } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
 import { InMemoryJobQueue } from '@let-it-be/queue';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { CustomerExportService, startCustomerExportConsumer } from './customer-exports';
 
-const suite = process.env.DATABASE_URL ? describe : describe.skip;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
+const suite = integrationDatabaseUrl ? describe : describe.skip;
 
 suite('hybrid customer exports integration', () => {
-  const database = createDatabaseClient(process.env.DATABASE_URL!);
+  const database = createDatabaseClient(integrationDatabaseUrl!);
   const queue = new InMemoryJobQueue();
   const storage = new MemoryObjectStorage();
   const staffMemberId = randomUUID();

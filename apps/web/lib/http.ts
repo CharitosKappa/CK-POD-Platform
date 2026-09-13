@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import {
   CommerceAccessError,
   CommerceValidationError,
+  AdminCommerceValidationError,
   AccountValidationError,
   GenerationAccessError,
   GenerationCreditError,
@@ -92,6 +93,9 @@ export function handleRouteError(error: unknown): NextResponse {
   }
   if (error instanceof CommerceValidationError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof AdminCommerceValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
   if (error instanceof AccountValidationError) {
     return NextResponse.json({ error: error.message }, { status: 409 });

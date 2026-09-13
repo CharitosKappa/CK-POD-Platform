@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { IdentityService } from './identity.js';
 import { ProjectService } from './projects.js';
 import { resolvePersistedStyleSelection, StyleCatalogService } from './styles.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('guided style catalog integration', () => {

@@ -11,6 +11,7 @@ import {
   normalizeCustomerLocale,
   normalizeCustomerTag,
   type CustomerProfileInput,
+  type CustomerAddressMutationInput,
   type CustomerLocale,
   type CustomerLocaleSource,
   type CustomerSort,
@@ -82,7 +83,7 @@ export interface OperationsCustomerDetail {
   orderCount: number;
   totalSpentCents: number;
   averageOrderValueCents: number;
-  returnRate: number;
+  refundedOrderRate: number;
   creditBalance: number;
   storeCreditBalanceCents: number;
   storeCreditCurrency: 'USD';
@@ -133,6 +134,8 @@ export interface OperationsCustomerDetail {
     createdAt: Date;
   }>;
   tags: string[];
+  latestNote: string | null;
+  timelineTotal: number;
   timeline: Array<{
     id: string;
     eventType: string;
@@ -146,6 +149,18 @@ export interface OperationsCustomerDetail {
 export interface StoreCreditLedgerOptions {
   page?: number;
   limit?: number;
+}
+
+export interface CustomerTimelineOptions {
+  page?: number;
+  limit?: number;
+}
+
+export interface OperationsCustomerTimelinePage {
+  entries: OperationsCustomerDetail['timeline'];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 export interface OperationsStoreCreditLedger {
@@ -188,11 +203,11 @@ export async function recordCustomerTouchpoint(
     userId?: string | null;
     preferredLocale?: CustomerLocale;
   },
-): Promise<void> {
+): Promise<string> {
   const email = normalizeCustomerEmail(input.email);
   const preferredLocale = input.preferredLocale ?? 'en';
   const preferredLocaleSource = input.preferredLocale ? 'BROWSER' : 'DEFAULT';
-  await client.query(
+  const result = await client.query<{ id: string }>(
     `INSERT INTO app.customer_profiles (
        normalized_email, user_id, first_seen_source, first_seen_at, last_seen_at,
        preferred_locale, preferred_locale_source, preferred_locale_updated_at
@@ -222,9 +237,13 @@ export async function recordCustomerTouchpoint(
            WHEN EXCLUDED.preferred_locale_source = 'BROWSER' THEN now()
            ELSE app.customer_profiles.preferred_locale_updated_at
          END,
-         updated_at = now()`,
+         updated_at = now()
+     RETURNING id`,
     [email, input.userId ?? null, input.source, preferredLocale, preferredLocaleSource],
   );
+  const profile = result.rows[0];
+  if (!profile) throw new Error('Could not record customer profile touchpoint.');
+  return profile.id;
 }
 
 export async function reconcileCustomerProfiles(pool: SqlPool): Promise<void> {
@@ -266,6 +285,13 @@ export async function reconcileCustomerProfiles(pool: SqlPool): Promise<void> {
         OR app.customer_profiles.last_seen_at IS DISTINCT FROM
              GREATEST(app.customer_profiles.last_seen_at, EXCLUDED.last_seen_at)`,
   );
+  await pool.query(
+    `UPDATE app.orders orders
+     SET customer_profile_id=customer.id,updated_at=now()
+     FROM app.customer_profiles customer
+     WHERE orders.customer_profile_id IS NULL
+       AND lower(trim(orders.customer_email))=customer.normalized_email`,
+  );
 }
 
 export class CustomerOperationsService {
@@ -284,7 +310,6 @@ export class CustomerOperationsService {
     options: CustomerListOptions = {},
   ): Promise<OperationsCustomerList> {
     await this.requireReadStaff(session);
-    await reconcileCustomerProfiles(this.pool);
     const page = boundedInteger(options.page, 1, 1, 10_000, 'page');
     const limit = boundedInteger(options.limit, 30, 1, 100, 'limit');
     const minOrders = optionalNonNegativeInteger(options.minOrders, 'minimum order count');
@@ -306,9 +331,24 @@ export class CustomerOperationsService {
       const position = add(`%${options.query.trim()}%`);
       where.push(`(
         cp.normalized_email ILIKE ${position}
-        OR display.customer_name ILIKE ${position}
-        OR coalesce(cp.phone, saved_address.phone, '') ILIKE ${position}
-        OR coalesce(customer_address.search_text, saved_address.search_text, order_address.search_text, '') ILIKE ${position}
+        OR (coalesce(cp.first_name, '') || ' ' || coalesce(cp.last_name, '')) ILIKE ${position}
+        OR (coalesce(profile.first_name, '') || ' ' || coalesce(profile.last_name, '')) ILIKE ${position}
+        OR coalesce(cp.phone, '') ILIKE ${position}
+        OR EXISTS (
+          SELECT 1 FROM app.customer_addresses search_address
+          WHERE search_address.customer_profile_id=cp.id
+            AND (${addressSearchDocumentSql('search_address')}) ILIKE ${position}
+        )
+        OR EXISTS (
+          SELECT 1 FROM app.saved_addresses search_address
+          WHERE search_address.user_id=cp.user_id
+            AND (${addressSearchDocumentSql('search_address')}) ILIKE ${position}
+        )
+        OR EXISTS (
+          SELECT 1 FROM app.orders search_order
+          WHERE search_order.customer_profile_id=cp.id
+            AND (${orderAddressSearchDocumentSql('search_order')}) ILIKE ${position}
+        )
       )`);
     }
     if (options.tag?.trim()) {
@@ -316,7 +356,7 @@ export class CustomerOperationsService {
       where.push(`EXISTS (
         SELECT 1 FROM app.customer_profile_tags tagged
         JOIN app.customer_tags tag ON tag.id = tagged.customer_tag_id
-        WHERE tagged.customer_profile_id = cp.id AND tag.value = ${position}
+        WHERE tagged.customer_profile_id = cp.id AND lower(tag.value) = lower(${position})
       )`);
     }
     if (options.location?.trim()) {
@@ -333,14 +373,15 @@ export class CustomerOperationsService {
       requireMarketingStatus(options.smsMarketingStatus);
       where.push(`cp.sms_marketing_status = ${add(options.smsMarketingStatus)}`);
     }
-    if (minOrders !== undefined) where.push(`order_summary.order_count >= ${add(minOrders)}`);
+    if (minOrders !== undefined)
+      where.push(`coalesce(order_summary.order_count, 0) >= ${add(minOrders)}`);
     if (minSpentCents !== undefined)
       where.push(`order_summary.total_spent_cents >= ${add(minSpentCents)}`);
     if (view === 'RECENTLY_ADDED')
       where.push(`cp.first_seen_at >= now() - interval '${CUSTOMER_NEW_DAYS} days'`);
-    if (view === 'PROSPECTS') where.push('order_summary.order_count = 0');
-    if (view === 'FIRST_TIME') where.push('order_summary.order_count = 1');
-    if (view === 'RETURNING') where.push('order_summary.order_count >= 2');
+    if (view === 'PROSPECTS') where.push('coalesce(order_summary.order_count, 0) = 0');
+    if (view === 'FIRST_TIME') where.push('coalesce(order_summary.order_count, 0) = 1');
+    if (view === 'RETURNING') where.push('coalesce(order_summary.order_count, 0) >= 2');
     if (view === 'HIGH_VALUE')
       where.push(`order_summary.total_spent_cents >= ${CUSTOMER_HIGH_VALUE_CENTS}`);
     if (view === 'EMAIL_SUBSCRIBERS') where.push(`cp.email_marketing_status = 'SUBSCRIBED'`);
@@ -348,12 +389,15 @@ export class CustomerOperationsService {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     values.push(limit, (page - 1) * limit);
     const result = await this.pool.query<CustomerListRow>(
-      `SELECT cp.id, cp.normalized_email AS email, cp.last_seen_at, cp.created_at, cp.updated_at,
+      `WITH ${customerOrderSummariesCteSql()}
+       SELECT cp.id, cp.normalized_email AS email, cp.last_seen_at, cp.created_at, cp.updated_at,
               coalesce(display.customer_name, cp.normalized_email) AS name,
               coalesce(cp.phone, saved_address.phone) AS phone,
               coalesce(customer_address.location, saved_address.location, order_address.location) AS location,
               cp.email_marketing_status, cp.sms_marketing_status,
-              order_summary.order_count, order_summary.total_spent_cents, order_summary.last_order_at,
+              coalesce(order_summary.order_count, 0)::int AS order_count,
+              coalesce(order_summary.total_spent_cents, 0)::int AS total_spent_cents,
+              order_summary.last_order_at,
               coalesce(credit.current_balance, 0) AS credit_balance,
               coalesce(tags.values, ARRAY[]::text[]) AS tags,
               count(*) OVER()::int AS total_count
@@ -362,7 +406,7 @@ export class CustomerOperationsService {
        LEFT JOIN LATERAL (${customerProfileAddressSql()}) customer_address ON true
        LEFT JOIN LATERAL (${savedAddressSql()}) saved_address ON true
        LEFT JOIN LATERAL (${orderAddressSql()}) order_address ON true
-       LEFT JOIN LATERAL (${orderSummarySql()}) order_summary ON true
+       LEFT JOIN order_summaries order_summary ON order_summary.customer_profile_id=cp.id
        LEFT JOIN app.credit_accounts credit
          ON credit.owner_type = 'USER' AND credit.owner_user_id = cp.user_id
        LEFT JOIN LATERAL (${tagsSql()}) tags ON true
@@ -378,13 +422,14 @@ export class CustomerOperationsService {
       values,
     );
     const metricsResult = await this.pool.query<CustomerMetricsRow>(
-      `SELECT count(*)::int AS total_customers,
-              coalesce(round(100.0 * count(*) FILTER (WHERE summary.order_count >= 2)
-                / nullif(count(*) FILTER (WHERE summary.order_count >= 1), 0)), 0)::int AS repeat_customer_rate,
-              coalesce(round(avg(summary.total_spent_cents) FILTER (WHERE summary.order_count >= 1)), 0)::int AS average_lifetime_spend_cents,
+      `WITH ${customerOrderSummariesCteSql()}
+       SELECT count(*)::int AS total_customers,
+              coalesce(round(100.0 * count(*) FILTER (WHERE coalesce(summary.order_count, 0) >= 2)
+                / nullif(count(*) FILTER (WHERE coalesce(summary.order_count, 0) >= 1), 0)), 0)::int AS repeat_customer_rate,
+              coalesce(round(avg(summary.total_spent_cents) FILTER (WHERE coalesce(summary.order_count, 0) >= 1)), 0)::int AS average_lifetime_spend_cents,
               count(*) FILTER (WHERE cp.email_marketing_status = 'SUBSCRIBED')::int AS email_subscribers
        FROM app.customer_profiles cp
-       LEFT JOIN LATERAL (${orderSummarySql('summary')}) summary ON true`,
+       LEFT JOIN order_summaries summary ON summary.customer_profile_id=cp.id`,
     );
     const metrics = metricsResult.rows[0]!;
     return {
@@ -406,7 +451,6 @@ export class CustomerOperationsService {
     customerId: string,
   ): Promise<OperationsCustomerDetail> {
     await this.requireReadStaff(session);
-    await reconcileCustomerProfiles(this.pool);
     const id = requireCustomerId(customerId);
     const identity = await this.pool.query<CustomerIdentityRow>(
       `SELECT cp.id, cp.normalized_email AS email, cp.user_id, cp.first_seen_source, cp.first_seen_at,
@@ -449,7 +493,7 @@ export class CustomerOperationsService {
     );
     const customer = identity.rows[0];
     if (!customer) throw new CustomerOperationsValidationError('Customer not found.');
-    const [orders, addresses, credits, tags, timeline] = await Promise.all([
+    const [orders, addresses, credits, tags, timeline, latestNote] = await Promise.all([
       this.pool.query<CustomerOrderRow>(
         `SELECT o.order_number, o.status, coalesce(sum(oi.quantity), 0)::int AS item_count,
                 coalesce((o.pricing_snapshot ->> 'totalCents')::int, 0) AS total_cents,
@@ -467,9 +511,10 @@ export class CustomerOperationsService {
          LEFT JOIN app.product_models model ON model.id = oi.product_model_id
          LEFT JOIN app.product_variants variant ON variant.id = oi.product_variant_id
          LEFT JOIN app.payments payment ON payment.checkout_attempt_id = o.checkout_attempt_id
-         WHERE lower(trim(o.customer_email)) = $1
+         WHERE (o.customer_profile_id = $1
+           OR (o.customer_profile_id IS NULL AND lower(trim(o.customer_email)) = $2))
          GROUP BY o.id, payment.status ORDER BY o.created_at DESC LIMIT 50`,
-        [customer.email],
+        [customer.id, customer.email],
       ),
       this.pool.query<CustomerAddressRow>(
         `SELECT id::text, recipient_name, line1, line2, city, state_code, postal_code, country_code,
@@ -490,7 +535,8 @@ export class CustomerOperationsService {
                 coalesce(shipping_address_snapshot ->> 'postalCode', ''),
                 coalesce(shipping_address_snapshot ->> 'countryCode', 'US'),
                 null, false, 'ORDER'::text
-         FROM app.orders WHERE lower(trim(customer_email)) = $3
+         FROM app.orders WHERE (customer_profile_id = $1
+           OR (customer_profile_id IS NULL AND lower(trim(customer_email)) = $3))
            AND NOT EXISTS (SELECT 1 FROM app.customer_addresses WHERE customer_profile_id = $1)
            AND NOT EXISTS (SELECT 1 FROM app.saved_addresses WHERE user_id = $2)
          ORDER BY is_default DESC, source ASC LIMIT 20`,
@@ -513,7 +559,21 @@ export class CustomerOperationsService {
          WHERE relation.customer_profile_id = $1 ORDER BY tag.value`,
         [customer.id],
       ),
-      customerTimeline(this.pool, customer),
+      customerTimeline(this.pool, customer, { page: 1, limit: 10 }),
+      this.pool.query<{ body: string }>(
+        `SELECT body FROM (
+           SELECT event.body, event.created_at
+           FROM app.customer_timeline_events event
+           WHERE event.customer_profile_id=$1 AND event.event_type='NOTE' AND event.body IS NOT NULL
+           UNION ALL
+           SELECT note.body, note.created_at
+           FROM app.customer_notes note
+           WHERE lower(trim(note.customer_email))=$2
+         ) notes
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [customer.id, customer.email],
+      ),
     ]);
     return {
       id: customer.id,
@@ -530,7 +590,7 @@ export class CustomerOperationsService {
       averageOrderValueCents: customer.order_count
         ? Math.round(customer.total_spent_cents / customer.order_count)
         : 0,
-      returnRate: customer.order_count
+      refundedOrderRate: customer.order_count
         ? Math.round((customer.returned_order_count / customer.order_count) * 100)
         : 0,
       creditBalance: customer.credit_balance,
@@ -570,8 +630,29 @@ export class CustomerOperationsService {
         createdAt: row.created_at,
       })),
       tags: tags.rows.map((row) => row.value),
-      timeline,
+      latestNote: latestNote.rows[0]?.body ?? null,
+      timelineTotal: timeline.total,
+      timeline: timeline.entries,
     };
+  }
+
+  async listCustomerTimeline(
+    session: CustomerOperationsActor,
+    customerId: string,
+    options: CustomerTimelineOptions = {},
+  ): Promise<OperationsCustomerTimelinePage> {
+    await this.requireReadStaff(session);
+    const id = requireCustomerId(customerId);
+    const page = boundedInteger(options.page, 1, 1, 10_000, 'page');
+    const limit = boundedInteger(options.limit, 10, 1, 100, 'limit');
+    const customer = await this.pool.query<{ email: string; user_id: string | null }>(
+      `SELECT normalized_email AS email, user_id
+       FROM app.customer_profiles WHERE id=$1`,
+      [id],
+    );
+    const identity = customer.rows[0];
+    if (!identity) throw new CustomerOperationsValidationError('Customer not found.');
+    return customerTimeline(this.pool, { id, ...identity }, { page, limit });
   }
 
   async listStoreCreditLedger(
@@ -700,6 +781,8 @@ export class CustomerOperationsService {
         email_marketing_status: MarketingStatus;
         sms_marketing_status: MarketingStatus;
         preferred_locale: CustomerLocale;
+        address_recipient_name: string | null;
+        address_phone: string | null;
         line1: string | null;
         line2: string | null;
         city: string | null;
@@ -709,11 +792,13 @@ export class CustomerOperationsService {
       }>(
         `SELECT profile.id,profile.user_id,profile.normalized_email,profile.first_name,
                 profile.last_name,profile.phone,profile.email_marketing_status,
-                profile.sms_marketing_status,profile.preferred_locale,address.line1,address.line2,address.city,
+                profile.sms_marketing_status,profile.preferred_locale,
+                address.recipient_name AS address_recipient_name,address.phone AS address_phone,
+                address.line1,address.line2,address.city,
                 address.state_code,address.postal_code,address.country_code
          FROM app.customer_profiles profile
          LEFT JOIN LATERAL (
-           SELECT line1,line2,city,state_code,postal_code,country_code
+           SELECT recipient_name,phone,line1,line2,city,state_code,postal_code,country_code
            FROM app.customer_addresses WHERE customer_profile_id=profile.id
            ORDER BY is_default DESC,updated_at DESC LIMIT 1
          ) address ON true
@@ -803,6 +888,149 @@ export class CustomerOperationsService {
     });
   }
 
+  async createCustomerAddress(
+    session: CustomerOperationsActor,
+    customerId: string,
+    input: CustomerAddressMutationInput,
+  ): Promise<string> {
+    const actor = await this.requireStaff(session);
+    const id = requireCustomerId(customerId);
+    const address = validateAddressInput(input);
+    return withTransaction(this.pool, async (client) => {
+      const customer = await client.query<{ id: string }>(
+        `SELECT id FROM app.customer_profiles WHERE id=$1 FOR UPDATE`,
+        [id],
+      );
+      if (!customer.rows[0]) throw new CustomerOperationsValidationError('Customer not found.');
+      const count = await client.query<{ address_count: number }>(
+        `SELECT count(*)::int AS address_count FROM app.customer_addresses
+         WHERE customer_profile_id=$1`,
+        [id],
+      );
+      const isDefault = input.isDefault === true || (count.rows[0]?.address_count ?? 0) === 0;
+      if (isDefault)
+        await client.query(
+          `UPDATE app.customer_addresses SET is_default=false,updated_at=now()
+           WHERE customer_profile_id=$1 AND is_default=true`,
+          [id],
+        );
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO app.customer_addresses
+           (customer_profile_id,recipient_name,line1,line2,city,state_code,postal_code,country_code,phone,is_default)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [
+          id,
+          address.recipientName,
+          address.line1,
+          address.line2,
+          address.city,
+          address.stateCode,
+          address.postalCode,
+          address.countryCode,
+          address.phone,
+          isDefault,
+        ],
+      );
+      const addressId = inserted.rows[0]?.id;
+      if (!addressId) throw new Error('Could not create customer address.');
+      await writeAddressTimeline(client, id, 'ADDRESS_ADDED', actor, {
+        addressId,
+        isDefault,
+        city: address.city,
+        countryCode: address.countryCode,
+      });
+      return addressId;
+    });
+  }
+
+  async updateCustomerAddress(
+    session: CustomerOperationsActor,
+    customerId: string,
+    addressId: string,
+    input: CustomerAddressMutationInput,
+  ): Promise<void> {
+    const actor = await this.requireStaff(session);
+    const id = requireCustomerId(customerId);
+    const scopedAddressId = requireAddressId(addressId);
+    const address = validateAddressInput(input);
+    await withTransaction(this.pool, async (client) => {
+      const existing = await client.query<{ id: string; is_default: boolean }>(
+        `SELECT id,is_default FROM app.customer_addresses
+         WHERE id=$1 AND customer_profile_id=$2 FOR UPDATE`,
+        [scopedAddressId, id],
+      );
+      const current = existing.rows[0];
+      if (!current) throw new CustomerOperationsValidationError('Customer address not found.');
+      const isDefault = current.is_default || input.isDefault === true;
+      if (isDefault)
+        await client.query(
+          `UPDATE app.customer_addresses SET is_default=false,updated_at=now()
+           WHERE customer_profile_id=$1 AND id<>$2 AND is_default=true`,
+          [id, scopedAddressId],
+        );
+      await client.query(
+        `UPDATE app.customer_addresses
+         SET recipient_name=$3,line1=$4,line2=$5,city=$6,state_code=$7,postal_code=$8,
+             country_code=$9,phone=$10,is_default=$11,updated_at=now()
+         WHERE id=$1 AND customer_profile_id=$2`,
+        [
+          scopedAddressId,
+          id,
+          address.recipientName,
+          address.line1,
+          address.line2,
+          address.city,
+          address.stateCode,
+          address.postalCode,
+          address.countryCode,
+          address.phone,
+          isDefault,
+        ],
+      );
+      await writeAddressTimeline(client, id, 'ADDRESS_UPDATED', actor, {
+        addressId: scopedAddressId,
+        isDefault,
+        city: address.city,
+        countryCode: address.countryCode,
+      });
+    });
+  }
+
+  async deleteCustomerAddress(
+    session: CustomerOperationsActor,
+    customerId: string,
+    addressId: string,
+  ): Promise<void> {
+    const actor = await this.requireStaff(session);
+    const id = requireCustomerId(customerId);
+    const scopedAddressId = requireAddressId(addressId);
+    await withTransaction(this.pool, async (client) => {
+      const removed = await client.query<{ id: string; is_default: boolean }>(
+        `DELETE FROM app.customer_addresses
+         WHERE id=$1 AND customer_profile_id=$2 RETURNING id,is_default`,
+        [scopedAddressId, id],
+      );
+      const deleted = removed.rows[0];
+      if (!deleted) throw new CustomerOperationsValidationError('Customer address not found.');
+      let promotedAddressId: string | null = null;
+      if (deleted.is_default) {
+        const promoted = await client.query<{ id: string }>(
+          `UPDATE app.customer_addresses SET is_default=true,updated_at=now()
+           WHERE id=(
+             SELECT id FROM app.customer_addresses WHERE customer_profile_id=$1
+             ORDER BY updated_at DESC,id DESC LIMIT 1
+           ) RETURNING id`,
+          [id],
+        );
+        promotedAddressId = promoted.rows[0]?.id ?? null;
+      }
+      await writeAddressTimeline(client, id, 'ADDRESS_REMOVED', actor, {
+        addressId: scopedAddressId,
+        promotedAddressId,
+      });
+    });
+  }
+
   async addNote(session: CustomerOperationsActor, customerId: string, body: string): Promise<void> {
     const actor = await this.requireStaff(session);
     const id = requireCustomerId(customerId);
@@ -868,8 +1096,8 @@ export class CustomerOperationsService {
           `DELETE FROM app.customer_profile_tags relation USING app.customer_tags tag
            WHERE relation.customer_tag_id=tag.id
              AND relation.customer_profile_id=ANY($1::uuid[])
-             AND tag.value=ANY($2::text[])`,
-          [ids, tags],
+             AND lower(tag.value)=ANY($2::text[])`,
+          [ids, tags.map((tag) => tag.toLocaleLowerCase('en-US'))],
         );
       }
       await this.writeTagsTimeline(client, ids, tags, operation, actor);
@@ -934,23 +1162,32 @@ export class CustomerOperationsService {
     profile: ValidatedProfile,
     replace = false,
   ) {
-    if (replace)
-      await client.query(`DELETE FROM app.customer_addresses WHERE customer_profile_id=$1`, [id]);
-    if (!profile.address) return;
+    if (!profile.address) {
+      if (replace)
+        await client.query(
+          `DELETE FROM app.customer_addresses WHERE customer_profile_id=$1 AND is_default=true`,
+          [id],
+        );
+      return;
+    }
     await client.query(
       `INSERT INTO app.customer_addresses
        (customer_profile_id,recipient_name,line1,line2,city,state_code,postal_code,country_code,phone,is_default)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+       ON CONFLICT (customer_profile_id) WHERE is_default DO UPDATE
+       SET recipient_name=EXCLUDED.recipient_name,line1=EXCLUDED.line1,line2=EXCLUDED.line2,
+           city=EXCLUDED.city,state_code=EXCLUDED.state_code,postal_code=EXCLUDED.postal_code,
+           country_code=EXCLUDED.country_code,phone=EXCLUDED.phone,updated_at=now()`,
       [
         id,
-        profile.name || profile.email,
+        profile.address.recipientName || profile.name || profile.email,
         profile.address.line1,
         profile.address.line2,
         profile.address.city,
         profile.address.stateCode,
         profile.address.postalCode,
         profile.address.countryCode,
-        profile.phone,
+        profile.address.phone || profile.phone,
       ],
     );
   }
@@ -972,11 +1209,24 @@ export class CustomerOperationsService {
 
   private async ensureTag(client: SqlClient, tag: string): Promise<string> {
     const stored = await client.query<{ id: string }>(
-      `INSERT INTO app.customer_tags (value) VALUES ($1)
-       ON CONFLICT (value) DO UPDATE SET value=EXCLUDED.value RETURNING id`,
+      `WITH existing AS (
+         SELECT id FROM app.customer_tags WHERE lower(value)=lower($1) LIMIT 1
+       ), inserted AS (
+         INSERT INTO app.customer_tags (value)
+         SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM existing)
+         ON CONFLICT DO NOTHING RETURNING id
+       )
+       SELECT id FROM existing UNION ALL SELECT id FROM inserted LIMIT 1`,
       [tag],
     );
-    return stored.rows[0]!.id;
+    const row = stored.rows[0];
+    if (row) return row.id;
+    const raced = await client.query<{ id: string }>(
+      `SELECT id FROM app.customer_tags WHERE lower(value)=lower($1) LIMIT 1`,
+      [tag],
+    );
+    if (!raced.rows[0]) throw new Error('Could not store customer tag.');
+    return raced.rows[0].id;
   }
 
   private async writeTagsTimeline(
@@ -1030,6 +1280,8 @@ type ValidatedProfile = {
   smsMarketingStatus: MarketingStatus;
   preferredLocale: CustomerLocale | null;
   address: {
+    recipientName: string | null;
+    phone: string | null;
     line1: string;
     line2: string | null;
     city: string;
@@ -1041,207 +1293,142 @@ type ValidatedProfile = {
   note: string | null;
 };
 
+type ValidatedAddress = NonNullable<ValidatedProfile['address']>;
+
+async function writeAddressTimeline(
+  client: SqlClient,
+  customerId: string,
+  eventType: 'ADDRESS_ADDED' | 'ADDRESS_UPDATED' | 'ADDRESS_REMOVED',
+  actor: { userId: string | null; staffMemberId: string | null },
+  metadata: Record<string, unknown>,
+) {
+  await client.query(
+    `INSERT INTO app.customer_timeline_events
+       (customer_profile_id,event_type,metadata,actor_user_id,actor_staff_member_id)
+     VALUES ($1,$2,$3::jsonb,$4,$5)`,
+    [customerId, eventType, JSON.stringify(metadata), actor.userId, actor.staffMemberId],
+  );
+}
+
 async function customerTimeline(
   pool: SqlPool,
   customer: Pick<CustomerIdentityRow, 'id' | 'email' | 'user_id'>,
-): Promise<OperationsCustomerDetail['timeline']> {
-  const [
-    profile,
-    orders,
-    transitions,
-    refunds,
-    reprints,
-    credits,
-    storeCredits,
-    generations,
-    deliveries,
-  ] = await Promise.all([
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'customer:' || event.id::text AS id, event.event_type, event.body,
-              event.metadata, coalesce(staff.normalized_email, actor.email) AS actor_label,
+  options: Required<CustomerTimelineOptions>,
+): Promise<OperationsCustomerTimelinePage> {
+  const offset = (options.page - 1) * options.limit;
+  const result = await pool.query<CustomerTimelinePageRow>(
+    `WITH timeline AS (
+       SELECT 'customer:' || event.id::text AS id, event.event_type::text, event.body,
+              event.metadata, coalesce(staff.normalized_email, actor.email)::text AS actor_label,
               event.created_at
        FROM app.customer_timeline_events event
        LEFT JOIN app.staff_members staff ON staff.id=event.actor_staff_member_id
        LEFT JOIN app.users actor ON actor.id=event.actor_user_id
        WHERE event.customer_profile_id=$1
        UNION ALL
-       SELECT 'legacy-note:' || note.id::text, 'LEGACY_NOTE', note.body, '{}'::jsonb,
-              actor.email, note.created_at
+       SELECT 'legacy-note:' || note.id::text, 'LEGACY_NOTE'::text, note.body, '{}'::jsonb,
+              actor.email::text, note.created_at
        FROM app.customer_notes note
        LEFT JOIN app.users actor ON actor.id=note.created_by_user_id
        WHERE lower(trim(note.customer_email))=$2
-       ORDER BY created_at DESC
-       LIMIT 150`,
-      [customer.id, customer.email],
-    ),
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'order:' || orders.id::text AS id, 'ORDER_PLACED' AS event_type, NULL AS body,
-              jsonb_build_object(
-                'orderNumber', orders.order_number,
-                'totalCents', coalesce((orders.pricing_snapshot->>'totalCents')::int,0),
-                'status', orders.status
-              ) AS metadata,
-              'Customer'::text AS actor_label, orders.created_at
+       UNION ALL
+       SELECT 'order:' || orders.id::text, 'ORDER_PLACED'::text, NULL::text,
+              jsonb_build_object('orderNumber',orders.order_number,'totalCents',
+                coalesce((orders.pricing_snapshot->>'totalCents')::int,0),'status',orders.status),
+              'Customer'::text, orders.created_at
        FROM app.orders orders
-       WHERE lower(trim(orders.customer_email))=$1
-       ORDER BY orders.created_at DESC
-       LIMIT 150`,
-      [customer.email],
-    ),
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'order-state:' || history.id::text AS id, 'ORDER_STATUS_CHANGED' AS event_type,
-              history.reason AS body,
-              jsonb_build_object(
-                'orderNumber', orders.order_number,
-                'fromState', history.from_state,
-                'toState', history.to_state,
-                'reasonCode', history.reason_code
-              ) || history.metadata AS metadata,
-              coalesce(staff.normalized_email, actor.email, initcap(lower(history.actor_type))) AS actor_label,
+       WHERE (orders.customer_profile_id=$1 OR
+         (orders.customer_profile_id IS NULL AND lower(trim(orders.customer_email))=$2))
+       UNION ALL
+       SELECT 'order-state:' || history.id::text, 'ORDER_STATUS_CHANGED'::text, history.reason,
+              jsonb_build_object('orderNumber',orders.order_number,'fromState',history.from_state,
+                'toState',history.to_state,'reasonCode',history.reason_code) || history.metadata,
+              coalesce(staff.normalized_email,actor.email,initcap(lower(history.actor_type)))::text,
               history.created_at
        FROM app.order_state_history history
        JOIN app.orders orders ON orders.id=history.order_id
        LEFT JOIN app.staff_members staff ON staff.id=history.actor_staff_member_id
        LEFT JOIN app.users actor ON actor.id=history.actor_user_id
-       WHERE lower(trim(orders.customer_email))=$1
-       ORDER BY history.created_at DESC
-       LIMIT 150`,
-      [customer.email],
-    ),
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'refund:' || refund.id::text AS id, 'REFUND' AS event_type, refund.notes AS body,
-              jsonb_build_object(
-                'orderNumber', orders.order_number,
-                'amountCents', refund.amount_cents,
-                'reasonCode', refund.reason_code,
-                'status', refund.status
-              ) AS metadata,
-              actor.email AS actor_label, refund.created_at
+       WHERE (orders.customer_profile_id=$1 OR
+         (orders.customer_profile_id IS NULL AND lower(trim(orders.customer_email))=$2))
+       UNION ALL
+       SELECT 'refund:' || refund.id::text, 'REFUND'::text, refund.notes,
+              jsonb_build_object('orderNumber',orders.order_number,'amountCents',refund.amount_cents,
+                'reasonCode',refund.reason_code,'status',refund.status), actor.email::text,
+              refund.created_at
        FROM app.order_refunds refund
        JOIN app.orders orders ON orders.id=refund.order_id
        LEFT JOIN app.users actor ON actor.id=refund.initiated_by_user_id
-       WHERE lower(trim(orders.customer_email))=$1
-       ORDER BY refund.created_at DESC
-       LIMIT 150`,
-      [customer.email],
-    ),
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'reprint:' || reprint.id::text AS id, 'REPRINT' AS event_type, reprint.notes AS body,
-              jsonb_build_object(
-                'orderNumber', orders.order_number,
-                'reasonCode', reprint.reason_code,
-                'status', reprint.status,
-                'estimatedCostCents', reprint.estimated_cost_cents
-              ) AS metadata,
-              actor.email AS actor_label, reprint.created_at
+       WHERE (orders.customer_profile_id=$1 OR
+         (orders.customer_profile_id IS NULL AND lower(trim(orders.customer_email))=$2))
+       UNION ALL
+       SELECT 'reprint:' || reprint.id::text, 'REPRINT'::text, reprint.notes,
+              jsonb_build_object('orderNumber',orders.order_number,'reasonCode',reprint.reason_code,
+                'status',reprint.status,'estimatedCostCents',reprint.estimated_cost_cents),
+              actor.email::text, reprint.created_at
        FROM app.order_reprints reprint
        JOIN app.orders orders ON orders.id=reprint.original_order_id
        LEFT JOIN app.users actor ON actor.id=reprint.created_by_user_id
-       WHERE lower(trim(orders.customer_email))=$1
-       ORDER BY reprint.created_at DESC
-       LIMIT 150`,
-      [customer.email],
-    ),
-    customer.user_id
-      ? pool.query<CustomerTimelineRow>(
-          `SELECT 'credit:' || ledger.id::text AS id, 'CREDIT_LEDGER' AS event_type,
-                  NULL AS body,
-                  jsonb_build_object(
-                    'entryType', ledger.entry_type,
-                    'amount', ledger.amount,
-                    'balanceAfter', ledger.balance_after,
-                    'generationId', ledger.generation_id
-                  ) || ledger.metadata AS metadata,
-                  NULL::text AS actor_label, ledger.created_at
-           FROM app.credit_ledger ledger
-           JOIN app.credit_accounts account ON account.id=ledger.credit_account_id
-           WHERE account.owner_type='USER' AND account.owner_user_id=$1
-           ORDER BY ledger.created_at DESC
-           LIMIT 150`,
-          [customer.user_id],
-        )
-      : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
-    pool.query<CustomerTimelineRow>(
-      `SELECT
-           'store-credit:' || ledger.id::text AS id,
-           'STORE_CREDIT_ADJUSTMENT' AS event_type,
-           ledger.note AS body,
-           jsonb_build_object(
-             'amountCents', ledger.amount_cents,
-             'balanceAfterCents', ledger.balance_after_cents,
-             'direction', ledger.entry_type,
-             'reason', ledger.reason,
-             'currency', account.currency
-           ) AS metadata,
-           staff.normalized_email AS actor_label,
-           ledger.created_at
-         FROM app.store_credit_ledger ledger
-         JOIN app.store_credit_accounts account ON account.id = ledger.store_credit_account_id
-         JOIN app.staff_members staff ON staff.id = ledger.actor_staff_member_id
-         WHERE account.customer_profile_id = $1
-         ORDER BY ledger.created_at DESC
-         LIMIT 150`,
-      [customer.id],
-    ),
-    customer.user_id
-      ? pool.query<CustomerTimelineRow>(
-          `SELECT 'generation:' || generation.id::text AS id,
-                    'DESIGN_GENERATION' AS event_type, generation.raw_prompt AS body,
-                    jsonb_build_object(
-                      'status', generation.status,
-                      'creditStatus', generation.credit_status,
-                      'projectId', generation.project_id,
-                      'failureCategory', generation.failure_category
-                    ) AS metadata,
-                    'Customer'::text AS actor_label, generation.created_at
-             FROM app.generations generation
-             WHERE generation.requested_by_user_id=$1
-             ORDER BY generation.created_at DESC
-             LIMIT 150`,
-          [customer.user_id],
-        )
-      : Promise.resolve({ rows: [] as CustomerTimelineRow[] }),
-    pool.query<CustomerTimelineRow>(
-      `SELECT 'delivery:' || delivery.id::text AS id, 'EMAIL_DELIVERY' AS event_type,
-              NULL AS body,
-              jsonb_build_object(
-                'messageType', delivery.message_type,
-                'classification', delivery.classification,
-                'status', delivery.status,
-                'orderNumber', orders.order_number
-              ) AS metadata,
-              'System'::text AS actor_label, delivery.created_at
+       WHERE (orders.customer_profile_id=$1 OR
+         (orders.customer_profile_id IS NULL AND lower(trim(orders.customer_email))=$2))
+       UNION ALL
+       SELECT 'credit:' || ledger.id::text, 'CREDIT_LEDGER'::text, NULL::text,
+              jsonb_build_object('entryType',ledger.entry_type,'amount',ledger.amount,
+                'balanceAfter',ledger.balance_after,'generationId',ledger.generation_id) || ledger.metadata,
+              NULL::text, ledger.created_at
+       FROM app.credit_ledger ledger
+       JOIN app.credit_accounts account ON account.id=ledger.credit_account_id
+       WHERE $3::uuid IS NOT NULL AND account.owner_type='USER' AND account.owner_user_id=$3::uuid
+       UNION ALL
+       SELECT 'store-credit:' || ledger.id::text, 'STORE_CREDIT_ADJUSTMENT'::text, ledger.note,
+              jsonb_build_object('amountCents',ledger.amount_cents,'balanceAfterCents',
+                ledger.balance_after_cents,'direction',ledger.entry_type,'reason',ledger.reason,
+                'currency',account.currency), staff.normalized_email::text, ledger.created_at
+       FROM app.store_credit_ledger ledger
+       JOIN app.store_credit_accounts account ON account.id=ledger.store_credit_account_id
+       JOIN app.staff_members staff ON staff.id=ledger.actor_staff_member_id
+       WHERE account.customer_profile_id=$1
+       UNION ALL
+       SELECT 'generation:' || generation.id::text, 'DESIGN_GENERATION'::text,
+              generation.raw_prompt,
+              jsonb_build_object('status',generation.status,'creditStatus',generation.credit_status,
+                'projectId',generation.project_id,'failureCategory',generation.failure_category),
+              'Customer'::text, generation.created_at
+       FROM app.generations generation
+       WHERE $3::uuid IS NOT NULL AND generation.requested_by_user_id=$3::uuid
+       UNION ALL
+       SELECT 'delivery:' || delivery.id::text, 'EMAIL_DELIVERY'::text, NULL::text,
+              jsonb_build_object('messageType',delivery.message_type,'classification',
+                delivery.classification,'status',delivery.status,'orderNumber',orders.order_number),
+              'System'::text, delivery.created_at
        FROM app.lifecycle_deliveries delivery
        LEFT JOIN app.orders orders ON orders.id=delivery.order_id
-       WHERE lower(trim(delivery.recipient_email))=$1
-       ORDER BY delivery.created_at DESC
-       LIMIT 150`,
-      [customer.email],
-    ),
-  ]);
-
-  return [
-    profile,
-    orders,
-    transitions,
-    refunds,
-    reprints,
-    credits,
-    storeCredits,
-    generations,
-    deliveries,
-  ]
-    .flatMap((result) => result.rows)
-    .sort((left, right) => right.created_at.getTime() - left.created_at.getTime())
-    .slice(0, 150)
-    .map((row) => ({
-      id: row.id,
-      eventType: row.event_type,
-      body: row.body,
-      metadata: row.metadata ?? {},
-      actorLabel: row.actor_label,
-      createdAt: row.created_at,
-    }));
+       WHERE orders.customer_profile_id=$1
+          OR (orders.customer_profile_id IS NULL AND lower(trim(delivery.recipient_email))=$2)
+          OR (orders.id IS NULL AND lower(trim(delivery.recipient_email))=$2)
+     ), timeline_page AS (
+       SELECT * FROM timeline ORDER BY created_at DESC,id DESC LIMIT $4 OFFSET $5
+     )
+     SELECT (SELECT count(*)::int FROM timeline) AS total_count,
+            coalesce(jsonb_agg(jsonb_build_object(
+              'id',page.id,'eventType',page.event_type,'body',page.body,'metadata',page.metadata,
+              'actorLabel',page.actor_label,'createdAt',page.created_at
+            ) ORDER BY page.created_at DESC,page.id DESC)
+              FILTER (WHERE page.id IS NOT NULL),'[]'::jsonb) AS entries
+     FROM timeline_page page`,
+    [customer.id, customer.email, customer.user_id, options.limit, offset],
+  );
+  const row = result.rows[0];
+  return {
+    entries: (row?.entries ?? []).map((entry) => ({
+      ...entry,
+      metadata: entry.metadata ?? {},
+      createdAt: new Date(entry.createdAt),
+    })),
+    total: row?.total_count ?? 0,
+    page: options.page,
+    limit: options.limit,
+  };
 }
 
 function profileChangedFields(
@@ -1251,6 +1438,8 @@ function profileChangedFields(
     last_name: string | null;
     phone: string | null;
     preferred_locale: CustomerLocale;
+    address_recipient_name: string | null;
+    address_phone: string | null;
     line1: string | null;
     line2: string | null;
     city: string | null;
@@ -1268,6 +1457,8 @@ function profileChangedFields(
   if (profile.preferredLocale && current.preferred_locale !== profile.preferredLocale)
     changed.push('preferred language');
   const previousAddress = [
+    current.address_recipient_name,
+    current.address_phone,
     current.line1,
     current.line2,
     current.city,
@@ -1276,6 +1467,8 @@ function profileChangedFields(
     current.country_code,
   ].map((value) => value ?? '');
   const nextAddress = [
+    profile.address?.recipientName,
+    profile.address?.phone,
     profile.address?.line1,
     profile.address?.line2,
     profile.address?.city,
@@ -1305,22 +1498,11 @@ function validateProfileInput(input: CustomerProfileInput): ValidatedProfile {
   const raw = input.address;
   const hasAddress = !!raw && Object.values(raw).some((value) => value?.trim());
   let address: ValidatedProfile['address'] = null;
-  if (hasAddress) {
-    const line1 = requiredText(raw?.line1, 240, 'address');
-    const city = requiredText(raw?.city, 120, 'city');
-    const postalCode = requiredText(raw?.postalCode, 32, 'postal code');
-    const countryCode = requiredText(raw?.countryCode, 2, 'country or region').toUpperCase();
-    if (!/^[A-Z]{2}$/.test(countryCode))
-      throw new CustomerOperationsValidationError('Choose a valid country or region.');
-    address = {
-      line1,
-      city,
-      postalCode,
-      countryCode,
-      line2: normalizeOptional(raw?.line2, 240, 'apartment'),
-      stateCode: normalizeOptional(raw?.stateCode, 120, 'state or province'),
-    };
-  }
+  if (hasAddress)
+    address = validateAddressInput({
+      ...raw,
+      recipientName: raw.recipientName || [firstName, lastName].filter(Boolean).join(' ') || email,
+    });
   return {
     email,
     firstName,
@@ -1333,6 +1515,29 @@ function validateProfileInput(input: CustomerProfileInput): ValidatedProfile {
     address,
     tags: normalizeTags(input.tags ?? []),
     note: input.note ? normalizeNote(input.note) : null,
+  };
+}
+
+function validateAddressInput(input: CustomerAddressMutationInput): ValidatedAddress {
+  const line1 = requiredText(input.line1, 240, 'address');
+  const city = requiredText(input.city, 120, 'city');
+  const postalCode = requiredText(input.postalCode, 32, 'postal code');
+  const countryCode = requiredText(input.countryCode, 2, 'country or region').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(countryCode))
+    throw new CustomerOperationsValidationError('Choose a valid country or region.');
+  const recipientName = requiredText(input.recipientName, 160, 'recipient name');
+  const phone = normalizeOptional(input.phone, 40, 'address phone');
+  if (phone && !/^[+()\d][+()\d\s.-]{5,39}$/.test(phone))
+    throw new CustomerOperationsValidationError('Enter a valid address phone number.');
+  return {
+    recipientName,
+    phone,
+    line1,
+    line2: normalizeOptional(input.line2, 240, 'apartment'),
+    city,
+    stateCode: normalizeOptional(input.stateCode, 120, 'state or province'),
+    postalCode,
+    countryCode,
   };
 }
 
@@ -1354,20 +1559,76 @@ function orderAddressSql() {
   return `SELECT shipping_address_snapshot->>'recipientName' AS recipient_name,
                  concat_ws(' ',shipping_address_snapshot->>'recipientName',shipping_address_snapshot->>'line1',shipping_address_snapshot->>'line2',shipping_address_snapshot->>'city',shipping_address_snapshot->>'stateCode',shipping_address_snapshot->>'postalCode',shipping_address_snapshot->>'countryCode') AS search_text,
                  concat_ws(', ',shipping_address_snapshot->>'city',shipping_address_snapshot->>'countryCode') AS location
-          FROM app.orders WHERE lower(trim(customer_email))=cp.normalized_email
-          ORDER BY created_at DESC LIMIT 1`;
+          FROM app.orders orders
+          WHERE (orders.customer_profile_id=cp.id
+            OR (orders.customer_profile_id IS NULL
+              AND lower(trim(orders.customer_email))=cp.normalized_email))
+          ORDER BY orders.created_at DESC LIMIT 1`;
 }
 function orderSummarySql(alias = 'order_summary') {
   void alias;
   return `SELECT count(*)::int AS order_count,
-                 coalesce(sum((pricing_snapshot->>'totalCents')::int),0)::int AS total_spent_cents,
-                 max(created_at) AS last_order_at,
-                 count(*) FILTER (WHERE EXISTS (
-                   SELECT 1 FROM app.order_refunds refund
-                   WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
-                 ))::int AS returned_order_count
-          FROM app.orders orders WHERE lower(trim(orders.customer_email))=cp.normalized_email
+                 coalesce(sum(greatest(
+                   (orders.pricing_snapshot->>'totalCents')::int
+                     - coalesce(succeeded_refund.refunded_cents, 0),
+                   0
+                 )),0)::int AS total_spent_cents,
+                 max(orders.created_at) AS last_order_at,
+                 count(*) FILTER (WHERE coalesce(succeeded_refund.refunded_cents, 0) > 0)::int
+                   AS returned_order_count
+          FROM app.orders orders
+          LEFT JOIN LATERAL (
+            SELECT coalesce(sum(refund.amount_cents), 0)::int AS refunded_cents
+            FROM app.order_refunds refund
+            WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+          ) succeeded_refund ON true
+          WHERE (orders.customer_profile_id=cp.id
+            OR (orders.customer_profile_id IS NULL
+              AND lower(trim(orders.customer_email))=cp.normalized_email))
             AND orders.status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')`;
+}
+
+function customerOrderSummariesCteSql() {
+  return `refunded_orders AS (
+            SELECT refund.order_id, coalesce(sum(refund.amount_cents), 0)::int AS refunded_cents
+            FROM app.order_refunds refund
+            WHERE refund.status='SUCCEEDED'
+            GROUP BY refund.order_id
+          ),
+          order_summaries AS (
+            SELECT orders.customer_profile_id,
+                   count(*)::int AS order_count,
+                   coalesce(sum(greatest(
+                     (orders.pricing_snapshot->>'totalCents')::int
+                       - coalesce(refunded_orders.refunded_cents, 0),
+                     0
+                   )), 0)::int AS total_spent_cents,
+                   max(orders.created_at) AS last_order_at,
+                   count(*) FILTER (WHERE coalesce(refunded_orders.refunded_cents, 0) > 0)::int
+                     AS returned_order_count
+            FROM app.orders orders
+            LEFT JOIN refunded_orders ON refunded_orders.order_id=orders.id
+            WHERE orders.customer_profile_id IS NOT NULL
+              AND orders.status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')
+            GROUP BY orders.customer_profile_id
+          )`;
+}
+
+function addressSearchDocumentSql(alias: string) {
+  return `coalesce(${alias}.recipient_name, '') || ' ' || coalesce(${alias}.line1, '') || ' ' ||
+          coalesce(${alias}.line2, '') || ' ' || coalesce(${alias}.city, '') || ' ' ||
+          coalesce(${alias}.state_code, '') || ' ' || coalesce(${alias}.postal_code, '') || ' ' ||
+          coalesce(${alias}.country_code, '') || ' ' || coalesce(${alias}.phone, '')`;
+}
+
+function orderAddressSearchDocumentSql(alias: string) {
+  return `coalesce(${alias}.shipping_address_snapshot->>'recipientName', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'line1', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'line2', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'city', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'stateCode', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'postalCode', '') || ' ' ||
+          coalesce(${alias}.shipping_address_snapshot->>'countryCode', '')`;
 }
 function tagsSql() {
   return `SELECT array_agg(tag.value ORDER BY tag.value) AS values
@@ -1477,13 +1738,16 @@ interface CustomerCreditRow {
   balance_after: number;
   created_at: Date;
 }
-interface CustomerTimelineRow {
-  id: string;
-  event_type: string;
-  body: string | null;
-  metadata: Record<string, unknown>;
-  actor_label: string | null;
-  created_at: Date;
+interface CustomerTimelinePageRow {
+  total_count: number;
+  entries: Array<{
+    id: string;
+    eventType: string;
+    body: string | null;
+    metadata: Record<string, unknown>;
+    actorLabel: string | null;
+    createdAt: Date | string;
+  }>;
 }
 interface CustomerExportRow {
   id: string;
@@ -1553,7 +1817,13 @@ function normalizeTag(value: string) {
   }
 }
 function normalizeTags(values: string[]) {
-  const tags = [...new Set(values.map(normalizeTag))];
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const tag = normalizeTag(value);
+    const key = tag.toLocaleLowerCase('en-US');
+    if (!unique.has(key)) unique.set(key, tag);
+  }
+  const tags = [...unique.values()];
   if (tags.length > 20) throw new CustomerOperationsValidationError('Use up to 20 customer tags.');
   return tags;
 }
@@ -1611,6 +1881,11 @@ function requireCustomerId(value: string) {
     throw new CustomerOperationsValidationError('Customer not found.');
   return value;
 }
+function requireAddressId(value: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
+    throw new CustomerOperationsValidationError('Customer address not found.');
+  return value;
+}
 function customerSortSql(sort: CustomerSort) {
   const tieBreak = ',cp.last_seen_at DESC,cp.id ASC';
   if (sort === 'NAME_ASC') return `lower(display.customer_name) ASC NULLS LAST${tieBreak}`;
@@ -1623,12 +1898,12 @@ function customerSortSql(sort: CustomerSort) {
     return `lower(coalesce(customer_address.location, saved_address.location, order_address.location)) ASC NULLS LAST${tieBreak}`;
   if (sort === 'LOCATION_DESC')
     return `lower(coalesce(customer_address.location, saved_address.location, order_address.location)) DESC NULLS LAST${tieBreak}`;
-  if (sort === 'ORDER_COUNT_ASC') return `order_summary.order_count ASC NULLS LAST${tieBreak}`;
-  if (sort === 'ORDER_COUNT_DESC') return `order_summary.order_count DESC NULLS LAST${tieBreak}`;
+  if (sort === 'ORDER_COUNT_ASC') return `coalesce(order_summary.order_count, 0) ASC${tieBreak}`;
+  if (sort === 'ORDER_COUNT_DESC') return `coalesce(order_summary.order_count, 0) DESC${tieBreak}`;
   if (sort === 'TOTAL_SPENT_ASC')
-    return `order_summary.total_spent_cents ASC NULLS LAST${tieBreak}`;
+    return `coalesce(order_summary.total_spent_cents, 0) ASC${tieBreak}`;
   if (sort === 'TOTAL_SPENT_DESC')
-    return `order_summary.total_spent_cents DESC NULLS LAST${tieBreak}`;
+    return `coalesce(order_summary.total_spent_cents, 0) DESC${tieBreak}`;
   if (sort === 'LAST_ORDER_ASC') return `order_summary.last_order_at ASC NULLS LAST${tieBreak}`;
   if (sort === 'LAST_ORDER_DESC') return `order_summary.last_order_at DESC NULLS LAST${tieBreak}`;
   if (sort === 'TAGS_ASC')

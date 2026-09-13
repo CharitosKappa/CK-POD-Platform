@@ -10,18 +10,19 @@ export type CustomerSidebarAction =
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
 export function CustomerDetailSidebar({
+  actionButtonRef,
   customer,
+  canManage = true,
   onAction,
 }: Readonly<{
+  actionButtonRef?: React.RefObject<HTMLButtonElement | null>;
   customer: CustomerDetail;
+  canManage?: boolean;
   onAction: (action: CustomerSidebarAction) => void;
 }>) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRoot = useRef<HTMLDivElement>(null);
   const address = customer.addresses.find((entry) => entry.isDefault) ?? customer.addresses[0];
-  const latestNote = customer.timeline.find(
-    (entry) => (entry.eventType === 'NOTE' || entry.eventType === 'LEGACY_NOTE') && entry.body,
-  )?.body;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -49,31 +50,34 @@ export function CustomerDetailSidebar({
       <section className="customer-card customer-sidebar-card customer-contact-card">
         <header className="customer-sidebar-card-header">
           <h2>Contact information</h2>
-          <div className="customer-sidebar-menu-root" ref={menuRoot}>
-            <button
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              aria-label="Customer information actions"
-              className="customer-sidebar-icon-button customer-sidebar-more-button"
-              onClick={() => setMenuOpen((current) => !current)}
-              type="button"
-            >
-              <span aria-hidden="true">•••</span>
-            </button>
-            {menuOpen ? (
-              <div className="customer-sidebar-action-menu" role="menu">
-                <button onClick={() => choose('customer')} role="menuitem" type="button">
-                  Edit contact information
-                </button>
-                <button onClick={() => choose('address')} role="menuitem" type="button">
-                  Manage addresses
-                </button>
-                <button onClick={() => choose('marketing')} role="menuitem" type="button">
-                  Edit marketing settings
-                </button>
-              </div>
-            ) : null}
-          </div>
+          {canManage ? (
+            <div className="customer-sidebar-menu-root" ref={menuRoot}>
+              <button
+                ref={actionButtonRef}
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                aria-label="Customer information actions"
+                className="customer-sidebar-icon-button customer-sidebar-more-button"
+                onClick={() => setMenuOpen((current) => !current)}
+                type="button"
+              >
+                <span aria-hidden="true">•••</span>
+              </button>
+              {menuOpen ? (
+                <div className="customer-sidebar-action-menu" role="menu">
+                  <button onClick={() => choose('customer')} role="menuitem" type="button">
+                    Edit contact information
+                  </button>
+                  <button onClick={() => choose('address')} role="menuitem" type="button">
+                    Manage addresses
+                  </button>
+                  <button onClick={() => choose('marketing')} role="menuitem" type="button">
+                    Edit marketing settings
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </header>
 
         <div className="customer-contact-card-body">
@@ -108,11 +112,6 @@ export function CustomerDetailSidebar({
           <SidebarSection title="Marketing subscriptions">
             <p className="customer-sidebar-copy">{marketingSubscriptions(customer)}</p>
           </SidebarSection>
-
-          <SidebarSection title="Tax details">
-            <p className="customer-sidebar-copy">VAT number: Not provided</p>
-            <p className="customer-sidebar-copy">Collect tax</p>
-          </SidebarSection>
         </div>
       </section>
 
@@ -128,11 +127,13 @@ export function CustomerDetailSidebar({
       <section className="customer-card customer-sidebar-card">
         <header className="customer-sidebar-card-header">
           <h2>Store credit</h2>
-          <IconButton
-            label="Adjust store credit"
-            onClick={() => choose('storeCredit')}
-            type="edit"
-          />
+          {canManage ? (
+            <IconButton
+              label="Adjust store credit"
+              onClick={() => choose('storeCredit')}
+              type="edit"
+            />
+          ) : null}
         </header>
         <div className="customer-store-credit-card-row">
           <p className="customer-sidebar-card-value">
@@ -156,7 +157,9 @@ export function CustomerDetailSidebar({
       <section className="customer-card customer-sidebar-card customer-sidebar-tags-card">
         <header className="customer-sidebar-card-header">
           <h2>Tags</h2>
-          <IconButton label="Edit customer tags" onClick={() => choose('tags')} type="add" />
+          {canManage ? (
+            <IconButton label="Edit customer tags" onClick={() => choose('tags')} type="add" />
+          ) : null}
         </header>
         <div className="customer-sidebar-tags-field" aria-label="Customer tags">
           {customer.tags.length ? (
@@ -170,9 +173,11 @@ export function CustomerDetailSidebar({
       <section className="customer-card customer-sidebar-card">
         <header className="customer-sidebar-card-header">
           <h2>Notes</h2>
-          <IconButton label="Add customer note" onClick={() => choose('note')} type="edit" />
+          {canManage ? (
+            <IconButton label="Add customer note" onClick={() => choose('note')} type="edit" />
+          ) : null}
         </header>
-        <p className="customer-sidebar-card-value">{latestNote ?? 'None'}</p>
+        <p className="customer-sidebar-card-value">{customer.latestNote ?? 'None'}</p>
       </section>
     </aside>
   );

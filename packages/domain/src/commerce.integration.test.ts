@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { integrityViolationCounts } from '@let-it-be/db/integrity';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -26,7 +26,7 @@ import type {
   ShippingQuoteRequest,
 } from './fulfillment-contracts.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
@@ -384,12 +384,17 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     const addressSnapshots = await pool.query<{
       shipping_address_snapshot: Record<string, unknown>;
       billing_address_snapshot: Record<string, unknown>;
+      customer_profile_id: string | null;
     }>(
-      `SELECT shipping_address_snapshot, billing_address_snapshot FROM app.orders WHERE order_number = $1`,
+      `SELECT shipping_address_snapshot, billing_address_snapshot, customer_profile_id
+       FROM app.orders WHERE order_number = $1`,
       [paid.orderNumber],
     );
     expect(addressSnapshots.rows[0]?.billing_address_snapshot).toEqual(
       addressSnapshots.rows[0]?.shipping_address_snapshot,
+    );
+    expect(addressSnapshots.rows[0]?.customer_profile_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     expect(fulfillment.createCalls).toBe(0);
     expect(fulfillment.submitCalls).toBe(0);
@@ -858,13 +863,18 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     // group-action test, bind the group to the qualification already approved
     // by that workflow; the next slice will make this selection per group.
     await pool.query(
-      `UPDATE app.order_fulfillment_groups
-       SET qualification_id = (
+      `UPDATE app.order_fulfillment_groups fulfillment_group
+       SET qualification_id = final_routing.selected_qualification_id,
+           provider_id = qualification.provider_id,
+           updated_at = now()
+       FROM LATERAL (
          SELECT selected_qualification_id FROM app.order_final_routing
          WHERE order_id = (SELECT id FROM app.orders WHERE order_number = $1)
          ORDER BY created_at DESC LIMIT 1
-       )
-       WHERE id = $2`,
+       ) final_routing
+       JOIN app.provider_qualifications qualification
+         ON qualification.id = final_routing.selected_qualification_id
+       WHERE fulfillment_group.id = $2`,
       [orderNumber, fulfillmentGroupId],
     );
     expect(fulfillment.createCalls).toBe(0);

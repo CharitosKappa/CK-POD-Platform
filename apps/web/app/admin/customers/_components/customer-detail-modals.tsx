@@ -3,17 +3,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 import {
-  addressDraftFrom,
-  addressUpdatePayload,
   contactDraftFrom,
   contactUpdatePayload,
-  type AddressDraft,
   type ContactDraft,
 } from './customer-detail-editing';
 import { filterTagOptions } from './customer-detail-sidebar';
 import type { CustomerDetail } from './customer-types';
 
-export type CustomerDetailModalName = 'customer' | 'address' | 'marketing' | 'tags' | 'note';
+export type CustomerDetailModalName = 'customer' | 'marketing' | 'tags' | 'note';
 
 export function CustomerDetailModal({
   customer,
@@ -29,7 +26,6 @@ export function CustomerDetailModal({
   const dialog = useRef<HTMLDivElement>(null);
   const firstField = useRef<HTMLInputElement>(null);
   const [contact, setContact] = useState(() => contactDraftFrom(customer));
-  const [address, setAddress] = useState(() => addressDraftFrom(customer));
   const [selectedTags, setSelectedTags] = useState(() => customer.tags);
   const [tagCatalog, setTagCatalog] = useState(() => customer.tags);
   const [tagQuery, setTagQuery] = useState('');
@@ -94,9 +90,7 @@ export function CustomerDetailModal({
           ? { tags: selectedTags }
           : modal === 'note'
             ? { body: note.trim() }
-            : modal === 'address'
-              ? addressUpdatePayload(customer, address)
-              : contactUpdatePayload(customer, contact);
+            : contactUpdatePayload(customer, contact);
       const response = await fetch(endpoint, {
         method: modal === 'tags' || modal === 'note' ? 'POST' : 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -174,8 +168,6 @@ export function CustomerDetailModal({
           <div className="customer-modal-body">
             {modal === 'customer' ? (
               <CustomerFields contact={contact} firstField={firstField} setContact={setContact} />
-            ) : modal === 'address' ? (
-              <AddressFields address={address} firstField={firstField} setAddress={setAddress} />
             ) : modal === 'marketing' ? (
               <MarketingFields contact={contact} setContact={setContact} />
             ) : modal === 'tags' ? (
@@ -446,77 +438,6 @@ function SearchIcon() {
   );
 }
 
-function AddressFields({
-  address,
-  firstField,
-  setAddress,
-}: Readonly<{
-  address: AddressDraft;
-  firstField: React.RefObject<HTMLInputElement | null>;
-  setAddress: React.Dispatch<React.SetStateAction<AddressDraft>>;
-}>) {
-  function update<Key extends keyof AddressDraft>(key: Key, value: AddressDraft[Key]) {
-    setAddress((current) => ({ ...current, [key]: value }));
-  }
-  return (
-    <div className="customer-modal-grid">
-      <ModalField full label="Country / region">
-        <select
-          autoComplete="country"
-          value={address.countryCode}
-          onChange={(event) => update('countryCode', event.target.value)}
-        >
-          <option value="">Select country or region</option>
-          <option value="US">United States</option>
-          <option value="GB">United Kingdom</option>
-          <option value="CA">Canada</option>
-          <option value="GR">Greece</option>
-          <option value="DE">Germany</option>
-          <option value="FR">France</option>
-          <option value="IT">Italy</option>
-          <option value="ES">Spain</option>
-        </select>
-      </ModalField>
-      <ModalField full label="Address">
-        <input
-          autoComplete="address-line1"
-          ref={firstField}
-          value={address.line1}
-          onChange={(event) => update('line1', event.target.value)}
-        />
-      </ModalField>
-      <ModalField full label="Apartment, suite, etc.">
-        <input
-          autoComplete="address-line2"
-          value={address.line2}
-          onChange={(event) => update('line2', event.target.value)}
-        />
-      </ModalField>
-      <ModalField label="City">
-        <input
-          autoComplete="address-level2"
-          value={address.city}
-          onChange={(event) => update('city', event.target.value)}
-        />
-      </ModalField>
-      <ModalField label="State / province">
-        <input
-          autoComplete="address-level1"
-          value={address.stateCode}
-          onChange={(event) => update('stateCode', event.target.value)}
-        />
-      </ModalField>
-      <ModalField label="Postal code">
-        <input
-          autoComplete="postal-code"
-          value={address.postalCode}
-          onChange={(event) => update('postalCode', event.target.value)}
-        />
-      </ModalField>
-    </div>
-  );
-}
-
 function ModalField({
   children,
   full,
@@ -532,7 +453,6 @@ function ModalField({
 
 function modalTitle(modal: CustomerDetailModalName) {
   if (modal === 'customer') return 'Edit contact information';
-  if (modal === 'address') return 'Manage default address';
   if (modal === 'marketing') return 'Edit marketing settings';
   if (modal === 'tags') return 'Edit customer tags';
   return 'Add customer note';
@@ -540,7 +460,6 @@ function modalTitle(modal: CustomerDetailModalName) {
 
 function successMessage(modal: CustomerDetailModalName) {
   if (modal === 'customer') return 'Customer updated.';
-  if (modal === 'address') return 'Default address updated.';
   if (modal === 'marketing') return 'Marketing preferences updated.';
   if (modal === 'tags') return 'Customer tags updated.';
   return 'Internal note added.';

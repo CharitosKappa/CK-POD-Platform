@@ -17,15 +17,35 @@ function label(value: string) {
   return value.toLowerCase().replaceAll('_', ' ');
 }
 
+function ordersHref(
+  values: Readonly<{
+    view?: string | undefined;
+    q?: string | undefined;
+    page?: number | undefined;
+    customerId?: string | undefined;
+  }>,
+) {
+  const search = new URLSearchParams();
+  if (values.view && values.view !== 'ALL') search.set('view', values.view);
+  if (values.q) search.set('q', values.q);
+  if (values.page && values.page > 1) search.set('page', String(values.page));
+  if (values.customerId) search.set('customerId', values.customerId);
+  const query = search.toString();
+  return query ? `/admin/orders?${query}` : '/admin/orders';
+}
+
 export default async function AdminOrdersPage({
   searchParams,
-}: Readonly<{ searchParams: Promise<{ view?: string; q?: string; page?: string }> }>) {
+}: Readonly<{
+  searchParams: Promise<{ view?: string; q?: string; page?: string; customerId?: string }>;
+}>) {
   const search = await searchParams;
   const view = views.some(([id]) => id === search.view) ? search.view! : 'ALL';
   const session = await requireAdminSession();
   const result = await adminCommerceRuntime().listOrders(session, {
     view,
     ...(search.q ? { query: search.q } : {}),
+    ...(search.customerId ? { customerId: search.customerId } : {}),
     page: Number(search.page ?? 1),
     limit: 30,
   });
@@ -45,7 +65,7 @@ export default async function AdminOrdersPage({
           {views.map(([id, text]) => (
             <Link
               key={id}
-              href={id === 'ALL' ? '/admin/orders' : `/admin/orders?view=${id}`}
+              href={ordersHref({ view: id, customerId: search.customerId })}
               aria-current={view === id ? 'page' : undefined}
             >
               {text}
@@ -54,6 +74,9 @@ export default async function AdminOrdersPage({
         </nav>
         <form className="commerce-admin-search" action="/admin/orders">
           {view !== 'ALL' ? <input type="hidden" name="view" value={view} /> : null}
+          {search.customerId ? (
+            <input type="hidden" name="customerId" value={search.customerId} />
+          ) : null}
           <label>
             <span aria-hidden="true">⌕</span>
             <input
@@ -116,7 +139,16 @@ export default async function AdminOrdersPage({
         {result.total > result.limit ? (
           <nav className="commerce-admin-pagination" aria-label="Order pages">
             {result.page > 1 ? (
-              <Link href={`/admin/orders?view=${view}&page=${result.page - 1}`}>Previous</Link>
+              <Link
+                href={ordersHref({
+                  view,
+                  q: search.q,
+                  customerId: search.customerId,
+                  page: result.page - 1,
+                })}
+              >
+                Previous
+              </Link>
             ) : (
               <span />
             )}
@@ -124,7 +156,16 @@ export default async function AdminOrdersPage({
               Page {result.page} of {Math.ceil(result.total / result.limit)}
             </span>
             {result.page < Math.ceil(result.total / result.limit) ? (
-              <Link href={`/admin/orders?view=${view}&page=${result.page + 1}`}>Next</Link>
+              <Link
+                href={ordersHref({
+                  view,
+                  q: search.q,
+                  customerId: search.customerId,
+                  page: result.page + 1,
+                })}
+              >
+                Next
+              </Link>
             ) : (
               <span />
             )}

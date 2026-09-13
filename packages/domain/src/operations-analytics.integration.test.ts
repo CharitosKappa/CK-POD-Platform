@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,7 +9,7 @@ import {
   type LifecycleMessagingService,
 } from './operations-analytics.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('M9 analytics and lifecycle integration', () => {

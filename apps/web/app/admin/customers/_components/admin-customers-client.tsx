@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   customerColumns as allCustomerColumns,
@@ -15,7 +15,10 @@ import type {
   CustomerListResponse,
   CustomerSort,
   CustomerView,
+  MarketingStatus,
 } from './customer-types';
+import { parseCustomerListUrlState, writeCustomerListUrlState } from './customer-list-url-state';
+import { canManageCustomers, useAdminRole } from '../../admin-role';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const date = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -68,6 +71,7 @@ const sortOptions: Array<[CustomerSort, string]> = [
 ];
 
 export function AdminCustomersClient() {
+  const canManage = canManageCustomers(useAdminRole());
   const [result, setResult] = useState<CustomerListResponse>();
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -75,7 +79,7 @@ export function AdminCustomersClient() {
   const [sort, setSort] = useState<CustomerSort>('LAST_SEEN_DESC');
   const [page, setPage] = useState(1);
   const [hasOrders, setHasOrders] = useState(false);
-  const [subscription, setSubscription] = useState('');
+  const [subscription, setSubscription] = useState<'' | MarketingStatus>('');
   const [location, setLocation] = useState('');
   const [columns, setColumns] = useState<CustomerColumn[]>([...allCustomerColumns]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -88,26 +92,66 @@ export function AdminCustomersClient() {
   const [bulkOpen, setBulkOpen] = useState<'ADD' | 'REMOVE'>();
   const [bulkTags, setBulkTags] = useState('');
   const [busy, setBusy] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const exportInFlight = useRef(false);
+  const initialFilterResetSkipped = useRef(false);
 
   useEffect(() => {
     const saved = readAdminPreferences(window.localStorage);
     setColumns(saved.customerColumns);
-    setView(saved.customerView);
+    const initial = parseCustomerListUrlState(new URLSearchParams(window.location.search), {
+      view: saved.customerView,
+      sort: saved.customerSort,
+    });
+    setQuery(initial.query);
+    setDebouncedQuery(initial.query);
+    setView(initial.view);
+    setSort(initial.sort);
+    setPage(initial.page);
+    setHasOrders(initial.hasOrders);
+    setSubscription(initial.subscription);
+    setLocation(initial.location);
+    setHydrated(true);
   }, []);
   useEffect(() => {
+    if (!hydrated) return;
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => window.clearTimeout(timer);
-  }, [query]);
+  }, [hydrated, query]);
   useEffect(() => {
+    if (!hydrated) return;
+    if (!initialFilterResetSkipped.current) {
+      initialFilterResetSkipped.current = true;
+      return;
+    }
     setPage(1);
     setSelected(new Set());
     setAllMatchingSelected(false);
     setExcluded(new Set());
-  }, [debouncedQuery, view, sort, hasOrders, subscription, location]);
+  }, [hydrated, debouncedQuery, view, sort, hasOrders, subscription, location]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const params = writeCustomerListUrlState({
+      query: debouncedQuery,
+      view,
+      sort,
+      page,
+      hasOrders,
+      subscription,
+      location: location.trim(),
+    });
+    const queryString = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${queryString ? `?${queryString}` : ''}${window.location.hash}`,
+    );
+  }, [hydrated, debouncedQuery, view, sort, page, hasOrders, subscription, location]);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
+      if (!hydrated) return;
       const params = new URLSearchParams({ page: String(page), limit: '30', sort, view });
       if (debouncedQuery) params.set('q', debouncedQuery);
       if (hasOrders) params.set('minOrders', '1');
@@ -121,6 +165,11 @@ export function AdminCustomersClient() {
         });
         const payload = (await response.json()) as CustomerListResponse & { error?: string };
         if (!response.ok) throw new Error(payload.error ?? 'Could not load customers.');
+        const lastPage = Math.max(1, Math.ceil(payload.total / payload.limit));
+        if (page > lastPage) {
+          setPage(lastPage);
+          return;
+        }
         setResult(payload);
       } catch (reason) {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
@@ -129,16 +178,18 @@ export function AdminCustomersClient() {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [page, sort, view, debouncedQuery, hasOrders, subscription, location],
+    [hydrated, page, sort, view, debouncedQuery, hasOrders, subscription, location],
   );
 
   useEffect(() => {
+    if (!hydrated) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [hydrated, load]);
 
   const loadExports = useCallback(async () => {
+    if (!canManage) return;
     try {
       const response = await fetch('/api/admin/customer-exports');
       const payload = (await response.json()) as {
@@ -150,11 +201,15 @@ export function AdminCustomersClient() {
     } catch {
       // Customer loading remains usable if export-status refresh is temporarily unavailable.
     }
-  }, []);
+  }, [canManage]);
 
   useEffect(() => {
+    if (!canManage) {
+      setExportJobs([]);
+      return;
+    }
     void loadExports();
-  }, [loadExports]);
+  }, [canManage, loadExports]);
 
   useEffect(() => {
     if (!exportJobs.some((job) => ['QUEUED', 'PROCESSING'].includes(job.status))) return;
@@ -166,6 +221,11 @@ export function AdminCustomersClient() {
     setView(next);
     const preferences = readAdminPreferences(window.localStorage);
     writeAdminPreferences(window.localStorage, { ...preferences, customerView: next });
+  }
+  function changeSort(next: CustomerSort) {
+    setSort(next);
+    const preferences = readAdminPreferences(window.localStorage);
+    writeAdminPreferences(window.localStorage, { ...preferences, customerSort: next });
   }
   function toggleColumn(column: CustomerColumn) {
     const next = columns.includes(column)
@@ -343,21 +403,23 @@ export function AdminCustomersClient() {
           <h1>Customers</h1>
           <span>Know who buys, returns and stays connected.</span>
         </div>
-        <div className="customer-heading-actions">
-          <button
-            className="customer-button secondary"
-            type="button"
-            disabled={!result?.customers.length || busy}
-            onClick={() => {
-              void exportCustomers(result?.customers.map((customer) => customer.id) ?? []);
-            }}
-          >
-            Export page
-          </button>
-          <Link className="customer-button primary" href="/admin/customers/new">
-            Add customer
-          </Link>
-        </div>
+        {canManage ? (
+          <div className="customer-heading-actions">
+            <button
+              className="customer-button secondary"
+              type="button"
+              disabled={!result?.customers.length || busy}
+              onClick={() => {
+                void exportCustomers(result?.customers.map((customer) => customer.id) ?? []);
+              }}
+            >
+              Export page
+            </button>
+            <Link className="customer-button primary" href="/admin/customers/new">
+              Add customer
+            </Link>
+          </div>
+        ) : null}
       </header>
 
       <section className="customer-metric-strip" aria-label="Customer performance">
@@ -422,7 +484,7 @@ export function AdminCustomersClient() {
                 Email subscription
                 <select
                   value={subscription}
-                  onChange={(event) => setSubscription(event.target.value)}
+                  onChange={(event) => setSubscription(event.target.value as '' | MarketingStatus)}
                 >
                   <option value="">Any</option>
                   <option value="SUBSCRIBED">Subscribed</option>
@@ -452,7 +514,10 @@ export function AdminCustomersClient() {
           </details>
           <label className="customer-select-control">
             <span className="sr-only">Sort customers</span>
-            <select value={sort} onChange={(event) => setSort(event.target.value as CustomerSort)}>
+            <select
+              value={sort}
+              onChange={(event) => changeSort(event.target.value as CustomerSort)}
+            >
               {sortOptions.map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
@@ -475,18 +540,20 @@ export function AdminCustomersClient() {
               ))}
             </div>
           </details>
-          <details className="customer-popover customer-exports-popover">
-            <summary>
-              Exports
-              {exportJobs.some((job) => job.status === 'READY') ? (
-                <span aria-hidden="true" />
-              ) : null}
-            </summary>
-            <ExportJobsPanel jobs={exportJobs} />
-          </details>
+          {canManage ? (
+            <details className="customer-popover customer-exports-popover">
+              <summary>
+                Exports
+                {exportJobs.some((job) => job.status === 'READY') ? (
+                  <span aria-hidden="true" />
+                ) : null}
+              </summary>
+              <ExportJobsPanel jobs={exportJobs} />
+            </details>
+          ) : null}
         </div>
 
-        {selectedCount ? (
+        {canManage && selectedCount ? (
           <div className="customer-bulk-bar" role="region" aria-label="Bulk customer actions">
             <strong>{selectedCount.toLocaleString('en-US')} selected</strong>
             {allOnPageSelected && result && !allMatchingSelected && selectedCount < result.total ? (
@@ -537,6 +604,7 @@ export function AdminCustomersClient() {
                 <th className="select">
                   <input
                     aria-label="Select all customers on this page"
+                    disabled={!canManage}
                     type="checkbox"
                     checked={allOnPageSelected}
                     onChange={togglePage}
@@ -548,7 +616,7 @@ export function AdminCustomersClient() {
                   ascending="NAME_ASC"
                   descending="NAME_DESC"
                   sort={sort}
-                  onSort={setSort}
+                  onSort={changeSort}
                 />
                 <SortableHeader
                   className="customer-email-column"
@@ -556,7 +624,7 @@ export function AdminCustomersClient() {
                   ascending="EMAIL_ASC"
                   descending="EMAIL_DESC"
                   sort={sort}
-                  onSort={setSort}
+                  onSort={changeSort}
                 />
                 {columns.includes('subscription') ? (
                   <SortableHeader
@@ -565,7 +633,7 @@ export function AdminCustomersClient() {
                     ascending="EMAIL_MARKETING_ASC"
                     descending="EMAIL_MARKETING_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('location') ? (
@@ -575,7 +643,7 @@ export function AdminCustomersClient() {
                     ascending="LOCATION_ASC"
                     descending="LOCATION_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('orders') ? (
@@ -585,7 +653,7 @@ export function AdminCustomersClient() {
                     ascending="ORDER_COUNT_ASC"
                     descending="ORDER_COUNT_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('spent') ? (
@@ -595,7 +663,7 @@ export function AdminCustomersClient() {
                     ascending="TOTAL_SPENT_ASC"
                     descending="TOTAL_SPENT_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('lastOrder') ? (
@@ -605,7 +673,7 @@ export function AdminCustomersClient() {
                     ascending="LAST_ORDER_ASC"
                     descending="LAST_ORDER_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('tags') ? (
@@ -615,7 +683,7 @@ export function AdminCustomersClient() {
                     ascending="TAGS_ASC"
                     descending="TAGS_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('dateAdded') ? (
@@ -625,7 +693,7 @@ export function AdminCustomersClient() {
                     ascending="CUSTOMER_ADDED_ASC"
                     descending="CUSTOMER_ADDED_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
                 {columns.includes('dateUpdated') ? (
@@ -635,7 +703,7 @@ export function AdminCustomersClient() {
                     ascending="CUSTOMER_UPDATED_ASC"
                     descending="CUSTOMER_UPDATED_DESC"
                     sort={sort}
-                    onSort={setSort}
+                    onSort={changeSort}
                   />
                 ) : null}
               </tr>
@@ -649,6 +717,7 @@ export function AdminCustomersClient() {
                   checked={
                     allMatchingSelected ? !excluded.has(customer.id) : selected.has(customer.id)
                   }
+                  disabled={!canManage}
                   onToggle={() => toggleCustomer(customer.id)}
                 />
               ))}
@@ -667,7 +736,7 @@ export function AdminCustomersClient() {
                   ? 'Adjust the search or clear filters.'
                   : 'Add a customer manually or wait for the first checkout.'}
               </span>
-              {!result.metrics.totalCustomers ? (
+              {canManage && !result.metrics.totalCustomers ? (
                 <Link className="customer-button primary" href="/admin/customers/new">
                   Add customer
                 </Link>
@@ -705,7 +774,7 @@ export function AdminCustomersClient() {
         </footer>
       </section>
 
-      {bulkOpen ? (
+      {canManage && bulkOpen ? (
         <div
           className="customer-dialog-backdrop"
           role="presentation"
@@ -876,11 +945,13 @@ function CustomerRow({
   customer,
   columns,
   checked,
+  disabled,
   onToggle,
 }: Readonly<{
   customer: CustomerListItem;
   columns: CustomerColumn[];
   checked: boolean;
+  disabled: boolean;
   onToggle: () => void;
 }>) {
   const customerName = customer.name === customer.email ? null : customer.name;
@@ -892,6 +963,7 @@ function CustomerRow({
           aria-label={`Select ${customerName ?? customer.email}`}
           type="checkbox"
           checked={checked}
+          disabled={disabled}
           onChange={onToggle}
         />
       </td>

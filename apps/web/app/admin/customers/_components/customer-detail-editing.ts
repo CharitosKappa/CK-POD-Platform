@@ -11,6 +11,8 @@ export type ContactDraft = {
 };
 
 export type AddressDraft = {
+  recipientName: string;
+  phone: string;
   countryCode: string;
   line1: string;
   line2: string;
@@ -31,9 +33,11 @@ export function contactDraftFrom(customer: CustomerDetail): ContactDraft {
   };
 }
 
-export function addressDraftFrom(customer: CustomerDetail): AddressDraft {
+function addressDraftFrom(customer: CustomerDetail): AddressDraft {
   const address = customer.addresses[0];
   return {
+    recipientName: address?.recipientName ?? customer.name,
+    phone: address?.phone ?? '',
     countryCode: address?.countryCode ?? '',
     line1: address?.line1 ?? '',
     line2: address?.line2 ?? '',
@@ -47,18 +51,5 @@ export function contactUpdatePayload(customer: CustomerDetail, draft: ContactDra
   return {
     ...draft,
     address: addressDraftFrom(customer),
-  };
-}
-
-export function addressUpdatePayload(customer: CustomerDetail, draft: AddressDraft) {
-  return {
-    firstName: customer.firstName,
-    lastName: customer.lastName,
-    email: customer.email,
-    phone: customer.phone ?? '',
-    emailMarketingStatus: customer.emailMarketingStatus,
-    smsMarketingStatus: customer.smsMarketingStatus,
-    preferredLocale: customer.preferredLocale,
-    address: draft,
   };
 }

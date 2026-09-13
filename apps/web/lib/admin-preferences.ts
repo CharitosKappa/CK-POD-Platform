@@ -5,6 +5,7 @@ export type AdminPreferences = Readonly<{
   sidebarCollapsed: boolean;
   customerColumns: CustomerColumn[];
   customerView: CustomerViewPreference;
+  customerSort: CustomerSortPreference;
 }>;
 
 export const customerColumns = [
@@ -26,12 +27,35 @@ export type CustomerViewPreference =
   | 'RETURNING'
   | 'HIGH_VALUE'
   | 'EMAIL_SUBSCRIBERS';
+export type CustomerSortPreference =
+  | 'LAST_SEEN_DESC'
+  | 'NAME_ASC'
+  | 'NAME_DESC'
+  | 'EMAIL_ASC'
+  | 'EMAIL_DESC'
+  | 'EMAIL_MARKETING_ASC'
+  | 'EMAIL_MARKETING_DESC'
+  | 'LOCATION_ASC'
+  | 'LOCATION_DESC'
+  | 'ORDER_COUNT_ASC'
+  | 'ORDER_COUNT_DESC'
+  | 'TOTAL_SPENT_ASC'
+  | 'TOTAL_SPENT_DESC'
+  | 'LAST_ORDER_ASC'
+  | 'LAST_ORDER_DESC'
+  | 'TAGS_ASC'
+  | 'TAGS_DESC'
+  | 'CUSTOMER_ADDED_ASC'
+  | 'CUSTOMER_ADDED_DESC'
+  | 'CUSTOMER_UPDATED_ASC'
+  | 'CUSTOMER_UPDATED_DESC';
 
 export const defaultAdminPreferences: AdminPreferences = Object.freeze({
   customerColumnsVersion: 2,
   sidebarCollapsed: false,
   customerColumns: [...customerColumns],
   customerView: 'ALL',
+  customerSort: 'LAST_SEEN_DESC',
 });
 
 type ReadableStorage = Pick<Storage, 'getItem'>;
@@ -65,6 +89,7 @@ export function parseAdminPreferences(value: string | null): AdminPreferences {
       sidebarCollapsed: parsed.sidebarCollapsed,
       customerColumns: [...new Set(migratedColumns)],
       customerView: parsedView,
+      customerSort: isCustomerSort(parsed.customerSort) ? parsed.customerSort : 'LAST_SEEN_DESC',
     };
   } catch {
     return defaultAdminPreferences;
@@ -106,6 +131,35 @@ function isCustomerView(value: unknown): value is CustomerViewPreference {
       'RETURNING',
       'HIGH_VALUE',
       'EMAIL_SUBSCRIBERS',
+    ].includes(value)
+  );
+}
+
+function isCustomerSort(value: unknown): value is CustomerSortPreference {
+  return (
+    typeof value === 'string' &&
+    [
+      'LAST_SEEN_DESC',
+      'NAME_ASC',
+      'NAME_DESC',
+      'EMAIL_ASC',
+      'EMAIL_DESC',
+      'EMAIL_MARKETING_ASC',
+      'EMAIL_MARKETING_DESC',
+      'LOCATION_ASC',
+      'LOCATION_DESC',
+      'ORDER_COUNT_ASC',
+      'ORDER_COUNT_DESC',
+      'TOTAL_SPENT_ASC',
+      'TOTAL_SPENT_DESC',
+      'LAST_ORDER_ASC',
+      'LAST_ORDER_DESC',
+      'TAGS_ASC',
+      'TAGS_DESC',
+      'CUSTOMER_ADDED_ASC',
+      'CUSTOMER_ADDED_DESC',
+      'CUSTOMER_UPDATED_ASC',
+      'CUSTOMER_UPDATED_DESC',
     ].includes(value)
   );
 }

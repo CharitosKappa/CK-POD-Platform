@@ -9,6 +9,7 @@ import {
   writeAdminPreferences,
 } from '../../lib/admin-preferences';
 import { AdminNavigation } from './admin-navigation';
+import { AdminRoleProvider } from './admin-role';
 import { AdminSignOutButton } from './admin-sign-out-button';
 
 export function AdminShell({
@@ -95,7 +96,7 @@ export function AdminShell({
           <Link href="/admin">LET IT BE</Link>
           <span>Admin</span>
         </header>
-        {children}
+        <AdminRoleProvider role={role}>{children}</AdminRoleProvider>
       </section>
     </div>
   );

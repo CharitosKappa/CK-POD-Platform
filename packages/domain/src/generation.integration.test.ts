@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { applyEditorCommand, createEmptyEditorDocument } from '@let-it-be/editor-schema';
 import { createLogger } from '@let-it-be/observability';
 import { InMemoryJobQueue } from '@let-it-be/queue';
@@ -38,7 +38,7 @@ import { ProjectService } from './projects.js';
 import { DefaultProviderOutputValidation } from './provider-output-validation.js';
 import { DeterministicPolicyClassifier, PolicyService } from './policy.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 let integrationPool: SqlPool;
 

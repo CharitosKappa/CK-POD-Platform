@@ -20,7 +20,7 @@ export function StoreCreditLedgerModal({
   onClose,
 }: Readonly<{
   customer: CustomerDetail;
-  onAdjust: () => void;
+  onAdjust?: () => void;
   onClose: () => void;
 }>) {
   const dialog = useRef<HTMLDivElement>(null);
@@ -132,9 +132,11 @@ export function StoreCreditLedgerModal({
               <span>Transactions</span>
               <strong>{total}</strong>
             </div>
-            <button className="customer-button primary" onClick={onAdjust} type="button">
-              Adjust balance
-            </button>
+            {onAdjust ? (
+              <button className="customer-button primary" onClick={onAdjust} type="button">
+                Adjust balance
+              </button>
+            ) : null}
           </section>
 
           {loading && !ledger ? (

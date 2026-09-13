@@ -19,7 +19,7 @@ const customer: CustomerDetail = {
   orderCount: 2,
   totalSpentCents: 7998,
   averageOrderValueCents: 3999,
-  returnRate: 0,
+  refundedOrderRate: 0,
   creditBalance: 4,
   storeCreditBalanceCents: 2550,
   storeCreditCurrency: 'USD',
@@ -49,6 +49,8 @@ const customer: CustomerDetail = {
   orders: [],
   credits: [],
   tags: ['Big Spender', 'RFM-CHAMPIONS', 'newsletter'],
+  latestNote: 'Prefers delivery after 17:00.',
+  timelineTotal: 1,
   timeline: [
     {
       id: 'note-1',
@@ -68,7 +70,7 @@ function renderSidebar(value: CustomerDetail) {
 }
 
 describe('customer detail sidebar', () => {
-  it('keeps Shopify-like contact, address, marketing, tax, credit, tag and note sections visible', () => {
+  it('keeps only mechanism-backed contact, address, marketing, credit, tag and note sections visible', () => {
     const markup = renderSidebar(customer);
 
     expect(markup).toContain('Contact information');
@@ -78,8 +80,8 @@ describe('customer detail sidebar', () => {
     expect(markup).toContain('47 Dimitriou Street');
     expect(markup).toContain('Marketing subscriptions');
     expect(markup).toContain('Email, SMS');
-    expect(markup).toContain('Tax details');
-    expect(markup).toContain('VAT number: Not provided');
+    expect(markup).not.toContain('Tax details');
+    expect(markup).not.toContain('VAT number: Not provided');
     expect(markup).toContain('Store credit');
     expect(markup).toContain('4 design credits');
     expect(markup).not.toContain('>4 credits<');
@@ -89,12 +91,7 @@ describe('customer detail sidebar', () => {
     for (let index = 1; index < sections.length; index++) {
       expect(markup.indexOf(sections[index - 1]!)).toBeLessThan(markup.indexOf(sections[index]!));
     }
-    for (const text of [
-      'Will receive notifications in English',
-      'Email, SMS',
-      'VAT number: Not provided',
-      'Collect tax',
-    ]) {
+    for (const text of ['Will receive notifications in English', 'Email, SMS']) {
       expect(markup).toMatch(new RegExp(`<p class="[^"]*customer-sidebar-copy[^"]*">${text}</p>`));
     }
     expect(markup).toContain('Big Spender');
@@ -112,6 +109,8 @@ describe('customer detail sidebar', () => {
       emailMarketingStatus: 'NOT_SUBSCRIBED',
       smsMarketingStatus: 'NOT_SUBSCRIBED',
       tags: [],
+      latestNote: null,
+      timelineTotal: 0,
       timeline: [],
       storeCreditBalanceCents: 0,
       storeCreditTransactionCount: 0,
@@ -135,6 +134,23 @@ describe('customer detail sidebar', () => {
 
     expect(markup).toContain('$0.00 USD');
     expect(markup).toContain('aria-label="View store credit activity"');
+  });
+
+  it('keeps read-only customer data visible without mutation controls', () => {
+    const markup = renderToStaticMarkup(
+      createElement(CustomerDetailSidebar, {
+        customer,
+        canManage: false,
+        onAction: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('maria@example.test');
+    expect(markup).toContain('View store credit activity');
+    expect(markup).not.toContain('Customer information actions');
+    expect(markup).not.toContain('Adjust store credit');
+    expect(markup).not.toContain('Edit customer tags');
+    expect(markup).not.toContain('Add customer note');
   });
 });
 

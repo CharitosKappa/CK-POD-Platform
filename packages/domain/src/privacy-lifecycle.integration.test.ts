@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 
 import { IdentityService } from './identity.js';
@@ -10,7 +10,7 @@ import { LifecycleOrchestrator } from './operations-analytics.js';
 import { PrivacyLifecycleService } from './privacy-lifecycle.js';
 import { ProjectService } from './projects.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('privacy technical lifecycle integration', () => {

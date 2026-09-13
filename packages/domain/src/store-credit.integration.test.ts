@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { createDatabaseClient } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { CustomerOperationsService } from './customer-operations';
@@ -12,10 +12,11 @@ import {
   type StoreCreditStaffActor,
 } from './store-credit';
 
-const suite = process.env.DATABASE_URL ? describe : describe.skip;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
+const suite = integrationDatabaseUrl ? describe : describe.skip;
 
 suite('Store Credit ledger integration', () => {
-  const database = createDatabaseClient(process.env.DATABASE_URL!);
+  const database = createDatabaseClient(integrationDatabaseUrl!);
   const service = new StoreCreditService(database.pool);
   const customerOperations = new CustomerOperationsService(database.pool);
   const customerIds: string[] = [];

@@ -47,6 +47,8 @@ export const CUSTOMER_HIGH_VALUE_CENTS = 15_000;
 export const CUSTOMER_NEW_DAYS = 30;
 
 export type CustomerAddressInput = Readonly<{
+  recipientName?: string;
+  phone?: string;
   line1?: string;
   line2?: string;
   city?: string;
@@ -54,6 +56,11 @@ export type CustomerAddressInput = Readonly<{
   postalCode?: string;
   countryCode?: string;
 }>;
+
+export type CustomerAddressMutationInput = CustomerAddressInput &
+  Readonly<{
+    isDefault?: boolean;
+  }>;
 
 export type CustomerProfileInput = Readonly<{
   email: string;

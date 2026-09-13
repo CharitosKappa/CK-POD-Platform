@@ -88,7 +88,7 @@ export type CustomerDetail = {
   orderCount: number;
   totalSpentCents: number;
   averageOrderValueCents: number;
-  returnRate: number;
+  refundedOrderRate: number;
   creditBalance: number;
   storeCreditBalanceCents: number;
   storeCreditCurrency: 'USD';
@@ -137,6 +137,8 @@ export type CustomerDetail = {
     createdAt: string;
   }>;
   tags: string[];
+  latestNote: string | null;
+  timelineTotal: number;
   timeline: Array<{
     id: string;
     eventType: string;
@@ -145,6 +147,13 @@ export type CustomerDetail = {
     actorLabel: string | null;
     createdAt: string;
   }>;
+};
+
+export type CustomerTimelinePage = {
+  entries: CustomerDetail['timeline'];
+  total: number;
+  page: number;
+  limit: number;
 };
 
 export type StoreCreditLedgerEntry = {

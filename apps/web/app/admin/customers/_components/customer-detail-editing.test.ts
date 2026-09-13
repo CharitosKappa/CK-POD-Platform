@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  addressDraftFrom,
-  addressUpdatePayload,
-  contactDraftFrom,
-  contactUpdatePayload,
-} from './customer-detail-editing';
+import { contactDraftFrom, contactUpdatePayload } from './customer-detail-editing';
 import type { CustomerDetail } from './customer-types';
 
 const customer = {
@@ -19,6 +14,8 @@ const customer = {
   preferredLocaleSource: 'BROWSER',
   addresses: [
     {
+      recipientName: 'Taylor Example',
+      phone: '+1 415 555 1000',
       countryCode: 'US',
       line1: '100 Main Street',
       line2: null,
@@ -36,19 +33,13 @@ describe('customer detail modal payloads', () => {
     expect(contactUpdatePayload(customer, draft)).toMatchObject({
       phone: '+1 415 555 2000',
       preferredLocale: 'en',
-      address: { line1: '100 Main Street', city: 'San Francisco', countryCode: 'US' },
-    });
-  });
-
-  it('preserves profile and consent fields when the address is edited', () => {
-    const address = { ...addressDraftFrom(customer), city: 'Oakland' };
-
-    expect(addressUpdatePayload(customer, address)).toMatchObject({
-      firstName: 'Taylor',
-      email: 'taylor@example.test',
-      emailMarketingStatus: 'SUBSCRIBED',
-      preferredLocale: 'en',
-      address: { city: 'Oakland' },
+      address: {
+        recipientName: 'Taylor Example',
+        phone: '+1 415 555 1000',
+        line1: '100 Main Street',
+        city: 'San Francisco',
+        countryCode: 'US',
+      },
     });
   });
 });

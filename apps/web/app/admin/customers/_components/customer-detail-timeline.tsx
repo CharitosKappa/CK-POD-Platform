@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 
 import type { CustomerDetail } from './customer-types';
 
@@ -15,16 +15,31 @@ const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD
 type TimelineEntry = CustomerDetail['timeline'][number];
 const timelinePageSize = 10;
 
-export function CustomerTimeline({ entries }: Readonly<{ entries: CustomerDetail['timeline'] }>) {
-  const [requestedPage, setRequestedPage] = useState(1);
-  const latestEntryId = entries[0]?.id;
-  useEffect(() => setRequestedPage(1), [entries.length, latestEntryId]);
-
-  if (!entries.length) return <p className="customer-empty-inline">No customer activity yet.</p>;
-  const visiblePage = timelinePage(entries, requestedPage);
+export function CustomerTimeline({
+  entries,
+  error,
+  loading = false,
+  onPageChange,
+  page = 1,
+  total = entries.length,
+}: Readonly<{
+  entries: CustomerDetail['timeline'];
+  error?: string;
+  loading?: boolean;
+  onPageChange?: (page: number) => void;
+  page?: number;
+  total?: number;
+}>) {
+  if (!entries.length && !loading)
+    return <p className="customer-empty-inline">{error ?? 'No customer activity yet.'}</p>;
+  const visiblePage = timelinePage(entries, page, total);
   return (
     <>
-      <div className="customer-timeline customer-detailed-timeline" id="customer-timeline-events">
+      <div
+        aria-busy={loading}
+        className="customer-timeline customer-detailed-timeline"
+        id="customer-timeline-events"
+      >
         {visiblePage.groups.map((group) => (
           <section key={group.label}>
             <h3>{group.label}</h3>
@@ -54,8 +69,8 @@ export function CustomerTimeline({ entries }: Readonly<{ entries: CustomerDetail
         <nav aria-label="Timeline pagination" className="customer-timeline-pagination">
           <button
             aria-controls="customer-timeline-events"
-            disabled={visiblePage.page === 1}
-            onClick={() => setRequestedPage(visiblePage.page - 1)}
+            disabled={loading || visiblePage.page === 1}
+            onClick={() => onPageChange?.(visiblePage.page - 1)}
             type="button"
           >
             ← Previous
@@ -70,8 +85,8 @@ export function CustomerTimeline({ entries }: Readonly<{ entries: CustomerDetail
           </span>
           <button
             aria-controls="customer-timeline-events"
-            disabled={visiblePage.page === visiblePage.totalPages}
-            onClick={() => setRequestedPage(visiblePage.page + 1)}
+            disabled={loading || visiblePage.page === visiblePage.totalPages}
+            onClick={() => onPageChange?.(visiblePage.page + 1)}
             type="button"
           >
             Next →
@@ -82,19 +97,21 @@ export function CustomerTimeline({ entries }: Readonly<{ entries: CustomerDetail
   );
 }
 
-export function timelinePage(entries: CustomerDetail['timeline'], requestedPage: number) {
-  const total = entries.length;
+export function timelinePage(
+  entries: CustomerDetail['timeline'],
+  requestedPage: number,
+  total = entries.length,
+) {
   const totalPages = Math.max(1, Math.ceil(total / timelinePageSize));
   const page = Math.min(Math.max(1, Math.trunc(requestedPage) || 1), totalPages);
   const startIndex = (page - 1) * timelinePageSize;
-  const pageEntries = entries.slice(startIndex, startIndex + timelinePageSize);
   return {
     page,
     totalPages,
     start: total ? startIndex + 1 : 0,
-    end: Math.min(startIndex + timelinePageSize, total),
+    end: Math.min(startIndex + entries.length, total),
     total,
-    groups: groupByDay(pageEntries),
+    groups: groupByDay(entries),
   };
 }
 
@@ -132,14 +149,29 @@ export function timelineContent(entry: TimelineEntry): {
       description: tags.length ? `Tags: ${tags.join(', ')}.` : 'All customer tags were removed.',
     };
   }
+  if (entry.eventType === 'ADDRESS_ADDED' || entry.eventType === 'ADDRESS_UPDATED') {
+    const city = textValue(metadata.city);
+    const country = textValue(metadata.countryCode);
+    return {
+      title:
+        entry.eventType === 'ADDRESS_ADDED' ? 'Customer address added' : 'Customer address updated',
+      description: joinDetails([
+        [city, country].filter(Boolean).join(', ') || null,
+        metadata.isDefault === true ? 'Set as default' : null,
+      ]),
+    };
+  }
+  if (entry.eventType === 'ADDRESS_REMOVED')
+    return {
+      title: 'Customer address removed',
+      description: textValue(metadata.promotedAddressId)
+        ? 'Another address was set as default'
+        : null,
+    };
   if (entry.eventType === 'ORDER_PLACED')
     return {
       title: orderNumber ? `Order ${orderNumber} was placed` : 'An order was placed',
-      description: joinDetails([
-        centsValue(metadata.totalCents),
-        statusValue(metadata.status),
-        'Online store',
-      ]),
+      description: joinDetails([centsValue(metadata.totalCents), statusValue(metadata.status)]),
     };
   if (entry.eventType === 'ORDER_STATUS_CHANGED')
     return {

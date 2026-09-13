@@ -281,6 +281,34 @@
       "when": 1789317000000,
       "tag": "0040_store_credit_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789318000000,
+      "tag": "0041_customer_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789319000000,
+      "tag": "0042_customer_tag_canonicalization",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789320000000,
+      "tag": "0043_customer_address_timeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789321000000,
+      "tag": "0044_customer_directory_search",
+      "breakpoints": true
     }
   ]
 }

@@ -22,12 +22,14 @@ describe('admin preferences', () => {
       sidebarCollapsed: false,
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
+      customerSort: 'LAST_SEEN_DESC',
     });
     expect(parseAdminPreferences('{"sidebarCollapsed":true}')).toEqual({
       customerColumnsVersion: 2,
       sidebarCollapsed: true,
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
+      customerSort: 'LAST_SEEN_DESC',
     });
   });
 
@@ -47,6 +49,7 @@ describe('admin preferences', () => {
       sidebarCollapsed: true,
       customerColumns: ['orders', 'spent'],
       customerView: 'HIGH_VALUE',
+      customerSort: 'TOTAL_SPENT_DESC',
     };
     expect(writeAdminPreferences(storage, saved)).toBe(true);
     expect(readAdminPreferences(storage)).toEqual(saved);
@@ -76,6 +79,7 @@ describe('admin preferences', () => {
       sidebarCollapsed: true,
       customerColumns: ['orders', 'dateAdded', 'dateUpdated'],
       customerView: 'ALL',
+      customerSort: 'LAST_SEEN_DESC',
     });
   });
 
@@ -89,6 +93,7 @@ describe('admin preferences', () => {
       sidebarCollapsed: true,
       customerColumns: ['orders'],
       customerView: 'ALL',
+      customerSort: 'LAST_SEEN_DESC',
     });
   });
 
@@ -98,5 +103,18 @@ describe('admin preferences', () => {
         '{"customerColumnsVersion":2,"sidebarCollapsed":false,"customerColumns":["orders"],"customerView":"NEW"}',
       ).customerView,
     ).toBe('RECENTLY_ADDED');
+  });
+
+  it('restores a supported customer sort and rejects unknown values', () => {
+    expect(
+      parseAdminPreferences(
+        '{"customerColumnsVersion":2,"sidebarCollapsed":false,"customerColumns":["orders"],"customerView":"ALL","customerSort":"EMAIL_ASC"}',
+      ).customerSort,
+    ).toBe('EMAIL_ASC');
+    expect(
+      parseAdminPreferences(
+        '{"customerColumnsVersion":2,"sidebarCollapsed":false,"customerColumns":["orders"],"customerView":"ALL","customerSort":"NOPE"}',
+      ).customerSort,
+    ).toBe('LAST_SEEN_DESC');
   });
 });

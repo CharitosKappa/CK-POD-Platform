@@ -992,11 +992,16 @@ export class CommerceService {
     );
     const createdOrder = requireRow(created.rows[0], 'Could not create paid order.');
     const orderNumberValue = createdOrder.order_number;
-    await recordCustomerTouchpoint(client, {
+    const customerProfileId = await recordCustomerTouchpoint(client, {
       email: createdOrder.customer_email,
       source: 'ORDER',
       userId: createdOrder.owner_user_id,
     });
+    await client.query(
+      `UPDATE app.orders SET customer_profile_id = $2, updated_at = now()
+       WHERE checkout_attempt_id = $1`,
+      [checkout.id, customerProfileId],
+    );
     await client.query(
       `INSERT INTO app.saved_addresses (
          user_id, recipient_name, line1, line2, city, state_code, postal_code, country_code, phone, is_default

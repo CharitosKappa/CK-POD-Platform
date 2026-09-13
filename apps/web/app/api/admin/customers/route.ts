@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import {
+  CustomerOperationsValidationError,
   customerSorts,
   customerViews,
   marketingStatuses,
@@ -73,6 +74,6 @@ function parseInteger(search: URLSearchParams, key: string): Record<string, numb
   const value = search.get(key);
   if (!value) return {};
   const parsed = Number(value);
-  if (!Number.isInteger(parsed)) throw new Error(`Invalid ${key}.`);
+  if (!Number.isInteger(parsed)) throw new CustomerOperationsValidationError(`Invalid ${key}.`);
   return { [key]: parsed };
 }

@@ -1,16 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { customerDisplayName, customerDuration } from './customer-detail-format';
+import { CustomerAddressManagerModal } from './customer-address-manager';
 import { loadCustomerDetail, refreshCustomerAfterSave } from './customer-detail-loading';
 import { CustomerDetailModal } from './customer-detail-modals';
 import { CustomerDetailSidebar, type CustomerSidebarAction } from './customer-detail-sidebar';
 import { CustomerTimeline } from './customer-detail-timeline';
 import { StoreCreditAdjustmentModal } from './store-credit-adjustment-modal';
 import { StoreCreditLedgerModal } from './store-credit-ledger-modal';
-import type { CustomerDetail } from './customer-types';
+import type { CustomerDetail, CustomerTimelinePage } from './customer-types';
+import { canManageCustomers, useAdminRole } from '../../admin-role';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const date = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -23,11 +25,16 @@ const dateTime = new Intl.DateTimeFormat('en-US', {
 });
 
 export function CustomerDetailClient({ customerId }: Readonly<{ customerId: string }>) {
+  const customerActionsButton = useRef<HTMLButtonElement>(null);
+  const canManage = canManageCustomers(useAdminRole());
   const [customer, setCustomer] = useState<CustomerDetail>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
   const [modal, setModal] = useState<CustomerSidebarAction>();
+  const [timeline, setTimeline] = useState<CustomerTimelinePage>();
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<string>();
 
   const load = useCallback(
     (signal?: AbortSignal) =>
@@ -49,6 +56,40 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('saved')) setFeedback('Customer saved.');
   }, []);
+  useEffect(() => {
+    if (!customer) return;
+    setTimeline({
+      entries: customer.timeline,
+      total: customer.timelineTotal,
+      page: 1,
+      limit: 10,
+    });
+  }, [customer]);
+
+  async function loadTimelinePage(page: number) {
+    setTimelineLoading(true);
+    setTimelineError(undefined);
+    try {
+      const response = await fetch(
+        `/api/admin/customers/${encodeURIComponent(customerId)}/timeline?page=${page}&limit=10`,
+      );
+      const payload = (await response.json()) as {
+        timeline?: CustomerTimelinePage;
+        error?: string;
+      };
+      if (!response.ok || !payload.timeline)
+        throw new Error(payload.error ?? 'Could not load customer activity.');
+      setTimeline(payload.timeline);
+    } catch (timelinePageError) {
+      setTimelineError(
+        timelinePageError instanceof Error
+          ? timelinePageError.message
+          : 'Could not load customer activity.',
+      );
+    } finally {
+      setTimelineLoading(false);
+    }
+  }
 
   async function handleModalSaved(message: string) {
     await refreshCustomerAfterSave(message, load, setFeedback);
@@ -92,13 +133,15 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
             </p>
           </div>
         </div>
-        <button
-          className="customer-button primary"
-          onClick={() => setModal('customer')}
-          type="button"
-        >
-          Edit customer
-        </button>
+        {canManage ? (
+          <button
+            className="customer-button primary"
+            onClick={() => setModal('customer')}
+            type="button"
+          >
+            Edit customer
+          </button>
+        ) : null}
       </header>
       {feedback ? (
         <p className="customer-feedback" role="status">
@@ -122,12 +165,12 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
               label="Average order"
               value={money.format(customer.averageOrderValueCents / 100)}
             />
-            <Metric label="Return rate" value={`${customer.returnRate}%`} />
+            <Metric label="Refunded order rate" value={`${customer.refundedOrderRate}%`} />
           </section>
           <section className="customer-card customer-latest-order-card">
             <header className="customer-latest-order-section-heading">
               <h2>Last order placed</h2>
-              <Link href={`/admin/orders?q=${encodeURIComponent(customer.email)}`}>
+              <Link href={`/admin/orders?customerId=${encodeURIComponent(customer.id)}`}>
                 View all orders
               </Link>
             </header>
@@ -151,7 +194,7 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
                         {fulfillmentStatusLabel(latestOrder.status)}
                       </span>
                     </div>
-                    <p>{dateTime.format(new Date(latestOrder.createdAt))} from Online store</p>
+                    <p>{dateTime.format(new Date(latestOrder.createdAt))}</p>
                   </div>
                   <strong>{money.format(latestOrder.totalCents / 100)}</strong>
                 </header>
@@ -189,7 +232,14 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
                 <h2>Timeline</h2>
               </div>
             </header>
-            <CustomerTimeline entries={customer.timeline} />
+            <CustomerTimeline
+              entries={timeline?.entries ?? customer.timeline}
+              loading={timelineLoading}
+              onPageChange={loadTimelinePage}
+              page={timeline?.page ?? 1}
+              total={timeline?.total ?? customer.timelineTotal}
+              {...(timelineError ? { error: timelineError } : {})}
+            />
           </section>
           {customer.credits.length ? (
             <details className="customer-card customer-credit-details">
@@ -211,13 +261,18 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
             </details>
           ) : null}
         </div>
-        <CustomerDetailSidebar customer={customer} onAction={setModal} />
+        <CustomerDetailSidebar
+          actionButtonRef={customerActionsButton}
+          customer={customer}
+          canManage={canManage}
+          onAction={setModal}
+        />
       </div>
       {modal === 'storeCreditLedger' ? (
         <StoreCreditLedgerModal
           customer={customer}
-          onAdjust={() => setModal('storeCredit')}
           onClose={() => setModal(undefined)}
+          {...(canManage ? { onAdjust: () => setModal('storeCredit') } : {})}
         />
       ) : modal === 'storeCredit' ? (
         <StoreCreditAdjustmentModal
@@ -225,6 +280,13 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
           balanceCents={customer.storeCreditBalanceCents}
           onClose={() => setModal(undefined)}
           onSaved={handleModalSaved}
+        />
+      ) : modal === 'address' ? (
+        <CustomerAddressManagerModal
+          customer={customer}
+          onClose={() => setModal(undefined)}
+          onSaved={handleModalSaved}
+          returnFocusRef={customerActionsButton}
         />
       ) : modal ? (
         <CustomerDetailModal

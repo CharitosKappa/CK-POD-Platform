@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 
 import { ProductCatalogService } from './catalog.js';
@@ -10,7 +10,7 @@ import { IdentityService, InMemoryEmailCodeDelivery } from './identity.js';
 import { ProjectConflictError, ProjectService, emptyEditorDocument } from './projects.js';
 import { ReferenceAssetService } from './reference-assets.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('identity, projects, and catalog integration', () => {

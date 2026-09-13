@@ -52,6 +52,8 @@ export interface AdminOrderCommerceDetail extends AdminOrderSummary {
   }>;
 }
 
+export class AdminCommerceValidationError extends Error {}
+
 export class AdminCommerceService {
   public constructor(private readonly pool: SqlPool) {}
 
@@ -130,13 +132,29 @@ export class AdminCommerceService {
 
   async listOrders(
     session: AdminStaffSession,
-    options: { page?: number; limit?: number; query?: string; view?: string } = {},
+    options: {
+      page?: number;
+      limit?: number;
+      query?: string;
+      view?: string;
+      customerId?: string;
+    } = {},
   ): Promise<AdminOrderList> {
     assertStaffRead(session);
     const page = Math.max(1, Math.floor(options.page ?? 1));
     const limit = Math.min(100, Math.max(1, Math.floor(options.limit ?? 30)));
     const values: unknown[] = [];
     const where: string[] = [];
+    if (options.customerId) {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          options.customerId,
+        )
+      )
+        throw new AdminCommerceValidationError('Enter a valid customer id.');
+      values.push(options.customerId);
+      where.push(`orders.customer_profile_id = $${values.length}::uuid`);
+    }
     if (options.query?.trim()) {
       values.push(`%${options.query.trim()}%`);
       where.push(
@@ -165,7 +183,7 @@ export class AdminCommerceService {
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const count = await this.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM app.orders orders ${clause}`,
-      values,
+      [...values],
     );
     values.push(limit, (page - 1) * limit);
     const rows = await this.pool.query<{

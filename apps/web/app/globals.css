@@ -2803,15 +2803,39 @@ select:focus-visible {
   background: #fbfbf8;
 }
 .customer-directory-table .select {
+  position: sticky;
+  z-index: 2;
+  left: 0;
   width: 40px;
+  background: #fff;
   padding-right: 4px;
   text-align: center;
 }
 .customer-directory-table .customer-name-column {
+  position: sticky;
+  z-index: 2;
+  left: 40px;
   width: 115px;
+  background: #fff;
 }
 .customer-directory-table .customer-email-column {
+  position: sticky;
+  z-index: 2;
+  left: 155px;
   width: 250px;
+  border-right: 1px solid #e9eae4;
+  background: #fff;
+}
+.customer-directory-table thead .select,
+.customer-directory-table thead .customer-name-column,
+.customer-directory-table thead .customer-email-column {
+  z-index: 3;
+  background: #fafaf7;
+}
+.customer-directory-table tbody tr:hover .select,
+.customer-directory-table tbody tr:hover .customer-name-column,
+.customer-directory-table tbody tr:hover .customer-email-column {
+  background: #fbfbf8;
 }
 .customer-directory-table .customer-subscription-column {
   width: 140px;
@@ -4365,6 +4389,124 @@ select:focus-visible {
   border-top: 1px solid #e2e3dd;
   background: #fff;
 }
+.customer-address-manager-modal {
+  width: min(100%, 680px);
+}
+.customer-address-manager-modal > footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 20px;
+  border-top: 1px solid #e2e3dd;
+}
+.customer-address-manager-body {
+  display: grid;
+  gap: 14px;
+}
+.customer-address-add-button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px dashed #aeb2a8;
+  border-radius: 10px;
+  background: #fafaf8;
+  padding: 11px;
+  color: #30332d;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.customer-address-add-button:hover:not(:disabled) {
+  border-color: #70766a;
+  background: #f3f4ef;
+}
+.customer-address-list {
+  display: grid;
+  gap: 10px;
+}
+.customer-address-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  border: 1px solid #dcddd7;
+  border-radius: 11px;
+  padding: 14px;
+  background: #fff;
+}
+.customer-address-card-badges {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 7px;
+}
+.customer-address-card-badges span {
+  border-radius: 999px;
+  background: #eceee8;
+  padding: 3px 7px;
+  color: #61655c;
+  font-size: 0.58rem;
+  font-weight: 720;
+}
+.customer-address-card-badges span:first-child {
+  background: #dcebdd;
+  color: #315c38;
+}
+.customer-address-card strong {
+  color: #2b2e28;
+  font-size: 0.75rem;
+}
+.customer-address-card address {
+  margin-top: 5px;
+  color: #656960;
+  font-size: 0.68rem;
+  font-style: normal;
+  line-height: 1.55;
+}
+.customer-address-card-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.customer-address-card-actions button {
+  border: 1px solid #d2d4cd;
+  border-radius: 7px;
+  background: #fff;
+  padding: 6px 8px;
+  color: #4b4f47;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.61rem;
+  font-weight: 680;
+}
+.customer-address-card-actions button:hover:not(:disabled) {
+  background: #f1f2ee;
+}
+.customer-address-card-actions button.danger {
+  color: #963d34;
+}
+.customer-address-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #7d3932;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+.customer-address-default-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 15px;
+  color: #4e5249;
+  font-size: 0.69rem;
+  font-weight: 650;
+}
+.customer-address-default-toggle input {
+  accent-color: #416447;
+}
 @keyframes customer-modal-enter {
   from {
     opacity: 0;
@@ -4501,6 +4643,12 @@ select:focus-visible {
   }
   .customer-modal-grid label.full {
     grid-column: auto;
+  }
+  .customer-address-card {
+    grid-template-columns: 1fr;
+  }
+  .customer-address-card-actions {
+    justify-content: flex-start;
   }
   .customer-detailed-timeline article {
     grid-template-columns: 10px minmax(0, 1fr);
@@ -6307,6 +6455,12 @@ select:focus-visible {
   color: #85877f;
   font-size: 0.65rem;
   text-overflow: ellipsis;
+}
+.customer-directory-table td.customer-name-column,
+.customer-directory-table td.customer-email-column {
+  position: static;
+  border-right: 0;
+  background: transparent;
 }
 .commerce-admin-table-scroll td:last-child {
   text-align: right;

@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-import { createDatabaseClient } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { reconcileCustomerProfiles } from './customer-operations';
 
-const suite = process.env.DATABASE_URL ? describe : describe.skip;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
+const suite = integrationDatabaseUrl ? describe : describe.skip;
 
 suite('customer profile reconciliation integration', () => {
-  const database = createDatabaseClient(process.env.DATABASE_URL!);
+  const database = createDatabaseClient(integrationDatabaseUrl!);
   const userId = randomUUID();
   const email = `reconcile-${randomUUID()}@example.test`;
 

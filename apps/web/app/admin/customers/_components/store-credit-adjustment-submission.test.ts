@@ -27,7 +27,7 @@ const customer: CustomerDetail = {
   orderCount: 0,
   totalSpentCents: 0,
   averageOrderValueCents: 0,
-  returnRate: 0,
+  refundedOrderRate: 0,
   creditBalance: 4,
   storeCreditBalanceCents: 0,
   storeCreditCurrency: 'USD',
@@ -43,11 +43,14 @@ const customer: CustomerDetail = {
   orders: [],
   credits: [],
   tags: [],
+  latestNote: null,
+  timelineTotal: 0,
   timeline: [],
 };
 const refreshedCustomer: CustomerDetail = {
   ...customer,
   storeCreditBalanceCents: 2550,
+  timelineTotal: 1,
   timeline: [
     {
       id: 'store-credit:entry-1',

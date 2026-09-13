@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
+import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -20,7 +20,7 @@ import { FakePrintifyFulfillmentAdapter } from './printify.js';
 import { ProjectService } from './projects.js';
 import { ProviderDerivativeService, FulfillmentRoutingService } from './routing.js';
 
-const integrationDatabaseUrl = process.env.DATABASE_URL;
+const integrationDatabaseUrl = integrationTestDatabaseUrl(process.env);
 const integrationSuite = integrationDatabaseUrl ? describe : describe.skip;
 
 integrationSuite('Printify catalog and fulfillment routing integration', () => {
