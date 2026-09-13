@@ -964,17 +964,16 @@ export class CommerceService {
       owner_user_id: string | null;
     }>(
       `INSERT INTO app.orders (
-         order_number, cart_id, checkout_attempt_id, owner_type, owner_session_id, owner_user_id, customer_email,
+         cart_id, checkout_attempt_id, owner_type, owner_session_id, owner_user_id, customer_email,
          shipping_address_snapshot, billing_address_snapshot, status, pricing_snapshot, financial_snapshot
-       ) SELECT $1, c.id, $2, c.owner_type, c.owner_session_id, c.owner_user_id, a.email,
+       ) SELECT c.id, $1, c.owner_type, c.owner_session_id, c.owner_user_id, a.email,
                 jsonb_build_object('recipientName', a.recipient_name, 'line1', a.line1, 'line2', a.line2, 'city', a.city, 'stateCode', a.state_code, 'postalCode', a.postal_code, 'countryCode', a.country_code),
-                checkout_attempt.billing_address_snapshot, 'PAID', $3::jsonb, $4::jsonb
+                checkout_attempt.billing_address_snapshot, 'PAID', $2::jsonb, $3::jsonb
          FROM app.carts c
-         JOIN app.shipping_addresses a ON a.id = $5
-         JOIN app.checkout_attempts checkout_attempt ON checkout_attempt.id = $2 AND checkout_attempt.cart_id = c.id
-         WHERE c.id = $6 RETURNING order_number, customer_email, owner_user_id`,
+         JOIN app.shipping_addresses a ON a.id = $4
+         JOIN app.checkout_attempts checkout_attempt ON checkout_attempt.id = $1 AND checkout_attempt.cart_id = c.id
+         WHERE c.id = $5 RETURNING order_number, customer_email, owner_user_id`,
       [
-        orderNumber(),
         checkout.id,
         JSON.stringify(checkout.pricing_snapshot),
         JSON.stringify({
@@ -1625,9 +1624,6 @@ function checkoutStatus(outcome: VerifiedPaymentEvent['outcome']): string {
       : outcome === 'CANCELLED'
         ? 'PAYMENT_CANCELLED'
         : 'PAYMENT_PENDING';
-}
-function orderNumber(): string {
-  return `LIB-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`;
 }
 function styleDimensions(value: {
   styleFamilyId?: string | null;

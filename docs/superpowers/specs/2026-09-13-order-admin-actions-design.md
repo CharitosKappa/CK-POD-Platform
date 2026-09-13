@@ -44,6 +44,8 @@ The server, not the browser, owns this field-level eligibility matrix.
 
 Cancel is available only while the order is unfulfilled and Printing has not reached `IN_PRODUCTION` or `PRINTED`. A fulfilled order does not expose Cancel. If the order was submitted to a provider but production has not started, cancellation must first succeed at the provider boundary before the canonical order is cancelled. A provider rejection or uncertain response leaves the order active and records the failed attempt.
 
+For a multi-provider order, cancellation is tracked independently for every fulfillment group. The canonical order becomes cancelled only after every required provider cancellation succeeds. If one group cancels and another fails or remains uncertain, the cancellation operation becomes `PARTIAL`, the order moves to operational hold/needs-attention, and staff receives a retry path for only the unresolved groups. Already-cancelled groups are never submitted again.
+
 Cancel does not automatically imply Refund. The modal offers:
 
 - refund to the original payment method;
@@ -148,6 +150,7 @@ An edit that increases the total records an amount due. The order cannot enter o
 - Monetary values use integer minor units and the order's persisted currency.
 - Refund and Store Credit amounts cannot exceed the remaining refundable balance.
 - Provider cancellation uncertainty is fail-closed.
+- Partial multi-provider cancellation places the order on operational hold and never reports whole-order cancellation.
 - Every action records the staff actor, source, reason, idempotency key, before/after state, and result.
 
 ## API Surface
@@ -180,7 +183,7 @@ Entries include timestamp, staff actor, affected items or amounts, reason, and l
 ## Error Handling
 
 - A stale modal receives a 409 response with refreshed eligibility details.
-- Provider cancellation failure leaves the order active and records the attempt.
+- Provider cancellation failure leaves the order active and records the attempt; partial multi-provider success places it on operational hold.
 - Refund failure leaves paid/refunded balances unchanged and records the failed request.
 - Store Credit issuance and its ledger entry commit atomically.
 - Return quantity conflicts fail without partially creating return rows.

@@ -5,12 +5,14 @@ import { parseServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient } from '@let-it-be/db';
 import {
   CustomerExportService,
+  OrderExportService,
   createGenerationRuntime,
   FakeLifecycleMessagingService,
   KlaviyoLifecycleMessagingService,
   LifecycleOrchestrator,
   startGenerationConsumer,
   startCustomerExportConsumer,
+  startOrderExportConsumer,
   startPrepressConsumer,
 } from '@let-it-be/domain';
 import { createLogger } from '@let-it-be/observability';
@@ -48,11 +50,17 @@ const runtime = createGenerationRuntime({
   maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,
 });
 const customerExports = new CustomerExportService(database.pool, queue, storage);
+const orderExports = new OrderExportService(database.pool, queue, storage);
 await startCustomerExportConsumer(queue, (exportId) => customerExports.process(exportId));
 logger.info('worker.customer_export_consumer_ready', { queue: 'customer-exports' });
 const pendingCustomerExports = await customerExports.recoverPending();
 await Promise.all(pendingCustomerExports.map((exportId) => customerExports.process(exportId)));
 await customerExports.expireReady();
+await startOrderExportConsumer(queue, (exportId) => orderExports.process(exportId));
+logger.info('worker.order_export_consumer_ready', { queue: 'order-exports' });
+const pendingOrderExports = await orderExports.recoverPending();
+await Promise.all(pendingOrderExports.map((exportId) => orderExports.process(exportId)));
+await orderExports.expireReady();
 
 if (environment.GENERATION_ENABLED) {
   await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
@@ -112,6 +120,7 @@ void processLifecycle();
 setInterval(() => void processLifecycle(), environment.LIFECYCLE_PROCESS_INTERVAL_MS).unref();
 logger.info('worker.lifecycle_processor_ready', { adapter: environment.LIFECYCLE_ADAPTER });
 setInterval(() => void customerExports.expireReady(), 60 * 60_000).unref();
+setInterval(() => void orderExports.expireReady(), 60 * 60_000).unref();
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {
   if (driver === 'memory') return new InMemoryJobQueue();

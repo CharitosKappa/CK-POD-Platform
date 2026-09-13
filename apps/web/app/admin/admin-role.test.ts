@@ -3,13 +3,19 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import { AdminCustomersClient } from './customers/_components/admin-customers-client';
-import { AdminRoleProvider, canManageCustomers } from './admin-role';
+import { AdminRoleProvider, canManageCustomers, canManageOrders } from './admin-role';
 
 describe('admin customer mutation access', () => {
   it('allows owner and operations staff but not read-only staff', () => {
     expect(canManageCustomers('OWNER')).toBe(true);
     expect(canManageCustomers('OPERATIONS')).toBe(true);
     expect(canManageCustomers('READ_ONLY')).toBe(false);
+  });
+
+  it('restricts order management to owner and operations roles', () => {
+    expect(canManageOrders('OWNER')).toBe(true);
+    expect(canManageOrders('OPERATIONS')).toBe(true);
+    expect(canManageOrders('READ_ONLY')).toBe(false);
   });
 
   it('does not expose the customer export surface to read-only staff', () => {

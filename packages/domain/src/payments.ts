@@ -51,10 +51,7 @@ export class FakePaymentService implements PaymentService {
       currency: object.currency === 'usd' ? 'USD' : 'USD',
       providerFeeCents:
         typeof object.application_fee_amount === 'number' ? object.application_fee_amount : null,
-      metadata:
-        typeof object.metadata === 'object' && object.metadata
-          ? (object.metadata as Record<string, unknown>)
-          : {},
+      metadata: paymentMetadata(object, 'card'),
     };
   }
 
@@ -130,10 +127,7 @@ export class StripePaymentService implements PaymentService {
       amountCents: object.amount,
       currency: object.currency === 'usd' ? 'USD' : 'USD',
       providerFeeCents: null,
-      metadata:
-        typeof object.metadata === 'object' && object.metadata
-          ? (object.metadata as Record<string, unknown>)
-          : {},
+      metadata: paymentMetadata(object),
     };
   }
 
@@ -243,6 +237,21 @@ function fakeOutcome(eventName: string | undefined): PaymentOutcome | null {
   if (eventName === 'payment_intent.canceled') return 'CANCELLED';
   if (eventName === 'payment_intent.processing') return 'PENDING';
   return null;
+}
+
+function paymentMetadata(
+  object: Record<string, unknown>,
+  fallbackMethodType?: string,
+): Record<string, unknown> {
+  const metadata =
+    typeof object.metadata === 'object' && object.metadata && !Array.isArray(object.metadata)
+      ? { ...(object.metadata as Record<string, unknown>) }
+      : {};
+  const providerMethodTypes = Array.isArray(object.payment_method_types)
+    ? object.payment_method_types.filter((value): value is string => typeof value === 'string')
+    : [];
+  const paymentMethodType = providerMethodTypes[0] ?? fallbackMethodType;
+  return paymentMethodType ? { ...metadata, paymentMethodType } : metadata;
 }
 
 function stripeEventOutcome(eventName: string | undefined): PaymentOutcome | null {

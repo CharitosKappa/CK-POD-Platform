@@ -1,4 +1,5 @@
 import { AdminOrderDetail } from './admin-order-detail';
+import { decodeOrderNumberRouteParam } from '../../../../lib/order-number-route';
 
 export default async function AdminOrderDetailPage({
   params,
@@ -6,7 +7,7 @@ export default async function AdminOrderDetailPage({
   const { orderNumber } = await params;
   return (
     <AdminOrderDetail
-      orderNumber={orderNumber}
+      orderNumber={decodeOrderNumberRouteParam(orderNumber)}
       apiBase="/api/admin/orders"
       pageBase="/admin/orders"
     />

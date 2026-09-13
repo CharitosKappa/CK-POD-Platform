@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { adminApiFetch } from '../../../../lib/admin-api';
+
 import { groupTimelineByDate } from './order-detail-format';
 import type { OrderTimelineEvent, OrderTimelinePage } from './order-detail-types';
 
@@ -9,24 +11,25 @@ export function OrderTimeline({
   refreshKey,
 }: Readonly<{ orderNumber: string; apiBase: string; refreshKey: number }>) {
   const [events, setEvents] = useState<OrderTimelineEvent[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   const load = useCallback(
-    async (nextCursor?: string) => {
+    async (requestedPage: number) => {
       setBusy(true);
       setError(undefined);
       try {
-        const query = new URLSearchParams({ limit: '10' });
-        if (nextCursor) query.set('cursor', nextCursor);
-        const response = await fetch(
+        const query = new URLSearchParams({ limit: '10', page: String(requestedPage) });
+        const response = await adminApiFetch(
           `${apiBase}/${encodeURIComponent(orderNumber)}/timeline?${query}`,
         );
         const payload = (await response.json()) as OrderTimelinePage & { error?: string };
         if (!response.ok) throw new Error(payload.error ?? 'Could not load the timeline.');
-        setEvents((current) => (nextCursor ? [...current, ...payload.events] : payload.events));
-        setCursor(payload.nextCursor);
+        setEvents(payload.events);
+        setPage(payload.page);
+        setTotal(payload.total);
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : 'Could not load the timeline.');
       } finally {
@@ -37,13 +40,17 @@ export function OrderTimeline({
   );
 
   useEffect(() => {
-    void load();
+    void load(1);
   }, [load, refreshKey]);
+
+  const totalPages = Math.max(1, Math.ceil(total / 10));
+  const start = total ? (page - 1) * 10 + 1 : 0;
+  const end = Math.min((page - 1) * 10 + events.length, total);
 
   return (
     <section className="order-timeline-section">
       <h2>Timeline</h2>
-      <article className="order-detail-card order-timeline-card">
+      <article className="order-detail-card order-timeline-card" id="order-timeline-events">
         {error ? (
           <p className="order-inline-error" role="alert">
             {error}
@@ -75,15 +82,33 @@ export function OrderTimeline({
             ))}
           </div>
         ))}
-        {cursor ? (
-          <button
-            className="order-load-more"
-            type="button"
-            disabled={busy}
-            onClick={() => void load(cursor)}
-          >
-            {busy ? 'Loading…' : 'Load earlier activity'}
-          </button>
+        {totalPages > 1 ? (
+          <nav aria-label="Timeline pagination" className="order-timeline-pagination">
+            <button
+              aria-controls="order-timeline-events"
+              disabled={busy || page === 1}
+              onClick={() => void load(page - 1)}
+              type="button"
+            >
+              ← Previous
+            </button>
+            <span>
+              <strong>
+                Page {page} of {totalPages}
+              </strong>
+              <small>
+                {start}–{end} of {total}
+              </small>
+            </span>
+            <button
+              aria-controls="order-timeline-events"
+              disabled={busy || page === totalPages}
+              onClick={() => void load(page + 1)}
+              type="button"
+            >
+              Next →
+            </button>
+          </nav>
         ) : null}
       </article>
     </section>

@@ -17,19 +17,27 @@ describe('GET order timeline', () => {
     vi.clearAllMocks();
     requireAdminSession.mockResolvedValue(actor);
     orderDetailRuntime.mockReturnValue({ listTimeline });
-    listTimeline.mockResolvedValue({ events: [], nextCursor: null });
+    listTimeline.mockResolvedValue({ events: [], total: 0, page: 1, limit: 10 });
   });
 
-  it('passes a bounded limit and opaque cursor', async () => {
-    const response = await GET(new Request('http://localhost?limit=10&cursor=opaque'), {
+  it('passes a bounded page and limit', async () => {
+    const response = await GET(new Request('http://localhost?limit=10&page=2'), {
       params: Promise.resolve({ orderNumber: '#1001' }),
     });
     expect(response.status).toBe(200);
-    expect(listTimeline).toHaveBeenCalledWith(actor, '#1001', { limit: 10, cursor: 'opaque' });
+    expect(listTimeline).toHaveBeenCalledWith(actor, '#1001', { limit: 10, page: 2 });
   });
 
   it('rejects an invalid limit at the route boundary', async () => {
     const response = await GET(new Request('http://localhost?limit=500'), {
+      params: Promise.resolve({ orderNumber: '#1001' }),
+    });
+    expect(response.status).toBe(400);
+    expect(listTimeline).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid page at the route boundary', async () => {
+    const response = await GET(new Request('http://localhost?page=0'), {
       params: Promise.resolve({ orderNumber: '#1001' }),
     });
     expect(response.status).toBe(400);

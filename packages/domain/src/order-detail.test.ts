@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   calculateProductionEconomics,
+  filterNonEmptyOrderGroups,
   OrderDetailDataError,
+  paymentMethodLabel,
   parseOrderPricingSnapshot,
+  parseOrderTaxLines,
   parsePostalAddressSnapshot,
   permittedPrintingActions,
 } from './order-detail.js';
@@ -81,6 +84,74 @@ describe('order detail snapshot boundary', () => {
         providerFeesCents: null,
       }),
     ).toMatchObject({ grossMarginCents: null, grossMarginBasisPoints: null });
+  });
+
+  it('builds a state tax line from the persisted tax calculation instead of a hardcoded rate', () => {
+    expect(
+      parseOrderTaxLines(
+        {
+          provider: 'STRIPE_TAX',
+          providerCalculationId: 'taxcalc_1',
+          taxableSubtotalCents: 4000,
+          shippingTaxCents: 0,
+          taxCents: 290,
+          currency: 'USD',
+          calculatedAt: '2026-09-13T12:00:00.000Z',
+          configurationVersion: 'stripe-tax-configured',
+        },
+        'CA',
+        290,
+      ),
+    ).toEqual([{ label: 'California Sales Tax', rateBasisPoints: 725, amountCents: 290 }]);
+  });
+
+  it('projects the Wyoming delivery jurisdiction with its persisted calculated rate', () => {
+    expect(
+      parseOrderTaxLines(
+        { taxableSubtotalCents: 5000, shippingTaxCents: 0, taxCents: 200 },
+        'WY',
+        200,
+      ),
+    ).toEqual([{ label: 'Wyoming Sales Tax', rateBasisPoints: 400, amountCents: 200 }]);
+  });
+
+  it('keeps a persisted tax amount visible without inventing a rate when the snapshot is absent', () => {
+    expect(parseOrderTaxLines(null, 'CA', 290)).toEqual([
+      { label: 'Taxes', rateBasisPoints: null, amountCents: 290 },
+    ]);
+  });
+
+  it('keeps persisted shipping tax separate from merchandise sales tax', () => {
+    expect(
+      parseOrderTaxLines(
+        { taxableSubtotalCents: 4000, shippingTaxCents: 40, taxCents: 330 },
+        'CA',
+        330,
+      ),
+    ).toEqual([
+      { label: 'California Sales Tax', rateBasisPoints: 725, amountCents: 290 },
+      { label: 'Shipping tax', rateBasisPoints: null, amountCents: 40 },
+    ]);
+  });
+
+  it('describes the persisted payment composition', () => {
+    expect(paymentMethodLabel('FAKE', {})).toBe('Credit card');
+    expect(paymentMethodLabel('STRIPE', { paymentMethodType: 'card' })).toBe('Credit card');
+    expect(
+      paymentMethodLabel('STRIPE', {
+        paymentMethodType: 'card',
+        storeCreditAmountCents: 1200,
+      }),
+    ).toBe('Credit card + Store credits');
+  });
+
+  it('omits orphan fulfillment groups without assigned items', () => {
+    expect(
+      filterNonEmptyOrderGroups([
+        { id: 'provider-a', itemCount: 1 },
+        { id: 'orphan', itemCount: 0 },
+      ]),
+    ).toEqual([{ id: 'provider-a', itemCount: 1 }]);
   });
 });
 

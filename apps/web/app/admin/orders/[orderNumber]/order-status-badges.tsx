@@ -1,3 +1,5 @@
+import React from 'react';
+
 import { layerStatusPresentation } from './order-detail-format';
 
 export function OrderStatusBadges({
@@ -16,8 +18,12 @@ export function OrderStatusBadges({
       {layers.map((layer) => {
         const presentation = layerStatusPresentation(layer.key, layer.state);
         return (
-          <span key={layer.key} className={`order-layer-badge is-${presentation.tone}`}>
-            <small>{layer.label}</small>
+          <span
+            aria-label={`${layer.label}: ${presentation.label}`}
+            key={layer.key}
+            className={`order-layer-badge is-${presentation.tone}`}
+            title={`${layer.label}: ${presentation.label}`}
+          >
             <strong>{presentation.label}</strong>
           </span>
         );

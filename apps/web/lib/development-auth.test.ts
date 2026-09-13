@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mayExposeLocalDevelopmentCode } from './development-auth';
+import { localDevelopmentAdminEmail, mayExposeLocalDevelopmentCode } from './development-auth';
 
 describe('mayExposeLocalDevelopmentCode', () => {
   it.each([
@@ -12,5 +12,33 @@ describe('mayExposeLocalDevelopmentCode', () => {
     [{ APP_ENV: 'production', NODE_ENV: 'production' }, false],
   ] as const)('returns %s for %o', (environment, expected) => {
     expect(mayExposeLocalDevelopmentCode(environment)).toBe(expected);
+  });
+
+  it('provides a stable local admin account when no email is configured', () => {
+    expect(
+      localDevelopmentAdminEmail({
+        APP_ENV: 'local',
+        NODE_ENV: 'development',
+      }),
+    ).toBe('admin@letitbe.local');
+  });
+
+  it('prefers the configured local admin account', () => {
+    expect(
+      localDevelopmentAdminEmail({
+        APP_ENV: 'local',
+        NODE_ENV: 'development',
+        INITIAL_ADMIN_EMAIL: ' Owner@Example.com ',
+      }),
+    ).toBe('owner@example.com');
+  });
+
+  it('never exposes or provisions the fallback outside local development', () => {
+    expect(
+      localDevelopmentAdminEmail({
+        APP_ENV: 'production',
+        NODE_ENV: 'production',
+      }),
+    ).toBeUndefined();
   });
 });

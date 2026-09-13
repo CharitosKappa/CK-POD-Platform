@@ -3,11 +3,14 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
+import { adminApiFetch } from '../../../../lib/admin-api';
+
 import { OrderDetailSidebar } from './order-detail-sidebar';
 import type { OrderDetail } from './order-detail-types';
 import { OrderFulfillmentGroup } from './order-fulfillment-group';
 import { OrderPaymentSummary } from './order-payment-summary';
 import { OrderPrintingModal } from './order-printing-modal';
+import { OrderPrintingSummary } from './order-printing-summary';
 import { OrderStatusBadges } from './order-status-badges';
 import { OrderTimeline } from './order-timeline';
 
@@ -28,7 +31,7 @@ export function AdminOrderDetail({
   const [timelineRefresh, setTimelineRefresh] = useState(0);
 
   const load = useCallback(async () => {
-    const response = await fetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
+    const response = await adminApiFetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
     const payload = (await response.json()) as { order?: OrderDetail; error?: string };
     if (!response.ok || !payload.order)
       throw new Error(payload.error ?? 'Could not load this order.');
@@ -47,7 +50,7 @@ export function AdminOrderDetail({
     setError(undefined);
     setNotice(undefined);
     try {
-      const response = await fetch(url, init);
+      const response = await adminApiFetch(url, init);
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error ?? 'Could not update the order.');
       await load();
@@ -111,25 +114,26 @@ export function AdminOrderDetail({
           <header className="order-detail-heading">
             <div>
               <h1>{order.orderNumber}</h1>
-              <p>
-                {new Date(order.createdAt).toLocaleString('en-US')} · {order.salesChannel}
-              </p>
+              <div className="order-detail-meta">
+                <span>
+                  {new Date(order.createdAt).toLocaleString('en-US')} · {order.salesChannel}
+                </span>
+                <OrderStatusBadges
+                  payment={order.paymentState}
+                  printing={order.printingState}
+                  fulfillment={order.fulfillmentState}
+                />
+              </div>
             </div>
-            <OrderStatusBadges
-              payment={order.paymentState}
-              printing={order.printingState}
-              fulfillment={order.fulfillmentState}
-            />
           </header>
 
           <div className="order-detail-grid">
             <div className="order-detail-main">
               {order.groups.map((group) => (
-                <OrderFulfillmentGroup
-                  key={group.id}
-                  group={group}
-                  onOpenPrinting={() => setPrintingGroupId(group.id)}
-                />
+                <section className="order-provider-group" key={group.id}>
+                  <OrderFulfillmentGroup group={group} />
+                  <OrderPrintingSummary group={group} onOpen={() => setPrintingGroupId(group.id)} />
+                </section>
               ))}
               {!order.groups.length ? (
                 <article className="order-detail-card">

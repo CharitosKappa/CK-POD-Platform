@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { handleRouteError } from '../../../../../../lib/http';
+import { decodeOrderNumberRouteParam } from '../../../../../../lib/order-number-route';
 import { orderDetailRuntime, requireAdminSession } from '../../../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,8 @@ export async function POST(
     if (typeof body.body !== 'string') {
       return NextResponse.json({ error: 'Enter an order note.' }, { status: 400 });
     }
-    const { orderNumber } = await context.params;
+    const { orderNumber: routeOrderNumber } = await context.params;
+    const orderNumber = decodeOrderNumberRouteParam(routeOrderNumber);
     const note = await orderDetailRuntime().addOrderNote(
       await requireAdminSession(),
       orderNumber,

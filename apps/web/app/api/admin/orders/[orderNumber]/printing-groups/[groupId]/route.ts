@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { handleRouteError } from '../../../../../../../lib/http';
+import { decodeOrderNumberRouteParam } from '../../../../../../../lib/order-number-route';
 import { orderDetailRuntime, requireAdminSession } from '../../../../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
@@ -10,7 +11,8 @@ export async function GET(
   context: { params: Promise<{ orderNumber: string; groupId: string }> },
 ) {
   try {
-    const { orderNumber, groupId } = await context.params;
+    const { orderNumber: routeOrderNumber, groupId } = await context.params;
+    const orderNumber = decodeOrderNumberRouteParam(routeOrderNumber);
     const group = await orderDetailRuntime().getPrintingGroup(
       await requireAdminSession(),
       orderNumber,

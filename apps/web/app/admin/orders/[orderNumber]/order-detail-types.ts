@@ -43,6 +43,8 @@ export interface OrderGroup {
   fulfillmentState: string;
   itemCount: number;
   shippingMethod: string | null;
+  estimatedDeliveryMinDays: number | null;
+  estimatedDeliveryMaxDays: number | null;
   attentionRequired: boolean;
   lastProviderSyncAt: string | null;
   items: OrderItem[];
@@ -83,6 +85,8 @@ export interface OrderDetail {
     paidCents: number;
     refundedCents: number;
     currency: 'USD';
+    taxLines: Array<{ label: string; rateBasisPoints: number | null; amountCents: number }>;
+    paymentMethod: string | null;
   };
   groups: OrderGroup[];
   notes: OrderNote[];
@@ -136,5 +140,7 @@ export interface OrderTimelineEvent {
 
 export interface OrderTimelinePage {
   events: OrderTimelineEvent[];
-  nextCursor: string | null;
+  total: number;
+  page: number;
+  limit: number;
 }

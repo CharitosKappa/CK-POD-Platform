@@ -39,6 +39,10 @@ describe('required application tables', () => {
     }
   });
 
+  it('includes the independent order export table', () => {
+    expect(requiredApplicationTables).toContain('order_exports');
+  });
+
   it('tracks every table created by the checked-in migrations', async () => {
     const migrationFiles = (await readdir(migrationsDirectory)).filter((fileName) =>
       fileName.endsWith('.sql'),

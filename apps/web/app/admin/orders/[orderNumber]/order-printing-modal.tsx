@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { adminApiFetch } from '../../../../lib/admin-api';
+
 import { layerStatusPresentation, sentenceCase } from './order-detail-format';
 import type { PrintingGroupDetail } from './order-detail-types';
 
@@ -29,7 +31,7 @@ export function OrderPrintingModal({
   const load = useCallback(async () => {
     setError(undefined);
     try {
-      const response = await fetch(
+      const response = await adminApiFetch(
         `${apiBase}/${encodeURIComponent(orderNumber)}/printing-groups/${encodeURIComponent(groupId)}`,
       );
       const payload = (await response.json()) as { group?: PrintingGroupDetail; error?: string };

@@ -23,3 +23,7 @@ export function useAdminRole() {
 export function canManageCustomers(role: string) {
   return role === 'OWNER' || role === 'OPERATIONS';
 }
+
+export function canManageOrders(role: string) {
+  return role === 'OWNER' || role === 'OPERATIONS';
+}

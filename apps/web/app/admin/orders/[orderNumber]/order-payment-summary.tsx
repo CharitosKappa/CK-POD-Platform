@@ -1,3 +1,5 @@
+import * as React from 'react';
+
 import { layerStatusPresentation } from './order-detail-format';
 import type { OrderDetail } from './order-detail-types';
 
@@ -13,7 +15,18 @@ export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>)
     ],
     ['Discounts', '', order.financials.discountCents > 0 ? -order.financials.discountCents : 0],
     ['Shipping', '', order.financials.shippingCents],
-    ['Taxes', '', order.financials.taxCents],
+    ...(order.financials.taxLines.length
+      ? order.financials.taxLines.map(
+          (line, index) =>
+            [
+              index === 0 ? 'Taxes' : '',
+              line.rateBasisPoints === null
+                ? line.label
+                : `${line.label} (${formatTaxRate(line.rateBasisPoints)})`,
+              line.amountCents,
+            ] as const,
+        )
+      : ([['Taxes', '', order.financials.taxCents]] as const)),
   ] as const;
 
   return (
@@ -27,8 +40,8 @@ export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>)
         </div>
       </header>
       <dl>
-        {rows.map(([label, detail, cents]) => (
-          <div key={label}>
+        {rows.map(([label, detail, cents], index) => (
+          <div key={`${label}-${detail}-${index}`}>
             <dt>{label}</dt>
             <dd>{detail}</dd>
             <dd>{money.format(cents / 100)}</dd>
@@ -41,7 +54,7 @@ export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>)
         </div>
         <div className="order-payment-paid">
           <dt>Paid</dt>
-          <dd />
+          <dd>{order.financials.paymentMethod ?? 'Payment method unavailable'}</dd>
           <dd>{money.format(order.financials.paidCents / 100)}</dd>
         </div>
         {order.financials.refundedCents > 0 ? (
@@ -54,4 +67,9 @@ export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>)
       </dl>
     </article>
   );
+}
+
+function formatTaxRate(basisPoints: number): string {
+  const percentage = basisPoints / 100;
+  return `${Number.isInteger(percentage) ? percentage.toFixed(0) : percentage.toFixed(2).replace(/0$/, '')}%`;
 }

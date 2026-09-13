@@ -2,8 +2,10 @@ import type { ServerEnvironment } from '@let-it-be/config';
 import { createDatabaseClient, type SqlPool } from '@let-it-be/db';
 import {
   CustomerExportService,
+  OrderExportService,
   createGenerationRuntime,
   startCustomerExportConsumer,
+  startOrderExportConsumer,
   startGenerationConsumer,
   startPrepressConsumer,
 } from '@let-it-be/domain';
@@ -20,6 +22,7 @@ import { serverEnvironment } from './runtime-environment';
 interface WebGenerationRuntime {
   runtime: ReturnType<typeof createGenerationRuntime>;
   customerExports: CustomerExportService;
+  orderExports: OrderExportService;
   queue: BackgroundJobQueue;
   storage: PrivateObjectStorage;
 }
@@ -33,7 +36,7 @@ export async function generationRuntime(): Promise<WebGenerationRuntime> {
     globalThis.letItBeGenerationRuntime = createRuntime();
   }
   const current = await globalThis.letItBeGenerationRuntime;
-  if (!current.customerExports) {
+  if (!current.customerExports || !current.orderExports) {
     globalThis.letItBeGenerationRuntime = createRuntime();
   }
   return globalThis.letItBeGenerationRuntime;
@@ -55,12 +58,14 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
     maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,
   });
   const customerExports = new CustomerExportService(pool, queue, storage);
+  const orderExports = new OrderExportService(pool, queue, storage);
   if (environment.QUEUE_DRIVER === 'memory') {
     await startGenerationConsumer(queue, (generationId) => runtime.worker.process(generationId));
     await startPrepressConsumer(queue, (prepressRunId) => runtime.prepress.process(prepressRunId));
     await startCustomerExportConsumer(queue, (exportId) => customerExports.process(exportId));
+    await startOrderExportConsumer(queue, (exportId) => orderExports.process(exportId));
   }
-  return { runtime, customerExports, queue, storage };
+  return { runtime, customerExports, orderExports, queue, storage };
 }
 
 function createQueue(driver: 'memory' | 'redis', redisUrl: string): BackgroundJobQueue {

@@ -35,6 +35,7 @@ import {
 } from '@let-it-be/domain';
 
 import { generationRuntime } from './generation-runtime';
+import { localDevelopmentAdminEmail } from './development-auth';
 import { serverEnvironment } from './runtime-environment';
 
 const sessionCookieName = 'let_it_be_session';
@@ -157,6 +158,10 @@ export async function customerExportRuntime() {
   return (await generationRuntime()).customerExports;
 }
 
+export async function orderExportRuntime() {
+  return (await generationRuntime()).orderExports;
+}
+
 export function adminCommerceRuntime() {
   return new AdminCommerceService(databasePool());
 }
@@ -167,11 +172,10 @@ export function orderDetailRuntime() {
 
 export function staffIdentityRuntime() {
   const environment = serverEnvironment();
+  const initialOwnerEmail = localDevelopmentAdminEmail(environment);
   return new StaffIdentityService(databasePool(), {
     pepper: environment.STAFF_AUTH_EMAIL_CODE_PEPPER,
-    ...(environment.INITIAL_ADMIN_EMAIL
-      ? { initialOwnerEmail: environment.INITIAL_ADMIN_EMAIL.trim().toLowerCase() }
-      : {}),
+    ...(initialOwnerEmail ? { initialOwnerEmail } : {}),
   });
 }
 

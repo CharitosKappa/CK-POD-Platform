@@ -48,6 +48,14 @@ export interface OrderFinancialSummary {
   paidCents: number;
   refundedCents: number;
   currency: 'USD';
+  taxLines: OrderTaxLine[];
+  paymentMethod: string | null;
+}
+
+export interface OrderTaxLine {
+  label: string;
+  rateBasisPoints: number | null;
+  amountCents: number;
 }
 
 export interface ProductionEconomics {
@@ -92,6 +100,8 @@ export interface AdminOrderGroupSummary {
   fulfillmentState: FulfillmentState;
   itemCount: number;
   shippingMethod: string | null;
+  estimatedDeliveryMinDays: number | null;
+  estimatedDeliveryMaxDays: number | null;
   attentionRequired: boolean;
   lastProviderSyncAt: Date | null;
   items: AdminOrderItem[];
@@ -177,7 +187,9 @@ export interface AdminOrderTimelineEvent {
 
 export interface AdminOrderTimelinePage {
   events: AdminOrderTimelineEvent[];
-  nextCursor: string | null;
+  total: number;
+  page: number;
+  limit: number;
 }
 
 interface BaseOrderRow {
@@ -192,10 +204,13 @@ interface BaseOrderRow {
   payment_status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null;
   payment_amount_cents: number | null;
   payment_currency: string | null;
+  payment_provider: string | null;
+  payment_metadata: unknown;
   refunded_cents: number;
   shipping_address_snapshot: unknown;
   billing_address_snapshot: unknown;
   pricing_snapshot: unknown;
+  tax_snapshot: unknown;
   created_at: Date;
 }
 
@@ -279,11 +294,13 @@ export class OrderDetailService {
     ]);
     const itemsByGroup = groupBy(itemRows, (item) => item.group_id);
     const shipmentsByGroup = groupBy(shipmentRows, (shipment) => shipment.group_id);
-    const groups = groupRows.map((group) =>
-      this.groupSummary(
-        group,
-        itemsByGroup.get(group.id) ?? [],
-        shipmentsByGroup.get(group.id) ?? [],
+    const groups = filterNonEmptyOrderGroups(
+      groupRows.map((group) =>
+        this.groupSummary(
+          group,
+          itemsByGroup.get(group.id) ?? [],
+          shipmentsByGroup.get(group.id) ?? [],
+        ),
       ),
     );
     const pricing = parseOrderPricingSnapshot(order.pricing_snapshot);
@@ -322,6 +339,12 @@ export class OrderDetailService {
         paidCents,
         refundedCents,
         currency: pricing.currency,
+        taxLines: parseOrderTaxLines(
+          order.tax_snapshot,
+          shippingAddress.stateCode,
+          pricing.taxCents,
+        ),
+        paymentMethod: paymentMethodLabel(order.payment_provider, order.payment_metadata),
       },
       groups,
       notes: noteRows.rows.map((note) => ({
@@ -612,11 +635,12 @@ export class OrderDetailService {
   async listTimeline(
     session: OrderDetailStaffSession,
     orderNumber: string,
-    options: { limit?: number; cursor?: string } = {},
+    options: { limit?: number; page?: number } = {},
   ): Promise<AdminOrderTimelinePage> {
     assertOrderDetailAccess(session);
     const limit = Math.min(50, Math.max(1, Math.floor(options.limit ?? 10)));
-    const cursor = options.cursor ? decodeTimelineCursor(options.cursor) : null;
+    const page = Math.max(1, Math.floor(options.page ?? 1));
+    const offset = (page - 1) * limit;
     const result = await this.pool.query<{
       id: string;
       type: string;
@@ -625,6 +649,7 @@ export class OrderDetailService {
       actor_name: string | null;
       description: string;
       details: unknown;
+      total: number;
     }>(
       `WITH target_order AS (
          SELECT id, checkout_attempt_id, created_at FROM app.orders WHERE order_number = $1
@@ -719,16 +744,14 @@ export class OrderDetailService {
          FROM app.lifecycle_deliveries delivery
          JOIN target_order orders ON orders.id = delivery.order_id
        )
-       SELECT id, type, occurred_at, source, actor_name, description, details
+       SELECT id, type, occurred_at, source, actor_name, description, details,
+              count(*) OVER()::int AS total
        FROM timeline
-       WHERE ($2::timestamptz IS NULL OR (occurred_at, id) < ($2::timestamptz, $3::text))
        ORDER BY occurred_at DESC, id DESC
-       LIMIT $4`,
-      [orderNumber, cursor?.occurredAt ?? null, cursor?.id ?? null, limit + 1],
+       LIMIT $2 OFFSET $3`,
+      [orderNumber, limit, offset],
     );
-    const hasNextPage = result.rows.length > limit;
-    const rows = result.rows.slice(0, limit);
-    const events = rows.map((event) => ({
+    const events = result.rows.map((event) => ({
       id: event.id,
       type: event.type,
       occurredAt: event.occurred_at,
@@ -737,13 +760,11 @@ export class OrderDetailService {
       description: event.description,
       details: safeTimelineDetails(event.details),
     }));
-    const last = rows.at(-1);
     return {
       events,
-      nextCursor:
-        hasNextPage && last
-          ? encodeTimelineCursor({ occurredAt: last.occurred_at.toISOString(), id: last.id })
-          : null,
+      total: result.rows[0]?.total ?? 0,
+      page,
+      limit,
     };
   }
 
@@ -758,13 +779,15 @@ export class OrderDetailService {
               ) END AS customer_order_count,
               orders.owner_type, payment.status AS payment_status,
               payment.amount_cents AS payment_amount_cents, payment.currency AS payment_currency,
+              payment.provider AS payment_provider, payment.provider_metadata AS payment_metadata,
               coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
                         WHERE refund.order_id = orders.id AND refund.status = 'SUCCEEDED'), 0) AS refunded_cents,
               orders.shipping_address_snapshot, orders.billing_address_snapshot,
-              orders.pricing_snapshot, orders.created_at
+              orders.pricing_snapshot, checkout.tax_snapshot, orders.created_at
        FROM app.orders orders
        LEFT JOIN app.customer_profiles customer ON customer.id = orders.customer_profile_id
        LEFT JOIN app.payments payment ON payment.checkout_attempt_id = orders.checkout_attempt_id
+       LEFT JOIN app.checkout_attempts checkout ON checkout.id = orders.checkout_attempt_id
        WHERE orders.order_number = $1`,
       [orderNumber],
     );
@@ -834,6 +857,14 @@ export class OrderDetailService {
       fulfillmentState: group.fulfillment_status,
       itemCount: items.reduce((total, item) => total + item.quantity, 0),
       shippingMethod: stringFromRecord(group.shipping_snapshot, 'method'),
+      estimatedDeliveryMinDays: integerFromRecord(
+        group.shipping_snapshot,
+        'estimatedDeliveryMinDays',
+      ),
+      estimatedDeliveryMaxDays: integerFromRecord(
+        group.shipping_snapshot,
+        'estimatedDeliveryMaxDays',
+      ),
       attentionRequired:
         ['FAILED', 'ON_HOLD'].includes(group.printing_status) ||
         (['SUBMITTED', 'IN_PRODUCTION'].includes(group.printing_status) &&
@@ -885,6 +916,120 @@ export function parsePostalAddressSnapshot(value: unknown): PostalAddressSnapsho
     postalCode: stringField(record, 'postalCode'),
     countryCode: stringField(record, 'countryCode'),
   };
+}
+
+const US_STATE_NAMES: Record<string, string> = {
+  AL: 'Alabama',
+  AK: 'Alaska',
+  AZ: 'Arizona',
+  AR: 'Arkansas',
+  CA: 'California',
+  CO: 'Colorado',
+  CT: 'Connecticut',
+  DE: 'Delaware',
+  FL: 'Florida',
+  GA: 'Georgia',
+  HI: 'Hawaii',
+  ID: 'Idaho',
+  IL: 'Illinois',
+  IN: 'Indiana',
+  IA: 'Iowa',
+  KS: 'Kansas',
+  KY: 'Kentucky',
+  LA: 'Louisiana',
+  ME: 'Maine',
+  MD: 'Maryland',
+  MA: 'Massachusetts',
+  MI: 'Michigan',
+  MN: 'Minnesota',
+  MS: 'Mississippi',
+  MO: 'Missouri',
+  MT: 'Montana',
+  NE: 'Nebraska',
+  NV: 'Nevada',
+  NH: 'New Hampshire',
+  NJ: 'New Jersey',
+  NM: 'New Mexico',
+  NY: 'New York',
+  NC: 'North Carolina',
+  ND: 'North Dakota',
+  OH: 'Ohio',
+  OK: 'Oklahoma',
+  OR: 'Oregon',
+  PA: 'Pennsylvania',
+  RI: 'Rhode Island',
+  SC: 'South Carolina',
+  SD: 'South Dakota',
+  TN: 'Tennessee',
+  TX: 'Texas',
+  UT: 'Utah',
+  VT: 'Vermont',
+  VA: 'Virginia',
+  WA: 'Washington',
+  WV: 'West Virginia',
+  WI: 'Wisconsin',
+  WY: 'Wyoming',
+  DC: 'District of Columbia',
+};
+
+export function parseOrderTaxLines(
+  value: unknown,
+  stateCode: string,
+  fallbackTaxCents: number,
+): OrderTaxLine[] {
+  const record = isRecord(value) ? value : null;
+  const taxCents = record ? optionalInteger(record.taxCents) : null;
+  const taxableSubtotalCents = record ? optionalInteger(record.taxableSubtotalCents) : null;
+  if (taxCents === null) {
+    return fallbackTaxCents > 0
+      ? [{ label: 'Taxes', rateBasisPoints: null, amountCents: fallbackTaxCents }]
+      : [];
+  }
+  const normalizedState = stateCode.trim().toUpperCase();
+  const stateName = US_STATE_NAMES[normalizedState];
+  const shippingTaxCents = record ? (optionalInteger(record.shippingTaxCents) ?? 0) : 0;
+  const merchandiseTaxCents = Math.max(0, taxCents - shippingTaxCents);
+  const lines: OrderTaxLine[] = [
+    {
+      label: stateName ? `${stateName} Sales Tax` : 'Sales tax',
+      rateBasisPoints:
+        taxableSubtotalCents && taxableSubtotalCents > 0
+          ? Math.round((merchandiseTaxCents * 10_000) / taxableSubtotalCents)
+          : null,
+      amountCents: merchandiseTaxCents,
+    },
+  ];
+  if (shippingTaxCents > 0) {
+    lines.push({ label: 'Shipping tax', rateBasisPoints: null, amountCents: shippingTaxCents });
+  }
+  return lines;
+}
+
+export function paymentMethodLabel(provider: string | null, metadata: unknown): string | null {
+  if (!provider) return null;
+  const record = isRecord(metadata) ? metadata : {};
+  const rawType =
+    typeof record.paymentMethodType === 'string'
+      ? record.paymentMethodType
+      : typeof record.payment_method_type === 'string'
+        ? record.payment_method_type
+        : null;
+  const base =
+    rawType?.toLowerCase() === 'card' || provider === 'FAKE'
+      ? 'Credit card'
+      : rawType
+        ? rawType.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
+        : provider === 'STRIPE'
+          ? 'Stripe'
+          : provider;
+  const storeCreditAmountCents = optionalInteger(record.storeCreditAmountCents);
+  return storeCreditAmountCents !== null && storeCreditAmountCents > 0
+    ? `${base} + Store credits`
+    : base;
+}
+
+export function filterNonEmptyOrderGroups<T extends { itemCount: number }>(groups: T[]): T[] {
+  return groups.filter((group) => group.itemCount > 0);
 }
 
 export function calculateProductionEconomics(input: {
@@ -1036,28 +1181,6 @@ function canonicalTags(values: string[]): string[] {
   );
 }
 
-function encodeTimelineCursor(cursor: { occurredAt: string; id: string }): string {
-  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
-}
-
-function decodeTimelineCursor(value: string): { occurredAt: Date; id: string } {
-  try {
-    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown;
-    if (
-      !isRecord(parsed) ||
-      typeof parsed.occurredAt !== 'string' ||
-      Number.isNaN(Date.parse(parsed.occurredAt)) ||
-      typeof parsed.id !== 'string' ||
-      !parsed.id
-    ) {
-      throw new Error('invalid');
-    }
-    return { occurredAt: new Date(parsed.occurredAt), id: parsed.id };
-  } catch {
-    throw new OrderDetailDataError('Timeline cursor is invalid.');
-  }
-}
-
 function safeTimelineDetails(value: unknown): Record<string, string | number | boolean | null> {
   if (!isRecord(value)) return {};
   return Object.fromEntries(
@@ -1119,4 +1242,8 @@ function literalUsd(value: unknown): 'USD' {
 
 function stringFromRecord(value: unknown, key: string): string | null {
   return isRecord(value) && typeof value[key] === 'string' ? value[key] : null;
+}
+
+function integerFromRecord(value: unknown, key: string): number | null {
+  return isRecord(value) ? optionalInteger(value[key]) : null;
 }

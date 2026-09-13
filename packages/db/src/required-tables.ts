@@ -38,6 +38,7 @@ export const requiredApplicationTables = [
   'order_fulfillment_groups',
   'order_fulfillment_status_history',
   'order_fulfillment_status_events',
+  'order_exports',
   'order_holds',
   'order_items',
   'order_notes',

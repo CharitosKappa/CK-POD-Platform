@@ -367,7 +367,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     });
     const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
     const repeated = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
-    expect(paid).toMatchObject({ duplicate: false, orderNumber: expect.stringMatching(/^LIB-/) });
+    expect(paid).toMatchObject({ duplicate: false, orderNumber: expect.stringMatching(/^#\d+$/) });
     expect(repeated).toEqual({ duplicate: true, orderNumber: paid.orderNumber });
     const order = await commerce.getOrder(ready.guest, paid.orderNumber as string);
     expect(order).toMatchObject({ status: 'PAID' });
@@ -442,7 +442,7 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
 
     const paid = await commerce.simulateFakePayment(ready.guest, checkout.id, 'SUCCEEDED');
 
-    expect(paid.orderNumber).toMatch(/^LIB-/);
+    expect(paid.orderNumber).toMatch(/^#\d+$/);
     expect(await commerce.getOrder(ready.guest, paid.orderNumber as string)).toMatchObject({
       status: 'PAID',
     });
@@ -1086,8 +1086,16 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       paymentState: 'PAID',
       printingState: 'PRINTED',
       fulfillmentState: 'DELIVERED',
-      financials: { currency: 'USD' },
+      financials: {
+        currency: 'USD',
+        paymentMethod: 'Credit card',
+        taxLines: [
+          expect.objectContaining({ label: 'California Sales Tax', rateBasisPoints: 875 }),
+        ],
+      },
     });
+    expect(adminProjection?.groups).toHaveLength(1);
+    expect(adminProjection?.groups.every((group) => group.itemCount > 0)).toBe(true);
     expect(adminProjection).not.toHaveProperty('status');
     expect(adminProjection?.groups.find((group) => group.id === fulfillmentGroupId)).toMatchObject({
       printingState: 'PRINTED',
@@ -1119,9 +1127,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     expect(persistedOrderDetail?.tags).toEqual(['Priority', 'VIP']);
     const firstTimelinePage = await orderDetail.listTimeline(staffSession, orderNumber, {
       limit: 10,
+      page: 1,
     });
     expect(firstTimelinePage.events).toHaveLength(10);
-    expect(firstTimelinePage.nextCursor).toBeTruthy();
+    expect(firstTimelinePage.total).toBeGreaterThan(10);
+    expect(firstTimelinePage).toMatchObject({ page: 1, limit: 10 });
     expect(firstTimelinePage.events.map((event) => event.occurredAt.getTime())).toEqual(
       [...firstTimelinePage.events]
         .map((event) => event.occurredAt.getTime())
@@ -1139,8 +1149,9 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
     );
     const secondTimelinePage = await orderDetail.listTimeline(staffSession, orderNumber, {
       limit: 10,
-      cursor: firstTimelinePage.nextCursor!,
+      page: 2,
     });
+    expect(secondTimelinePage).toMatchObject({ page: 2, limit: 10 });
     expect(
       secondTimelinePage.events.some((event) =>
         firstTimelinePage.events.some((firstEvent) => firstEvent.id === event.id),

@@ -8,8 +8,6 @@ export function OrderPrintingSummary({
   onOpen,
 }: Readonly<{ group: OrderGroup; onOpen: () => void }>) {
   const status = layerStatusPresentation('printing', group.printingState);
-  const shipment = group.shipments.find((entry) => entry.trackingNumber);
-
   return (
     <button
       type="button"
@@ -27,7 +25,6 @@ export function OrderPrintingSummary({
         <small>
           {group.providerName}
           {group.externalOrderId ? ` · ${group.externalOrderId}` : ' · Not submitted'}
-          {shipment?.trackingNumber ? ` · ${shipment.trackingNumber}` : ''}
         </small>
       </span>
       {group.attentionRequired ? <b className="order-attention-flag">Needs attention</b> : null}

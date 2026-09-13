@@ -18,6 +18,8 @@ import {
   CustomerOperationsValidationError,
   CustomerExportAccessError,
   CustomerExportValidationError,
+  OrderExportAccessError,
+  OrderExportValidationError,
   StaffAuthenticationError,
   StoreCreditAccessError,
   StoreCreditConflictError,
@@ -70,6 +72,18 @@ export function handleRouteError(error: unknown): NextResponse {
     );
   }
   if (error instanceof CustomerExportValidationError) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: /not found/i.test(error.message) ? 404 : 400 },
+    );
+  }
+  if (error instanceof OrderExportAccessError) {
+    return NextResponse.json(
+      { error: 'You do not have access to order exports.' },
+      { status: 403 },
+    );
+  }
+  if (error instanceof OrderExportValidationError) {
     return NextResponse.json(
       { error: error.message },
       { status: /not found/i.test(error.message) ? 404 : 400 },

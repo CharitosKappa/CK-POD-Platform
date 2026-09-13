@@ -30,6 +30,16 @@ describe('GET /api/admin/orders/[orderNumber]', () => {
     expect(getOrder).toHaveBeenCalledWith(actor, '#1001');
   });
 
+  it('decodes a hash-prefixed order number from the route segment', async () => {
+    getOrder.mockResolvedValue({ orderNumber: '#1001', groups: [] });
+
+    await GET(new Request('http://localhost/api/admin/orders/%231001'), {
+      params: Promise.resolve({ orderNumber: '%231001' }),
+    });
+
+    expect(getOrder).toHaveBeenCalledWith(actor, '#1001');
+  });
+
   it('returns 404 for an unknown order', async () => {
     getOrder.mockResolvedValue(null);
     const response = await GET(new Request('http://localhost/api/admin/orders/missing'), {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { handleRouteError } from '../../../../../../lib/http';
+import { decodeOrderNumberRouteParam } from '../../../../../../lib/order-number-route';
 import { orderDetailRuntime, requireAdminSession } from '../../../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
@@ -16,12 +17,20 @@ export async function GET(request: Request, context: { params: Promise<{ orderNu
         { status: 400 },
       );
     }
-    const cursor = url.searchParams.get('cursor');
-    const { orderNumber } = await context.params;
+    const rawPage = url.searchParams.get('page');
+    const page = rawPage === null ? 1 : Number(rawPage);
+    if (!Number.isInteger(page) || page < 1) {
+      return NextResponse.json(
+        { error: 'Timeline page must be a positive integer.' },
+        { status: 400 },
+      );
+    }
+    const { orderNumber: routeOrderNumber } = await context.params;
+    const orderNumber = decodeOrderNumberRouteParam(routeOrderNumber);
     const timeline = await orderDetailRuntime().listTimeline(
       await requireAdminSession(),
       orderNumber,
-      { limit, ...(cursor ? { cursor } : {}) },
+      { limit, page },
     );
     return NextResponse.json(timeline);
   } catch (error) {

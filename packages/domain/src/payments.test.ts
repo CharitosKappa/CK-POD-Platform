@@ -39,7 +39,7 @@ describe('platform payment and tax adapters', () => {
             data: { object: { id: intent.providerPaymentId, amount: 3211, currency: 'usd' } },
           }),
         }),
-      ).resolves.toMatchObject({ outcome });
+      ).resolves.toMatchObject({ outcome, metadata: { paymentMethodType: 'card' } });
     }
     await expect(payments.verifyWebhook({ signature: 'wrong', body: '{}' })).resolves.toBeNull();
   });
@@ -60,7 +60,14 @@ describe('platform payment and tax adapters', () => {
     const body = JSON.stringify({
       id: 'evt_1',
       type: 'payment_intent.succeeded',
-      data: { object: { id: 'pi_1', amount: 1200, currency: 'usd' } },
+      data: {
+        object: {
+          id: 'pi_1',
+          amount: 1200,
+          currency: 'usd',
+          payment_method_types: ['card'],
+        },
+      },
     });
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = createHmac('sha256', 'whsec_test')
@@ -68,7 +75,11 @@ describe('platform payment and tax adapters', () => {
       .digest('hex');
     await expect(
       service.verifyWebhook({ body, signature: `t=${timestamp},v1=${signature}` }),
-    ).resolves.toMatchObject({ provider: 'STRIPE', outcome: 'SUCCEEDED' });
+    ).resolves.toMatchObject({
+      provider: 'STRIPE',
+      outcome: 'SUCCEEDED',
+      metadata: { paymentMethodType: 'card' },
+    });
     await expect(
       service.verifyWebhook({ body: `${body}x`, signature: `t=${timestamp},v1=${signature}` }),
     ).resolves.toBeNull();

@@ -23,6 +23,8 @@ describe('admin preferences', () => {
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
       customerSort: 'LAST_SEEN_DESC',
+      orderView: 'ALL',
+      orderSort: 'DATE_DESC',
     });
     expect(parseAdminPreferences('{"sidebarCollapsed":true}')).toEqual({
       customerColumnsVersion: 2,
@@ -30,6 +32,8 @@ describe('admin preferences', () => {
       customerColumns: [...defaultAdminPreferences.customerColumns],
       customerView: 'ALL',
       customerSort: 'LAST_SEEN_DESC',
+      orderView: 'ALL',
+      orderSort: 'DATE_DESC',
     });
   });
 
@@ -50,6 +54,8 @@ describe('admin preferences', () => {
       customerColumns: ['orders', 'spent'],
       customerView: 'HIGH_VALUE',
       customerSort: 'TOTAL_SPENT_DESC',
+      orderView: 'IN_PROGRESS',
+      orderSort: 'TOTAL_DESC',
     };
     expect(writeAdminPreferences(storage, saved)).toBe(true);
     expect(readAdminPreferences(storage)).toEqual(saved);
@@ -80,6 +86,8 @@ describe('admin preferences', () => {
       customerColumns: ['orders', 'dateAdded', 'dateUpdated'],
       customerView: 'ALL',
       customerSort: 'LAST_SEEN_DESC',
+      orderView: 'ALL',
+      orderSort: 'DATE_DESC',
     });
   });
 
@@ -94,6 +102,8 @@ describe('admin preferences', () => {
       customerColumns: ['orders'],
       customerView: 'ALL',
       customerSort: 'LAST_SEEN_DESC',
+      orderView: 'ALL',
+      orderSort: 'DATE_DESC',
     });
   });
 
@@ -116,5 +126,13 @@ describe('admin preferences', () => {
         '{"customerColumnsVersion":2,"sidebarCollapsed":false,"customerColumns":["orders"],"customerView":"ALL","customerSort":"NOPE"}',
       ).customerSort,
     ).toBe('LAST_SEEN_DESC');
+  });
+
+  it('restores supported Orders view and sort preferences', () => {
+    const preferences = parseAdminPreferences(
+      '{"sidebarCollapsed":false,"orderView":"IN_PROGRESS","orderSort":"TOTAL_DESC"}',
+    );
+    expect(preferences.orderView).toBe('IN_PROGRESS');
+    expect(preferences.orderSort).toBe('TOTAL_DESC');
   });
 });

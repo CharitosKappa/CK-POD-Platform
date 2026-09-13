@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isOperationalReasonCode, type OperationalReasonCode } from '@let-it-be/domain';
 import { handleRouteError } from '../../../../../../lib/http';
+import { decodeOrderNumberRouteParam } from '../../../../../../lib/order-number-route';
 import { orderOperationsRuntime, requireAdminSession } from '../../../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,8 @@ export async function POST(
   try {
     const session = await requireAdminSession();
     const operations = await orderOperationsRuntime();
-    const { orderNumber } = await context.params;
+    const { orderNumber: routeOrderNumber } = await context.params;
+    const orderNumber = decodeOrderNumberRouteParam(routeOrderNumber);
     const body = (await request.json()) as {
       action?: string;
       stage?: 'PREPRESS' | 'COMPLIANCE';

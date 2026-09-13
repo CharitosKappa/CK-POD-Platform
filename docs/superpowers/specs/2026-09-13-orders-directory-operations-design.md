@@ -30,15 +30,15 @@ Changing any search, view, sort, or filter resets the page to 1 and clears the c
 
 The following headers are interactive and expose accessible ascending/descending state:
 
-| Column | Ascending | Descending |
-| --- | --- | --- |
-| Order | Numeric order sequence, oldest identifier first | Numeric order sequence, newest identifier first |
-| Date | Oldest first | Newest first |
-| Customer | Name/email A–Z | Name/email Z–A |
-| Items | Lowest quantity first | Highest quantity first |
-| Payment | Status A–Z | Status Z–A |
-| Fulfillment | Status A–Z | Status Z–A |
-| Total | Lowest value first | Highest value first |
+| Column      | Ascending                                       | Descending                                      |
+| ----------- | ----------------------------------------------- | ----------------------------------------------- |
+| Order       | Numeric order sequence, oldest identifier first | Numeric order sequence, newest identifier first |
+| Date        | Oldest first                                    | Newest first                                    |
+| Customer    | Name/email A–Z                                  | Name/email Z–A                                  |
+| Items       | Lowest quantity first                           | Highest quantity first                          |
+| Payment     | Status A–Z                                      | Status Z–A                                      |
+| Fulfillment | Status A–Z                                      | Status Z–A                                      |
+| Total       | Lowest value first                              | Highest value first                             |
 
 The default sort is Date descending. Every database ordering includes a stable order-number tie-breaker so pagination cannot reorder equal values between requests.
 

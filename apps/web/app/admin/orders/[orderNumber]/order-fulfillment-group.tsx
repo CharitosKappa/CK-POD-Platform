@@ -1,13 +1,11 @@
+import * as React from 'react';
+
 import { layerStatusPresentation, sentenceCase } from './order-detail-format';
 import type { OrderGroup } from './order-detail-types';
-import { OrderPrintingSummary } from './order-printing-summary';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
-export function OrderFulfillmentGroup({
-  group,
-  onOpenPrinting,
-}: Readonly<{ group: OrderGroup; onOpenPrinting: () => void }>) {
+export function OrderFulfillmentGroup({ group }: Readonly<{ group: OrderGroup }>) {
   const fulfillment = layerStatusPresentation('fulfillment', group.fulfillmentState);
 
   return (
@@ -23,6 +21,65 @@ export function OrderFulfillmentGroup({
         </div>
         {group.shippingMethod ? <small>{group.shippingMethod}</small> : null}
       </header>
+
+      <div className="order-fulfillment-summary">
+        {group.shipments.length ? (
+          group.shipments.map((shipment) => (
+            <div className="order-fulfillment-shipment" key={shipment.id}>
+              <span className={`order-layer-badge is-${fulfillment.tone}`}>
+                {sentenceCase(shipment.state)}
+              </span>
+              <p>
+                <span aria-hidden="true">▣</span>
+                <strong>
+                  {shipment.carrier ?? group.shippingMethod ?? 'Shipment'}
+                  {shipment.service ? ` · ${shipment.service}` : ''}
+                </strong>
+              </p>
+              {shipment.deliveredAt || shipment.shippedAt ? (
+                <p>
+                  <span aria-hidden="true">◷</span>
+                  <span>
+                    {shipment.deliveredAt ? 'Delivered' : 'Shipped'} on{' '}
+                    {formatShipmentDate(shipment.deliveredAt ?? shipment.shippedAt!)}
+                  </span>
+                </p>
+              ) : null}
+              {deliveryEstimate(group) ? (
+                <p>
+                  <span aria-hidden="true">◷</span>
+                  <span>{deliveryEstimate(group)}</span>
+                </p>
+              ) : null}
+              {shipment.trackingNumber ? (
+                <p>
+                  <span aria-hidden="true">▤</span>
+                  {shipment.trackingUrl ? (
+                    <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
+                      Tracking: {shipment.trackingNumber}
+                    </a>
+                  ) : (
+                    <span>Tracking: {shipment.trackingNumber}</span>
+                  )}
+                </p>
+              ) : null}
+            </div>
+          ))
+        ) : (
+          <div className="order-fulfillment-shipment">
+            <p>
+              <span aria-hidden="true">▣</span>
+              <strong>{group.shippingMethod ?? 'Shipping method pending'}</strong>
+            </p>
+            {deliveryEstimate(group) ? (
+              <p>
+                <span aria-hidden="true">◷</span>
+                <span>{deliveryEstimate(group)}</span>
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
 
       <div className="order-line-items">
         {group.items.map((item) => (
@@ -44,32 +101,23 @@ export function OrderFulfillmentGroup({
           </div>
         ))}
       </div>
-
-      {group.shipments.length ? (
-        <div className="order-shipment-block">
-          {group.shipments.map((shipment) => (
-            <div key={shipment.id}>
-              <span aria-hidden="true">↗</span>
-              <p>
-                <strong>
-                  {shipment.carrier ?? 'Shipment'}
-                  {shipment.service ? ` · ${shipment.service}` : ''}
-                </strong>
-                <small>{sentenceCase(shipment.state)}</small>
-              </p>
-              {shipment.trackingUrl ? (
-                <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
-                  {shipment.trackingNumber ?? 'Track shipment'}
-                </a>
-              ) : (
-                <small>{shipment.trackingNumber ?? 'Tracking pending'}</small>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <OrderPrintingSummary group={group} onOpen={onOpenPrinting} />
     </article>
   );
+}
+
+function deliveryEstimate(group: OrderGroup): string | null {
+  const min = group.estimatedDeliveryMinDays;
+  const max = group.estimatedDeliveryMaxDays;
+  if (min === null && max === null) return null;
+  if (min !== null && max !== null && min !== max)
+    return `Estimated delivery in ${min}–${max} business days`;
+  return `Estimated delivery in ${min ?? max} business days`;
+}
+
+function formatShipmentDate(value: string): string {
+  return new Date(value).toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }

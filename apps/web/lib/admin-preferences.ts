@@ -6,6 +6,8 @@ export type AdminPreferences = Readonly<{
   customerColumns: CustomerColumn[];
   customerView: CustomerViewPreference;
   customerSort: CustomerSortPreference;
+  orderView: OrderViewPreference;
+  orderSort: OrderSortPreference;
 }>;
 
 export const customerColumns = [
@@ -49,6 +51,23 @@ export type CustomerSortPreference =
   | 'CUSTOMER_ADDED_DESC'
   | 'CUSTOMER_UPDATED_ASC'
   | 'CUSTOMER_UPDATED_DESC';
+export type OrderViewPreference =
+  'ALL' | 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'ATTENTION' | 'CANCELLED';
+export type OrderSortPreference =
+  | 'ORDER_NUMBER_ASC'
+  | 'ORDER_NUMBER_DESC'
+  | 'DATE_ASC'
+  | 'DATE_DESC'
+  | 'CUSTOMER_ASC'
+  | 'CUSTOMER_DESC'
+  | 'ITEMS_ASC'
+  | 'ITEMS_DESC'
+  | 'PAYMENT_ASC'
+  | 'PAYMENT_DESC'
+  | 'FULFILLMENT_ASC'
+  | 'FULFILLMENT_DESC'
+  | 'TOTAL_ASC'
+  | 'TOTAL_DESC';
 
 export const defaultAdminPreferences: AdminPreferences = Object.freeze({
   customerColumnsVersion: 2,
@@ -56,6 +75,8 @@ export const defaultAdminPreferences: AdminPreferences = Object.freeze({
   customerColumns: [...customerColumns],
   customerView: 'ALL',
   customerSort: 'LAST_SEEN_DESC',
+  orderView: 'ALL',
+  orderSort: 'DATE_DESC',
 });
 
 type ReadableStorage = Pick<Storage, 'getItem'>;
@@ -90,10 +111,41 @@ export function parseAdminPreferences(value: string | null): AdminPreferences {
       customerColumns: [...new Set(migratedColumns)],
       customerView: parsedView,
       customerSort: isCustomerSort(parsed.customerSort) ? parsed.customerSort : 'LAST_SEEN_DESC',
+      orderView: isOrderView(parsed.orderView) ? parsed.orderView : 'ALL',
+      orderSort: isOrderSort(parsed.orderSort) ? parsed.orderSort : 'DATE_DESC',
     };
   } catch {
     return defaultAdminPreferences;
   }
+}
+
+function isOrderView(value: unknown): value is OrderViewPreference {
+  return (
+    typeof value === 'string' &&
+    ['ALL', 'OPEN', 'IN_PROGRESS', 'COMPLETED', 'ATTENTION', 'CANCELLED'].includes(value)
+  );
+}
+
+function isOrderSort(value: unknown): value is OrderSortPreference {
+  return (
+    typeof value === 'string' &&
+    [
+      'ORDER_NUMBER_ASC',
+      'ORDER_NUMBER_DESC',
+      'DATE_ASC',
+      'DATE_DESC',
+      'CUSTOMER_ASC',
+      'CUSTOMER_DESC',
+      'ITEMS_ASC',
+      'ITEMS_DESC',
+      'PAYMENT_ASC',
+      'PAYMENT_DESC',
+      'FULFILLMENT_ASC',
+      'FULFILLMENT_DESC',
+      'TOTAL_ASC',
+      'TOTAL_DESC',
+    ].includes(value)
+  );
 }
 
 export function readAdminPreferences(storage: ReadableStorage): AdminPreferences {
