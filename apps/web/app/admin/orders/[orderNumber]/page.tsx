@@ -9,7 +9,6 @@ export default async function AdminOrderDetailPage({
       orderNumber={orderNumber}
       apiBase="/api/admin/orders"
       pageBase="/admin/orders"
-      commerceFirst
     />
   );
 }

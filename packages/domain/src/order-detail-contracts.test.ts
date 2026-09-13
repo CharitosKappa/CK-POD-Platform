@@ -10,10 +10,7 @@ describe('order detail state projections', () => {
   it.each([
     [{ paymentStatus: 'PENDING', paidCents: 0, refundedCents: 0 }, 'PENDING'],
     [{ paymentStatus: 'SUCCEEDED', paidCents: 9306, refundedCents: 0 }, 'PAID'],
-    [
-      { paymentStatus: 'SUCCEEDED', paidCents: 9306, refundedCents: 3000 },
-      'PARTIALLY_REFUNDED',
-    ],
+    [{ paymentStatus: 'SUCCEEDED', paidCents: 9306, refundedCents: 3000 }, 'PARTIALLY_REFUNDED'],
     [{ paymentStatus: 'SUCCEEDED', paidCents: 9306, refundedCents: 9306 }, 'REFUNDED'],
     [{ paymentStatus: 'FAILED', paidCents: 0, refundedCents: 0 }, 'FAILED'],
     [{ paymentStatus: 'CANCELLED', paidCents: 0, refundedCents: 0 }, 'CANCELLED'],

@@ -26,17 +26,10 @@ export const printingGroupStates = [
 export type PrintingGroupState = (typeof printingGroupStates)[number];
 
 export type OrderPrintingState =
-  | PrintingGroupState
-  | 'PARTIALLY_IN_PRODUCTION'
-  | 'PARTIALLY_PRINTED'
-  | 'NEEDS_ATTENTION';
+  PrintingGroupState | 'PARTIALLY_IN_PRODUCTION' | 'PARTIALLY_PRINTED' | 'NEEDS_ATTENTION';
 
 export type FulfillmentState =
-  | 'UNFULFILLED'
-  | 'PARTIALLY_FULFILLED'
-  | 'FULFILLED'
-  | 'DELIVERED'
-  | 'CANCELLED';
+  'UNFULFILLED' | 'PARTIALLY_FULFILLED' | 'FULFILLED' | 'DELIVERED' | 'CANCELLED';
 
 export interface PaymentStateEvidence {
   paymentStatus: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null;

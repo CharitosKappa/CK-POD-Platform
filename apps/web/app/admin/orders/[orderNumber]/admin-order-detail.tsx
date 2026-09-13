@@ -3,100 +3,33 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import { AdminOrderActionDialog, type AdminOrderDialog } from './admin-order-action-dialog';
-
-type Shipment = {
-  trackingNumber: string | null;
-  trackingUrl: string | null;
-  carrier: string | null;
-  service: string | null;
-  status: string;
-};
-
-type FulfillmentGroup = {
-  id: string;
-  groupKey: string;
-  providerName: string;
-  status: string;
-  externalOrderId: string | null;
-  itemCount: number;
-  shipments: Shipment[];
-};
-
-type OperationalOrderDetail = {
-  orderNumber: string;
-  status: string;
-  customerEmail: string;
-  productName: string;
-  colorCode: string;
-  quantity: number;
-  createdAt: string;
-  latestReason: string | null;
-  policyOutcome: string | null;
-  policyFindingCodes: string[];
-  policyRulesetId: string | null;
-  fulfillmentGroups: FulfillmentGroup[];
-  customerName?: string;
-  totalCents?: number;
-  paymentStatus?: string;
-  shippingAddress?: Record<string, unknown>;
-  billingAddress?: Record<string, unknown>;
-  items?: Array<{ productName: string; color: string; size: string; quantity: number }>;
-};
-
-const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
-
-function addressLines(address?: Record<string, unknown>): string[] {
-  if (!address) return [];
-  const line = [address.line1, address.line2]
-    .filter((value) => typeof value === 'string' && value)
-    .join(', ');
-  const locality = [address.city, address.stateCode, address.postalCode]
-    .filter((value) => typeof value === 'string' && value)
-    .join(', ');
-  return [
-    line,
-    locality,
-    typeof address.countryCode === 'string' ? address.countryCode : '',
-  ].filter(Boolean);
-}
-
-function label(value: string): string {
-  return value.toLowerCase().replaceAll('_', ' ');
-}
-
-function directOrderAction(status: string): { label: string; action: string } | null {
-  if (status === 'PAID') return { label: 'Start prepress review', action: 'START_PREPRESS_REVIEW' };
-  if (status === 'ROUTING') return { label: 'Route order', action: 'ROUTE' };
-  return null;
-}
-
-function reviewDialog(status: string): AdminOrderDialog | null {
-  if (status === 'PREPRESS_REVIEW') return { kind: 'review', stage: 'PREPRESS' };
-  if (status === 'COMPLIANCE_REVIEW') return { kind: 'review', stage: 'COMPLIANCE' };
-  return null;
-}
+import { OrderDetailSidebar } from './order-detail-sidebar';
+import type { OrderDetail } from './order-detail-types';
+import { OrderFulfillmentGroup } from './order-fulfillment-group';
+import { OrderPaymentSummary } from './order-payment-summary';
+import { OrderPrintingModal } from './order-printing-modal';
+import { OrderStatusBadges } from './order-status-badges';
+import { OrderTimeline } from './order-timeline';
 
 export function AdminOrderDetail({
   orderNumber,
   apiBase = '/api/admin/orders',
   pageBase = '/admin/orders',
-  commerceFirst = false,
 }: Readonly<{
   orderNumber: string;
   apiBase?: string;
   pageBase?: string;
-  commerceFirst?: boolean;
 }>) {
-  const [order, setOrder] = useState<OperationalOrderDetail>();
+  const [order, setOrder] = useState<OrderDetail>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState<string>();
-  const [dialog, setDialog] = useState<AdminOrderDialog>();
+  const [printingGroupId, setPrintingGroupId] = useState<string>();
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
 
   const load = useCallback(async () => {
     const response = await fetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
-    const payload = (await response.json()) as { order?: OperationalOrderDetail; error?: string };
+    const payload = (await response.json()) as { order?: OrderDetail; error?: string };
     if (!response.ok || !payload.order)
       throw new Error(payload.error ?? 'Could not load this order.');
     setOrder(payload.order);
@@ -109,45 +42,59 @@ export function AdminOrderDetail({
     );
   }, [load]);
 
-  const act = async (
-    action: string,
-    payload: Record<string, string> = {},
-    key = action,
-  ): Promise<boolean> => {
+  const mutate = async (key: string, url: string, init: RequestInit): Promise<boolean> => {
     setBusy(key);
     setError(undefined);
     setNotice(undefined);
     try {
-      const response = await fetch(`${apiBase}/${encodeURIComponent(orderNumber)}/actions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action, ...payload }),
-      });
+      const response = await fetch(url, init);
       const result = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(result.error ?? 'Action failed.');
+      if (!response.ok) throw new Error(result.error ?? 'Could not update the order.');
       await load();
+      setTimelineRefresh((value) => value + 1);
       setNotice('Order updated.');
       return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Action failed.');
+      setError(reason instanceof Error ? reason.message : 'Could not update the order.');
       return false;
     } finally {
       setBusy(undefined);
     }
   };
 
+  const addNote = (body: string) =>
+    mutate('note', `${apiBase}/${encodeURIComponent(orderNumber)}/notes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body }),
+    });
+
+  const saveTags = (tags: string[]) =>
+    mutate('tags', `${apiBase}/${encodeURIComponent(orderNumber)}/tags`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tags }),
+    });
+
+  const runPrintingAction = async (action: string, groupId: string): Promise<boolean> => {
+    const operation = action === 'RESUME' ? 'RESUME' : 'SUBMIT_FULFILLMENT_GROUP';
+    return mutate(`printing:${action}`, `${apiBase}/${encodeURIComponent(orderNumber)}/actions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: operation, fulfillmentGroupId: groupId }),
+    });
+  };
+
   if (!order && !error)
     return (
-      <main className="ops-admin-page">
-        <p className="ops-admin-feedback">Loading order…</p>
+      <main className="ops-admin-page order-detail-page">
+        <p className="order-page-state">Loading order…</p>
       </main>
     );
 
-  const orderAction = order ? directOrderAction(order.status) : null;
-  const reviewAction = order ? reviewDialog(order.status) : null;
   return (
-    <main className="ops-admin-page ops-order-detail-page">
-      <Link className="ops-order-breadcrumb" href={pageBase}>
+    <main className="ops-admin-page order-detail-page">
+      <Link className="order-detail-breadcrumb" href={pageBase}>
         ← Orders
       </Link>
       {error ? (
@@ -162,252 +109,57 @@ export function AdminOrderDetail({
       ) : null}
       {order ? (
         <>
-          <header className="ops-admin-page-header ops-order-header">
+          <header className="order-detail-heading">
             <div>
-              <div className="ops-order-title-row">
-                <h1>{order.orderNumber}</h1>
-                <span className="ops-status-chip neutral">{label(order.status)}</span>
-              </div>
+              <h1>{order.orderNumber}</h1>
               <p>
-                {new Date(order.createdAt).toLocaleString('en-US')} · {order.customerEmail}
+                {new Date(order.createdAt).toLocaleString('en-US')} · {order.salesChannel}
               </p>
             </div>
-            <div className="ops-order-header-actions">
-              {['PAID', 'PREPRESS_REVIEW', 'COMPLIANCE_REVIEW', 'ROUTING'].includes(
-                order.status,
-              ) ? (
-                <button
-                  type="button"
-                  className="ops-admin-secondary"
-                  disabled={Boolean(busy)}
-                  onClick={() => setDialog({ kind: 'hold' })}
-                >
-                  Hold order
-                </button>
-              ) : null}
-              {order.status === 'ON_HOLD' ? (
-                <button
-                  type="button"
-                  className="ops-admin-primary"
-                  disabled={Boolean(busy)}
-                  onClick={() => setDialog({ kind: 'resume' })}
-                >
-                  Resume order
-                </button>
-              ) : null}
-              {reviewAction ? (
-                <button
-                  type="button"
-                  className="ops-admin-primary"
-                  disabled={Boolean(busy)}
-                  onClick={() => setDialog(reviewAction)}
-                >
-                  Review order
-                </button>
-              ) : null}
-              {orderAction ? (
-                <button
-                  type="button"
-                  className="ops-admin-primary"
-                  disabled={Boolean(busy)}
-                  onClick={() => void act(orderAction.action)}
-                >
-                  {busy === orderAction.action ? 'Updating…' : orderAction.label}
-                </button>
-              ) : null}
-            </div>
+            <OrderStatusBadges
+              payment={order.paymentState}
+              printing={order.printingState}
+              fulfillment={order.fulfillmentState}
+            />
           </header>
-          {commerceFirst ? (
-            <section className="commerce-order-overview">
-              <article className="commerce-admin-card commerce-order-items">
-                <header>
-                  <div>
-                    <p>Purchase</p>
-                    <h2>Items</h2>
-                  </div>
-                  <strong>{money.format((order.totalCents ?? 0) / 100)}</strong>
-                </header>
-                {(order.items ?? []).map((item, index) => (
-                  <div key={`${item.productName}-${index}`}>
-                    <span aria-hidden="true">{item.quantity}</span>
-                    <p>
-                      <strong>{item.productName}</strong>
-                      <small>
-                        {item.color} · {item.size}
-                      </small>
-                    </p>
-                    <b>× {item.quantity}</b>
-                  </div>
-                ))}
-              </article>
-              <aside>
-                <article className="commerce-admin-card commerce-order-customer">
-                  <header>
-                    <div>
-                      <p>Customer</p>
-                      <h2>{order.customerName ?? order.customerEmail}</h2>
-                    </div>
-                  </header>
-                  <a href={`mailto:${order.customerEmail}`}>{order.customerEmail}</a>
+
+          <div className="order-detail-grid">
+            <div className="order-detail-main">
+              {order.groups.map((group) => (
+                <OrderFulfillmentGroup
+                  key={group.id}
+                  group={group}
+                  onOpenPrinting={() => setPrintingGroupId(group.id)}
+                />
+              ))}
+              {!order.groups.length ? (
+                <article className="order-detail-card">
+                  <p className="order-empty-copy">No fulfillment groups have been created.</p>
                 </article>
-                <article className="commerce-admin-card commerce-order-address">
-                  <header>
-                    <div>
-                      <p>Delivery</p>
-                      <h2>Shipping address</h2>
-                    </div>
-                  </header>
-                  <address>
-                    {addressLines(order.shippingAddress).map((line) => (
-                      <span key={line}>{line}</span>
-                    ))}
-                  </address>
-                </article>
-              </aside>
-            </section>
-          ) : null}
-          <details className="ops-technical-details" open={!commerceFirst}>
-            <summary>Production and review details</summary>
-            <section className="ops-order-summary-card">
-              <div>
-                <span>Product</span>
-                <strong>{order.productName}</strong>
-              </div>
-              <div>
-                <span>Color</span>
-                <strong>{order.colorCode}</strong>
-              </div>
-              <div>
-                <span>Quantity</span>
-                <strong>{order.quantity}</strong>
-              </div>
-              <div>
-                <span>Customer</span>
-                <strong>{order.customerEmail}</strong>
-              </div>
-            </section>
-            <section className="ops-detail-card">
-              <header>
-                <h2>Review</h2>
-                <span>
-                  {order.policyOutcome ? `Policy: ${order.policyOutcome}` : 'Awaiting review'}
-                </span>
-              </header>
-              {order.latestReason || order.policyFindingCodes.length ? (
-                <p className="ops-review-callout">
-                  {order.latestReason?.replaceAll('_', ' ') ??
-                    order.policyFindingCodes.map((code) => code.replaceAll('_', ' ')).join(', ')}
-                </p>
-              ) : (
-                <p className="ops-muted-copy">No review finding is currently recorded.</p>
-              )}
-            </section>
-            <section className="ops-detail-card">
-              <header>
-                <h2>Fulfillment groups</h2>
-                <span>
-                  {order.fulfillmentGroups.length} group
-                  {order.fulfillmentGroups.length === 1 ? '' : 's'}
-                </span>
-              </header>
-              <div className="ops-group-list">
-                {order.fulfillmentGroups.map((group) => (
-                  <article key={group.id} className="ops-group-card">
-                    <div className="ops-group-heading">
-                      <div>
-                        <h3>{group.providerName}</h3>
-                        <p>
-                          {group.groupKey} · {group.itemCount} item
-                          {group.itemCount === 1 ? '' : 's'}
-                        </p>
-                      </div>
-                      <span className="ops-status-chip neutral">{label(group.status)}</span>
-                    </div>
-                    <dl className="ops-group-facts">
-                      <div>
-                        <dt>Readiness</dt>
-                        <dd>
-                          {group.status === 'READY_FOR_PRODUCTION' ? 'Ready' : label(group.status)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>External order</dt>
-                        <dd>{group.externalOrderId ?? 'Not submitted'}</dd>
-                      </div>
-                    </dl>
-                    <div className="ops-group-actions">
-                      {group.status === 'PENDING' ? (
-                        <button
-                          type="button"
-                          className="ops-admin-secondary"
-                          disabled={Boolean(busy)}
-                          onClick={() =>
-                            void act(
-                              'EVALUATE_FULFILLMENT_GROUP',
-                              { fulfillmentGroupId: group.id },
-                              `evaluate:${group.id}`,
-                            )
-                          }
-                        >
-                          {busy === `evaluate:${group.id}` ? 'Evaluating…' : 'Evaluate readiness'}
-                        </button>
-                      ) : null}
-                      {group.status === 'READY_FOR_PRODUCTION' ? (
-                        <button
-                          type="button"
-                          className="ops-admin-primary"
-                          disabled={Boolean(busy)}
-                          onClick={() =>
-                            void act(
-                              'SUBMIT_FULFILLMENT_GROUP',
-                              { fulfillmentGroupId: group.id },
-                              `submit:${group.id}`,
-                            )
-                          }
-                        >
-                          {busy === `submit:${group.id}` ? 'Submitting…' : 'Submit group'}
-                        </button>
-                      ) : null}
-                    </div>
-                    {group.shipments.length ? (
-                      <div className="ops-shipment-list">
-                        {group.shipments.map((shipment, index) => (
-                          <div key={`${shipment.trackingNumber ?? 'shipment'}-${index}`}>
-                            <strong>{shipment.carrier ?? 'Shipment'}</strong>
-                            <span>{shipment.service ?? shipment.status}</span>
-                            {shipment.trackingUrl ? (
-                              <a href={shipment.trackingUrl} target="_blank" rel="noreferrer">
-                                {shipment.trackingNumber ?? 'Track shipment'}
-                              </a>
-                            ) : (
-                              <span>{shipment.trackingNumber ?? 'Tracking pending'}</span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </article>
-                ))}
-                {!order.fulfillmentGroups.length ? (
-                  <p className="ops-admin-empty">No fulfillment groups have been created yet.</p>
-                ) : null}
-              </div>
-            </section>
-          </details>
+              ) : null}
+              <OrderPaymentSummary order={order} />
+              <OrderTimeline
+                orderNumber={orderNumber}
+                apiBase={apiBase}
+                refreshKey={timelineRefresh}
+              />
+            </div>
+            <OrderDetailSidebar
+              order={order}
+              busy={busy}
+              onAddNote={addNote}
+              onSaveTags={saveTags}
+            />
+          </div>
         </>
       ) : null}
-      {dialog ? (
-        <AdminOrderActionDialog
-          dialog={dialog}
-          busy={Boolean(busy)}
-          onClose={() => setDialog(undefined)}
-          onSubmit={(submission) => {
-            void act(submission.action, submission.payload, `dialog:${dialog.kind}`).then(
-              (succeeded) => {
-                if (succeeded) setDialog(undefined);
-              },
-            );
-          }}
+      {printingGroupId ? (
+        <OrderPrintingModal
+          orderNumber={orderNumber}
+          groupId={printingGroupId}
+          apiBase={apiBase}
+          onClose={() => setPrintingGroupId(undefined)}
+          onAction={runPrintingAction}
         />
       ) : null}
     </main>
