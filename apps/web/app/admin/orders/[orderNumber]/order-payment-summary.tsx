@@ -107,13 +107,15 @@ export function OrderPaymentSummary({
           </div>
         ) : null}
       </dl>
-      {(onCollectPayment && order.amountDueCents > 0) ||
+      {onCollectPayment ||
       (onRefund && order.eligibility?.actions.refund && order.refundableCents > 0) ? (
         <footer className="order-card-action-footer">
           <small>
             {order.amountDueCents > 0
               ? `${money.format(order.amountDueCents / 100)} due before production can resume`
-              : `${money.format(order.refundableCents / 100)} available to refund`}
+              : onCollectPayment
+                ? 'A previous payment attempt needs review'
+                : `${money.format(order.refundableCents / 100)} available to refund`}
           </small>
           <span className="order-payment-actions">
             {onRefund && order.eligibility?.actions.refund && order.refundableCents > 0 ? (
@@ -121,13 +123,13 @@ export function OrderPaymentSummary({
                 Refund
               </button>
             ) : null}
-            {onCollectPayment && order.amountDueCents > 0 ? (
+            {onCollectPayment ? (
               <button
                 type="button"
                 className="order-action-button is-primary"
                 onClick={onCollectPayment}
               >
-                Collect payment
+                {order.amountDueCents > 0 ? 'Collect payment' : 'Review payment'}
               </button>
             ) : null}
           </span>

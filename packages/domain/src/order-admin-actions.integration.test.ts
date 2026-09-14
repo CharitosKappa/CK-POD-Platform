@@ -569,6 +569,20 @@ suite('order archive transaction integration', () => {
       getRefundStatus: (input) => base.getRefundStatus(input),
     });
 
+    await pool.query('UPDATE app.orders SET amount_due_cents=0 WHERE id=$1', [f.orderId]);
+    const blockedDetail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(blockedDetail!.actionRecovery.additionalPayment).toBe(true);
+    await expect(
+      recovery.readOrRecover(staff, { orderNumber: f.orderNumber }),
+    ).resolves.toMatchObject({
+      paymentAttemptId: prepared.paymentAttemptId,
+      status: 'FAILED',
+    });
+    await pool.query('UPDATE app.orders SET amount_due_cents=$2 WHERE id=$1', [
+      f.orderId,
+      newerEdit.amountDueCents,
+    ]);
+
     await expect(recovery.reconcile(staff, paymentInput)).rejects.toBeInstanceOf(
       domain.OrderAdminActionConflictError,
     );
@@ -583,7 +597,7 @@ suite('order archive transaction integration', () => {
       duplicate: true,
     });
     expect(createIntent).not.toHaveBeenCalled();
-    expect(getIntent).toHaveBeenCalledTimes(3);
+    expect(getIntent).toHaveBeenCalledTimes(4);
     expect(
       (
         await pool.query('SELECT status FROM app.order_edit_payment_attempts WHERE id=$1', [

@@ -132,6 +132,7 @@ export interface AdminOrderDetail {
   actionRecovery: {
     canResume: boolean;
     cancellation: { cancellationId: string; status: CancellationStatus } | null;
+    additionalPayment: boolean;
   };
   archived: boolean;
   archivedAt: Date | null;
@@ -515,6 +516,7 @@ export class OrderDetailService {
       eligibility,
       actionRecovery: {
         canResume,
+        additionalPayment: canResume && order.additional_payment_active,
         cancellation:
           canResume &&
           cancellation &&

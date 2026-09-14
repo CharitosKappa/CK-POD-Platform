@@ -27,7 +27,7 @@ import { OrderTimelineDetails } from './order-timeline';
 import type { OrderDetail } from './order-detail-types';
 
 const order: OrderDetail = {
-  actionRecovery: { canResume: true, cancellation: null },
+  actionRecovery: { canResume: true, cancellation: null, additionalPayment: false },
   orderNumber: '#42',
   createdAt: '2026-09-14T12:00:00Z',
   salesChannel: 'Online Store',
@@ -185,6 +185,7 @@ describe('order action surfaces', () => {
       const recovery = {
         canResume: true,
         cancellation: { cancellationId: 'cancel-1', status },
+        additionalPayment: false,
       };
       const options = orderActionOptions(eligibility, recovery);
       expect(options.some((option) => option.action === 'cancel')).toBe(false);
@@ -214,10 +215,18 @@ describe('order action surfaces', () => {
       },
     };
     expect(
-      orderActionOptions(eligibility, { canResume: true, cancellation: null }, ['refund']),
+      orderActionOptions(
+        eligibility,
+        { canResume: true, cancellation: null, additionalPayment: false },
+        ['refund'],
+      ),
     ).toEqual([{ action: 'refund', label: 'Check refund request' }]);
     expect(
-      orderActionOptions(eligibility, { canResume: false, cancellation: null }, ['refund']),
+      orderActionOptions(
+        eligibility,
+        { canResume: false, cancellation: null, additionalPayment: false },
+        ['refund'],
+      ),
     ).toEqual([]);
   });
   it('omits generic structured timeline results containing internal action payloads', () => {
@@ -455,7 +464,10 @@ describe('order action surfaces', () => {
     expect(payment).toContain('Check status');
     expect(
       markup(OrderPaymentSummary, {
-        order: { ...pendingOrder, actionRecovery: { canResume: false, cancellation: null } },
+        order: {
+          ...pendingOrder,
+          actionRecovery: { canResume: false, cancellation: null, additionalPayment: false },
+        },
       }),
     ).not.toContain('Check status');
     const modal = markup(PendingRefundReconciliationModal, {

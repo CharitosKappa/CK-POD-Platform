@@ -130,5 +130,14 @@ describe('order printing controls', () => {
 
     expect(authorized).toContain('Collect payment');
     expect(restricted).not.toContain('Collect payment');
+
+    const recoveryOnly = renderToStaticMarkup(
+      createElement(OrderPaymentSummary, {
+        order: { ...order, amountDueCents: 0 } as OrderDetail,
+        onCollectPayment: vi.fn(),
+      }),
+    );
+    expect(recoveryOnly).toContain('Review payment');
+    expect(recoveryOnly).not.toContain('Collect payment');
   });
 });

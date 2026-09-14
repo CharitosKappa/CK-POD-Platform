@@ -48,6 +48,19 @@ export function createCollectPaymentClient(path: string, fetcher: PaymentFetcher
   };
 }
 
+export function createPersistedPaymentAcceptor(
+  onSaved: () => void | Promise<void>,
+): (attempt: CollectPaymentAttempt | null) => Promise<CollectPaymentAttempt | null> {
+  let savedAttemptId: string | undefined;
+  return async (attempt) => {
+    if (attempt?.status === 'SUCCEEDED' && savedAttemptId !== attempt.paymentAttemptId) {
+      await onSaved();
+      savedAttemptId = attempt.paymentAttemptId;
+    }
+    return attempt;
+  };
+}
+
 export function CollectPaymentModal(props: OrderActionModalProps) {
   const path = `${props.apiBase}/${encodeURIComponent(props.order.orderNumber)}/payments`;
   const client = useRef<ReturnType<typeof createCollectPaymentClient> | undefined>(undefined);
@@ -58,15 +71,28 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState<string>();
-  const savedAttempt = useRef<string | undefined>(undefined);
+  const [refreshRequired, setRefreshRequired] = useState(false);
+  const persistedAcceptor = useRef<ReturnType<typeof createPersistedPaymentAcceptor> | undefined>(
+    undefined,
+  );
+  persistedAcceptor.current ??= createPersistedPaymentAcceptor(() => callbacks.current.onSaved());
 
   const accept = useCallback(async (next: CollectPaymentAttempt | null) => {
     setAttempt(next);
-    if (next?.status === 'SUCCEEDED' && savedAttempt.current !== next.paymentAttemptId) {
-      savedAttempt.current = next.paymentAttemptId;
-      await callbacks.current.onSaved();
+    try {
+      const accepted = await persistedAcceptor.current!(next);
+      setRefreshRequired(false);
+      return accepted;
+    } catch (reason) {
+      if (next?.status === 'SUCCEEDED') {
+        setRefreshRequired(true);
+        throw new Error(
+          'Payment is confirmed, but the order could not refresh. Retry the order refresh.',
+          { cause: reason },
+        );
+      }
+      throw reason;
     }
-    return next;
   }, []);
 
   const read = useCallback(async () => {
@@ -84,7 +110,7 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
   }, [read]);
 
   async function prepare() {
-    if (busy) return;
+    if (!collectionAllowed || busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -97,7 +123,7 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
   }
 
   async function simulate() {
-    if (busy) return;
+    if (!collectionAllowed || busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -123,11 +149,14 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
   }
 
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
-  const terminal = attempt?.status === 'SUCCEEDED';
-  const canPrepare = !attempt || attempt.status === 'FAILED' || attempt.status === 'CANCELLED';
+  const collectionAllowed = props.order.amountDueCents > 0;
+  const terminal = attempt?.status === 'SUCCEEDED' && !refreshRequired;
+  const canPrepare =
+    collectionAllowed &&
+    (!attempt || attempt.status === 'FAILED' || attempt.status === 'CANCELLED');
   return (
     <OrderActionModal
-      title="Collect payment"
+      title={collectionAllowed ? 'Collect payment' : 'Review payment'}
       onClose={props.onClose}
       busy={busy || waiting}
       footer={
@@ -150,7 +179,7 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
               {busy ? 'Preparing…' : 'Prepare payment'}
             </button>
           ) : null}
-          {attempt?.status === 'PREPARING' ? (
+          {attempt?.status === 'PREPARING' && collectionAllowed ? (
             <button
               className="order-action-button is-primary"
               type="button"
@@ -160,7 +189,7 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
               Resume preparation
             </button>
           ) : null}
-          {attempt && !terminal && attempt.status !== 'PREPARING' ? (
+          {attempt && !terminal && (attempt.status !== 'PREPARING' || !collectionAllowed) ? (
             <button
               className="order-action-button"
               type="button"
@@ -170,22 +199,34 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
               {waiting ? 'Checking…' : 'Check status'}
             </button>
           ) : null}
+          {refreshRequired ? (
+            <button
+              className="order-action-button is-primary"
+              type="button"
+              disabled={busy || waiting}
+              onClick={() => void read()}
+            >
+              Refresh order
+            </button>
+          ) : null}
         </>
       }
     >
       <div className="order-collect-payment">
         <div className="order-action-confirmation">
-          <small>Amount due</small>
+          <small>{collectionAllowed ? 'Amount due' : 'Recorded payment attempt'}</small>
           <h3>{formatMoney(attempt?.amountCents ?? props.order.amountDueCents)}</h3>
           <p>
-            Payment clears the edited balance. Production remains on hold until an authorized
-            operator explicitly resumes it.
+            {collectionAllowed
+              ? 'Payment clears the edited balance. Production remains on hold until an authorized operator explicitly resumes it.'
+              : 'This recorded attempt is blocking order actions. Checking its provider status is read-only and cannot collect a new payment.'}
           </p>
         </div>
         {attempt === undefined ? <p role="status">Loading payment status…</p> : null}
         {attempt?.status === 'PENDING' &&
         attempt.clientSecret &&
         publishableKey &&
+        collectionAllowed &&
         !attempt.developmentSimulationAvailable ? (
           <StripeOrderEditPaymentForm
             publishableKey={publishableKey}
@@ -196,7 +237,9 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
             }
           />
         ) : null}
-        {attempt?.status === 'PENDING' && attempt.developmentSimulationAvailable ? (
+        {attempt?.status === 'PENDING' &&
+        collectionAllowed &&
+        attempt.developmentSimulationAvailable ? (
           <div className="order-local-payment-control">
             <small>Local development control</small>
             <button
@@ -210,6 +253,7 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
           </div>
         ) : null}
         {attempt?.status === 'PENDING' &&
+        collectionAllowed &&
         !attempt.developmentSimulationAvailable &&
         !publishableKey ? (
           <p role="status">
@@ -247,37 +291,22 @@ export function StripeOrderEditPaymentForm({
 }>) {
   const mount = useRef<HTMLDivElement>(null);
   const elements = useRef<StripeElements | undefined>(undefined);
-  const element = useRef<{ mount(node: HTMLElement): void; destroy(): void } | undefined>(
-    undefined,
-  );
   const [ready, setReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-stripe-js]');
-    const script =
-      existing ??
-      Object.assign(document.createElement('script'), {
-        src: 'https://js.stripe.com/v3/',
-        async: true,
-        dataset: { stripeJs: 'true' },
-      });
-    const initialize = () => {
-      const stripeFactory = stripeFromWindow();
-      if (!stripeFactory || !mount.current) return;
-      const stripe = stripeFactory(publishableKey);
-      elements.current = stripe.elements({ clientSecret, appearance: { theme: 'stripe' } });
-      element.current = elements.current.create('payment');
-      element.current.mount(mount.current);
-      setReady(true);
-    };
-    script.addEventListener('load', initialize, { once: true });
-    if (!existing) document.head.appendChild(script);
-    else initialize();
-    return () => {
-      script.removeEventListener('load', initialize);
-      element.current?.destroy();
-    };
+    if (!mount.current) return;
+    return installStripePaymentElement({
+      document,
+      mount: mount.current,
+      publishableKey,
+      clientSecret,
+      stripeFactory: stripeFromWindow,
+      onReady(nextElements) {
+        elements.current = nextElements;
+        setReady(true);
+      },
+    });
   }, [clientSecret, publishableKey]);
 
   async function confirm() {
@@ -307,6 +336,49 @@ export function StripeOrderEditPaymentForm({
       </button>
     </div>
   );
+}
+
+export function installStripePaymentElement({
+  document,
+  mount,
+  publishableKey,
+  clientSecret,
+  stripeFactory,
+  onReady,
+}: Readonly<{
+  document: Document;
+  mount: HTMLDivElement;
+  publishableKey: string;
+  clientSecret: string;
+  stripeFactory: () => ((key: string) => StripeInstance) | undefined;
+  onReady: (elements: StripeElements) => void;
+}>): () => void {
+  const existing = document.querySelector<HTMLScriptElement>('script[data-stripe-js]');
+  const script = existing ?? document.createElement('script');
+  if (!existing) {
+    script.src = 'https://js.stripe.com/v3/';
+    script.async = true;
+    script.setAttribute('data-stripe-js', 'true');
+  }
+  let paymentElement: ReturnType<StripeElements['create']> | undefined;
+  const initialize = () => {
+    const createStripe = stripeFactory();
+    if (!createStripe || paymentElement) return;
+    const elements = createStripe(publishableKey).elements({
+      clientSecret,
+      appearance: { theme: 'stripe' },
+    });
+    paymentElement = elements.create('payment');
+    paymentElement.mount(mount);
+    onReady(elements);
+  };
+  script.addEventListener('load', initialize, { once: true });
+  if (!existing) document.head.appendChild(script);
+  else initialize();
+  return () => {
+    script.removeEventListener('load', initialize);
+    paymentElement?.destroy();
+  };
 }
 
 function formatMoney(cents: number) {

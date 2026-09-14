@@ -6,6 +6,9 @@ import {
   CollectPaymentModal,
   StripeOrderEditPaymentForm,
   createCollectPaymentClient,
+  createPersistedPaymentAcceptor,
+  installStripePaymentElement,
+  type CollectPaymentAttempt,
 } from './collect-payment-modal';
 import type { OrderDetail } from './order-detail-types';
 
@@ -63,4 +66,67 @@ describe('additional payment admin UI', () => {
     expect(html).toContain('Secure payment details');
     expect(html).not.toContain(attempt.clientSecret);
   });
+
+  it('inserts and initializes a fresh Stripe script without assigning dataset', () => {
+    const script = Object.assign(new EventTarget(), {
+      src: '',
+      async: false,
+      setAttribute: vi.fn(),
+    }) as unknown as HTMLScriptElement;
+    const paymentElement = { mount: vi.fn(), destroy: vi.fn() };
+    const stripe = {
+      elements: vi.fn(() => ({ create: vi.fn(() => paymentElement) })),
+      confirmPayment: vi.fn(),
+    };
+    const document = {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => script),
+      head: {
+        appendChild: vi.fn((node: EventTarget) => {
+          node.dispatchEvent(new Event('load'));
+          return node;
+        }),
+      },
+    } as unknown as Document;
+    const mount = {} as HTMLDivElement;
+
+    const cleanup = installStripePaymentElement({
+      document,
+      mount,
+      publishableKey: 'pk_test_public',
+      clientSecret: attempt.clientSecret,
+      stripeFactory: () => () => stripe,
+      onReady: vi.fn(),
+    });
+
+    expect(script.src).toBe('https://js.stripe.com/v3/');
+    expect(script.async).toBe(true);
+    expect(script.setAttribute).toHaveBeenCalledWith('data-stripe-js', 'true');
+    expect(document.head.appendChild).toHaveBeenCalledWith(script);
+    expect(stripe.elements).toHaveBeenCalledWith({
+      clientSecret: attempt.clientSecret,
+      appearance: { theme: 'stripe' },
+    });
+    expect(paymentElement.mount).toHaveBeenCalledWith(mount);
+    cleanup();
+    expect(paymentElement.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('retries the persisted order refresh when the first refresh fails', async () => {
+    const onSaved = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('refresh failed'))
+      .mockResolvedValueOnce(undefined);
+    const accept = createPersistedPaymentAcceptor(onSaved);
+
+    await expect(accept(attemptWithStatus('SUCCEEDED'))).rejects.toThrow('refresh failed');
+    await expect(accept(attemptWithStatus('SUCCEEDED'))).resolves.toMatchObject({
+      status: 'SUCCEEDED',
+    });
+    expect(onSaved).toHaveBeenCalledTimes(2);
+  });
 });
+
+function attemptWithStatus(status: CollectPaymentAttempt['status']): CollectPaymentAttempt {
+  return { ...attempt, status };
+}

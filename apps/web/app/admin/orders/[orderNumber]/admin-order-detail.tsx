@@ -203,7 +203,8 @@ export function AdminOrderDetail({
               <OrderPaymentSummary
                 order={order}
                 onRefund={() => openAction('refund')}
-                {...(order.actionRecovery.canResume && order.amountDueCents > 0
+                {...(order.actionRecovery.canResume &&
+                (order.amountDueCents > 0 || order.actionRecovery.additionalPayment)
                   ? {
                       onCollectPayment: () => {
                         actionTrigger.current = document.activeElement as HTMLElement | null;

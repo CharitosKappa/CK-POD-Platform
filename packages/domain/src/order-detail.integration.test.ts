@@ -362,9 +362,14 @@ suite('order detail persistence integration', () => {
       expect(detail!.actionRecovery).toEqual({
         canResume: true,
         cancellation: { cancellationId: cancellation.id, status },
+        additionalPayment: false,
       });
       const readonly = await service.getOrder({ ...staff, role: 'READ_ONLY' }, order.orderNumber);
-      expect(readonly!.actionRecovery).toEqual({ canResume: false, cancellation: null });
+      expect(readonly!.actionRecovery).toEqual({
+        canResume: false,
+        cancellation: null,
+        additionalPayment: false,
+      });
     },
   );
 

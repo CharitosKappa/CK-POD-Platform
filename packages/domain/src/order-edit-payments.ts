@@ -176,12 +176,19 @@ export class OrderEditPaymentService {
     const current = await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, input.orderNumber);
       const revisionId = optionalEditBalanceRevision(order);
-      if (!revisionId) return { order, attempt: null };
       const attempt = (
         await client.query<AttemptRow>(
           `SELECT * FROM app.order_edit_payment_attempts
-           WHERE order_id=$1 AND order_revision_id=$2
-           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+           WHERE order_id=$1 AND (
+             status IN ('PREPARING','PENDING')
+             OR (status='FAILED' AND provider_payment_id IS NOT NULL)
+             OR ($2::uuid IS NOT NULL AND order_revision_id=$2::uuid)
+           )
+           ORDER BY CASE WHEN status IN ('PREPARING','PENDING')
+                    OR (status='FAILED' AND provider_payment_id IS NOT NULL)
+                    THEN 0 ELSE 1 END,
+                    created_at DESC
+           LIMIT 1 FOR UPDATE`,
           [order.id, revisionId],
         )
       ).rows[0];
@@ -190,7 +197,7 @@ export class OrderEditPaymentService {
     if (!current.attempt) return null;
     if (isTerminal(current.attempt.status)) return publicResult(current.attempt, true);
     if (current.attempt.provider_submission_started_at || current.attempt.provider_payment_id)
-      return this.recoverIntent(current.order, current.attempt);
+      return this.recoverIntent(current.order, current.attempt, true);
     return publicResult(current.attempt, true);
   }
 
@@ -476,6 +483,7 @@ export class OrderEditPaymentService {
   private async recoverIntent(
     order: OrderRow,
     attempt: AttemptRow,
+    allowStaleRead = false,
   ): Promise<OrderEditPaymentResult> {
     const request = attempt.request_snapshot;
     let intent = attempt.provider_payment_id
@@ -499,6 +507,12 @@ export class OrderEditPaymentService {
         throw new OrderAdminActionNotFoundError('Additional payment attempt not found.');
       if (isTerminal(current.status)) return current;
       const status = intent.status === 'CANCELLED' ? 'CANCELLED' : 'PENDING';
+      if (
+        status !== 'CANCELLED' &&
+        allowStaleRead &&
+        !matchesPayableRevision(currentOrder, current.order_revision_id, current.amount_cents)
+      )
+        return current;
       if (status !== 'CANCELLED')
         assertPayableRevision(currentOrder, current.order_revision_id, current.amount_cents);
       return (
@@ -573,17 +587,20 @@ async function lockOrderById(client: SqlClient, id: string): Promise<OrderRow> {
 }
 
 function assertPayableRevision(order: OrderRow, revisionId: string, amount?: number): void {
-  const currency = order.pricing_snapshot.currency;
-  if (
-    order.status !== 'ON_HOLD' ||
-    order.amount_due_cents <= 0 ||
-    (amount !== undefined && order.amount_due_cents !== amount) ||
-    currency !== 'USD' ||
-    order.financial_snapshot.editBalanceRevisionId !== revisionId
-  )
+  if (!matchesPayableRevision(order, revisionId, amount))
     throw new OrderAdminActionConflictError(
       'The order does not have a matching edited-order balance ready for payment.',
     );
+}
+
+function matchesPayableRevision(order: OrderRow, revisionId: string, amount?: number): boolean {
+  return (
+    order.status === 'ON_HOLD' &&
+    order.amount_due_cents > 0 &&
+    (amount === undefined || order.amount_due_cents === amount) &&
+    order.pricing_snapshot.currency === 'USD' &&
+    order.financial_snapshot.editBalanceRevisionId === revisionId
+  );
 }
 
 function optionalEditBalanceRevision(order: OrderRow): string | null {
