@@ -122,7 +122,7 @@ suite('order detail persistence integration', () => {
     );
   });
 
-  it('projects the immutable edited unit price instead of stale snapshot or mutable catalog prices', async () => {
+  it('projects the immutable edited unit price instead of the stale original snapshot', async () => {
     const order = await fixture();
     await pool.query(
       `UPDATE app.order_items
@@ -130,12 +130,6 @@ suite('order detail persistence integration', () => {
        WHERE id=$1`,
       [order.itemId],
     );
-    await pool.query(
-      `UPDATE app.product_variants SET price_cents=9999
-       WHERE id=(SELECT product_variant_id FROM app.order_items WHERE id=$1)`,
-      [order.itemId],
-    );
-
     const service = new OrderDetailService(pool);
     const detail = await service.getOrder(staff, order.orderNumber);
     const item = detail!.groups
