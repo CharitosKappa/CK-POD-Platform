@@ -577,6 +577,8 @@ suite('order archive transaction integration', () => {
     ).resolves.toMatchObject({
       paymentAttemptId: prepared.paymentAttemptId,
       status: 'FAILED',
+      collectionAllowed: false,
+      clientSecret: null,
     });
     await pool.query('UPDATE app.orders SET amount_due_cents=$2 WHERE id=$1', [
       f.orderId,
@@ -976,7 +978,7 @@ suite('order archive transaction integration', () => {
   it('blocks refund and cancellation while an additional PaymentIntent can still charge', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const { actions } = editService();
-    const edit = await actions.editOrder(staff, { ...f.input(), shippingCents: 1000 });
+    await actions.editOrder(staff, { ...f.input(), shippingCents: 1000 });
     const payments = new domain.FakePaymentService();
     await new domain.OrderEditPaymentService(actionDatabase.pool, payments).prepare(staff, {
       orderNumber: f.orderNumber,
@@ -1080,7 +1082,7 @@ suite('order archive transaction integration', () => {
 
   it('allows only one active additional-payment attempt per edited order', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
-    const edit = await editService().actions.editOrder(staff, {
+    await editService().actions.editOrder(staff, {
       ...f.input(),
       shippingCents: 1000,
     });
@@ -1114,7 +1116,7 @@ suite('order archive transaction integration', () => {
       fixture('UNFULFILLED', 'PAID', 'NOT_STARTED'),
     ]);
     const { actions } = editService();
-    const [firstEdit, secondEdit] = await Promise.all([
+    await Promise.all([
       actions.editOrder(staff, { ...first.input(), shippingCents: 1000 }),
       actions.editOrder(staff, { ...second.input(), shippingCents: 1000 }),
     ]);

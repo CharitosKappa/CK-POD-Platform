@@ -1,4 +1,4 @@
-import React, { createElement } from 'react';
+import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ import {
   createCollectPaymentClient,
   createPersistedPaymentAcceptor,
   installStripePaymentElement,
+  paymentCollectionAllowed,
   type CollectPaymentAttempt,
 } from './collect-payment-modal';
 import type { OrderDetail } from './order-detail-types';
@@ -21,6 +22,7 @@ const attempt = {
   clientSecret: 'client_secret_not_rendered',
   duplicate: false,
   developmentSimulationAvailable: false,
+  collectionAllowed: true,
 };
 
 describe('additional payment admin UI', () => {
@@ -124,6 +126,19 @@ describe('additional payment admin UI', () => {
       status: 'SUCCEEDED',
     });
     expect(onSaved).toHaveBeenCalledTimes(2);
+  });
+
+  it('never allows an obsolete recovered attempt to mount or submit collection', () => {
+    expect(
+      paymentCollectionAllowed(900, {
+        ...attempt,
+        amountCents: 700,
+        collectionAllowed: false,
+        clientSecret: null,
+      }),
+    ).toBe(false);
+    expect(paymentCollectionAllowed(900, null)).toBe(true);
+    expect(paymentCollectionAllowed(900, undefined)).toBe(false);
   });
 });
 

@@ -51,6 +51,7 @@ function publicPayment(payment: {
   amountCents: number;
   currency: string;
   clientSecret: string | null;
+  collectionAllowed: boolean;
   duplicate: boolean;
 }) {
   const environment = serverEnvironment();
@@ -60,9 +61,12 @@ function publicPayment(payment: {
     status: payment.status,
     amountCents: payment.amountCents,
     currency: payment.currency,
-    clientSecret: payment.clientSecret,
+    clientSecret: payment.collectionAllowed ? payment.clientSecret : null,
+    collectionAllowed: payment.collectionAllowed,
     duplicate: payment.duplicate,
     developmentSimulationAvailable:
-      environment.PAYMENT_ADAPTER === 'fake' && ['local', 'test'].includes(environment.APP_ENV),
+      payment.collectionAllowed &&
+      environment.PAYMENT_ADAPTER === 'fake' &&
+      ['local', 'test'].includes(environment.APP_ENV),
   };
 }

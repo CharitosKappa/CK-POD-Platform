@@ -37,6 +37,7 @@ export interface OrderEditPaymentResult {
   amountCents: number;
   currency: 'USD';
   clientSecret: string | null;
+  collectionAllowed: boolean;
   duplicate: boolean;
 }
 
@@ -160,7 +161,8 @@ export class OrderEditPaymentService {
       prepared.attempt.provider_submission_started_at
     )
       return this.recoverIntent(prepared.order, prepared.attempt);
-    if (prepared.attempt.status !== 'PREPARING') return publicResult(prepared.attempt, true);
+    if (prepared.attempt.status !== 'PREPARING')
+      return publicResult(prepared.order, prepared.attempt, true);
     if (prepared.attempt.provider_submission_started_at)
       return this.recoverIntent(prepared.order, prepared.attempt);
     return this.submitIntent(prepared.order, prepared.attempt, prepared.duplicate);
@@ -195,10 +197,11 @@ export class OrderEditPaymentService {
       return { order, attempt: attempt ?? null };
     });
     if (!current.attempt) return null;
-    if (isTerminal(current.attempt.status)) return publicResult(current.attempt, true);
+    if (isTerminal(current.attempt.status))
+      return publicResult(current.order, current.attempt, true);
     if (current.attempt.provider_submission_started_at || current.attempt.provider_payment_id)
       return this.recoverIntent(current.order, current.attempt, true);
-    return publicResult(current.attempt, true);
+    return publicResult(current.order, current.attempt, true);
   }
 
   /** Local/test-only caller gate lives at the route; adapter verification keeps this fake-only. */
@@ -274,12 +277,13 @@ export class OrderEditPaymentService {
       return { order, attempt: attempt ?? null };
     });
     if (!recorded.attempt) return this.prepare(session, input);
-    if (isTerminal(recorded.attempt.status)) return publicResult(recorded.attempt, true);
+    if (isTerminal(recorded.attempt.status))
+      return publicResult(recorded.order, recorded.attempt, true);
     if (recorded.attempt.provider_submission_started_at || recorded.attempt.provider_payment_id)
       return this.recoverIntent(recorded.order, recorded.attempt);
     if (recorded.attempt.status === 'PREPARING')
       return this.submitIntent(recorded.order, recorded.attempt, true);
-    return publicResult(recorded.attempt, true);
+    return publicResult(recorded.order, recorded.attempt, true);
   }
 
   /** Settles only a cryptographically verified provider event supplied by the webhook boundary. */
@@ -444,7 +448,7 @@ export class OrderEditPaymentService {
         ? error
         : new PaymentIntentUncertainError();
     }
-    let persisted: AttemptRow;
+    let persisted: { order: OrderRow; attempt: AttemptRow };
     try {
       persisted = await withTransaction(this.pool, async (client) => {
         const currentOrder = await lockOrderById(client, order.id);
@@ -456,9 +460,9 @@ export class OrderEditPaymentService {
         ).rows[0];
         if (!current)
           throw new OrderAdminActionNotFoundError('Additional payment attempt not found.');
-        if (current.status !== 'PREPARING') return current;
+        if (current.status !== 'PREPARING') return { order: currentOrder, attempt: current };
         assertPayableRevision(currentOrder, current.order_revision_id, current.amount_cents);
-        return (
+        const updated = (
           await client.query<AttemptRow>(
             `UPDATE app.order_edit_payment_attempts
            SET status='PENDING',provider=$2,provider_payment_id=$3,provider_client_secret=$4,
@@ -473,11 +477,12 @@ export class OrderEditPaymentService {
             ],
           )
         ).rows[0]!;
+        return { order: currentOrder, attempt: updated };
       });
     } catch {
       throw new PaymentIntentUncertainError();
     }
-    return publicResult(persisted, duplicate);
+    return publicResult(persisted.order, persisted.attempt, duplicate);
   }
 
   private async recoverIntent(
@@ -486,7 +491,7 @@ export class OrderEditPaymentService {
     allowStaleRead = false,
   ): Promise<OrderEditPaymentResult> {
     const request = attempt.request_snapshot;
-    let intent = attempt.provider_payment_id
+    const intent = attempt.provider_payment_id
       ? await this.payments.getIntent?.({
           providerPaymentId: attempt.provider_payment_id,
           request,
@@ -505,17 +510,17 @@ export class OrderEditPaymentService {
       ).rows[0];
       if (!current)
         throw new OrderAdminActionNotFoundError('Additional payment attempt not found.');
-      if (isTerminal(current.status)) return current;
+      if (isTerminal(current.status)) return { order: currentOrder, attempt: current };
       const status = intent.status === 'CANCELLED' ? 'CANCELLED' : 'PENDING';
       if (
         status !== 'CANCELLED' &&
         allowStaleRead &&
         !matchesPayableRevision(currentOrder, current.order_revision_id, current.amount_cents)
       )
-        return current;
+        return { order: currentOrder, attempt: current };
       if (status !== 'CANCELLED')
         assertPayableRevision(currentOrder, current.order_revision_id, current.amount_cents);
-      return (
+      const updated = (
         await client.query<AttemptRow>(
           `UPDATE app.order_edit_payment_attempts SET status=$2,provider=$3,provider_payment_id=$4,
            provider_client_secret=$5,provider_status=$6,
@@ -531,8 +536,9 @@ export class OrderEditPaymentService {
           ],
         )
       ).rows[0]!;
+      return { order: currentOrder, attempt: updated };
     });
-    return publicResult(persisted, true);
+    return publicResult(persisted.order, persisted.attempt, true);
   }
 }
 
@@ -684,14 +690,20 @@ async function audit(
   );
 }
 
-function publicResult(row: AttemptRow, duplicate: boolean): OrderEditPaymentResult {
+function publicResult(
+  order: OrderRow,
+  row: AttemptRow,
+  duplicate: boolean,
+): OrderEditPaymentResult {
+  const collectionAllowed = matchesPayableRevision(order, row.order_revision_id, row.amount_cents);
   return {
     paymentAttemptId: row.id,
     orderRevisionId: row.order_revision_id,
     status: row.status,
     amountCents: row.amount_cents,
     currency: row.currency,
-    clientSecret: row.provider_client_secret,
+    clientSecret: collectionAllowed ? row.provider_client_secret : null,
+    collectionAllowed,
     duplicate,
   };
 }

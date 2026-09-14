@@ -13,6 +13,7 @@ export type CollectPaymentAttempt = {
   amountCents: number;
   currency: 'USD';
   clientSecret: string | null;
+  collectionAllowed: boolean;
   duplicate: boolean;
   developmentSimulationAvailable: boolean;
 };
@@ -149,14 +150,16 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
   }
 
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
-  const collectionAllowed = props.order.amountDueCents > 0;
+  const collectionAllowed = paymentCollectionAllowed(props.order.amountDueCents, attempt);
+  const collectionContext =
+    attempt === undefined ? props.order.amountDueCents > 0 : collectionAllowed;
   const terminal = attempt?.status === 'SUCCEEDED' && !refreshRequired;
   const canPrepare =
     collectionAllowed &&
     (!attempt || attempt.status === 'FAILED' || attempt.status === 'CANCELLED');
   return (
     <OrderActionModal
-      title={collectionAllowed ? 'Collect payment' : 'Review payment'}
+      title={collectionContext ? 'Collect payment' : 'Review payment'}
       onClose={props.onClose}
       busy={busy || waiting}
       footer={
@@ -214,10 +217,10 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
     >
       <div className="order-collect-payment">
         <div className="order-action-confirmation">
-          <small>{collectionAllowed ? 'Amount due' : 'Recorded payment attempt'}</small>
+          <small>{collectionContext ? 'Amount due' : 'Recorded payment attempt'}</small>
           <h3>{formatMoney(attempt?.amountCents ?? props.order.amountDueCents)}</h3>
           <p>
-            {collectionAllowed
+            {collectionContext
               ? 'Payment clears the edited balance. Production remains on hold until an authorized operator explicitly resumes it.'
               : 'This recorded attempt is blocking order actions. Checking its provider status is read-only and cannot collect a new payment.'}
           </p>
@@ -276,6 +279,15 @@ export function CollectPaymentModal(props: OrderActionModalProps) {
       </div>
     </OrderActionModal>
   );
+}
+
+export function paymentCollectionAllowed(
+  amountDueCents: number,
+  attempt: CollectPaymentAttempt | null | undefined,
+): boolean {
+  if (attempt === undefined) return false;
+  if (attempt === null) return amountDueCents > 0;
+  return attempt.collectionAllowed;
 }
 
 export function StripeOrderEditPaymentForm({

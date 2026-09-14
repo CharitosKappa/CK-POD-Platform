@@ -27,6 +27,7 @@ routeContract({
     amountCents: 700,
     currency: 'USD',
     clientSecret: 'client-secret',
+    collectionAllowed: true,
     duplicate: false,
     developmentSimulationAvailable: true,
   },
@@ -54,6 +55,7 @@ describe('additional payment response boundary', () => {
       amountCents: 700,
       currency: 'USD',
       clientSecret: 'client-secret',
+      collectionAllowed: true,
       duplicate: false,
       developmentSimulationAvailable: true,
       providerPaymentId: 'pi_private',
@@ -83,6 +85,7 @@ describe('additional payment response boundary', () => {
       amountCents: 700,
       currency: 'USD',
       clientSecret: 'client-secret',
+      collectionAllowed: true,
       duplicate: true,
     });
     const response = await GET(
@@ -92,6 +95,32 @@ describe('additional payment response boundary', () => {
     expect(response.status).toBe(200);
     expect(doubles.readAdditionalPayment).toHaveBeenCalledWith(actor, { orderNumber: '#1' });
     expect(await response.text()).not.toMatch(/providerPaymentId|pi_private/);
+  });
+
+  it('suppresses collection credentials for an obsolete recovery attempt', async () => {
+    doubles.readAdditionalPayment.mockResolvedValue({
+      paymentAttemptId: uuid,
+      orderRevisionId: uuid,
+      status: 'PENDING',
+      amountCents: 700,
+      currency: 'USD',
+      clientSecret: 'obsolete-client-secret',
+      collectionAllowed: false,
+      duplicate: true,
+    });
+
+    const response = await GET(
+      new Request('http://localhost/api/admin/orders/%231/payments'),
+      context,
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        collectionAllowed: false,
+        clientSecret: null,
+        developmentSimulationAvailable: false,
+      },
+    });
   });
 
   it.each(['READ_ONLY', 'PREPRESS'] as const)(
