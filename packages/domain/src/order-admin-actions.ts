@@ -821,9 +821,14 @@ export class OrderAdminActionsService {
           return { cancellation, execute: false, duplicate: true };
         }
         workerLock = key;
-        // Recovery still finalizes previously confirmed provider work if newer evidence
-        // prevents further cancellation. Each unresolved provider claim revalidates below.
-        if (!eligibility.actions.cancel && cancellation?.status !== 'PROCESSING')
+        // A matching recorded recovery may reconcile old work even after new evidence
+        // blocks cancellation. This does not authorize another provider mutation: each
+        // unresolved group still revalidates, and started ambiguous attempts are GET-only.
+        const recordedRecovery =
+          cancellation &&
+          (retry || existing) &&
+          ['REQUESTED', 'PROCESSING', 'PARTIAL', 'FAILED'].includes(cancellation.status);
+        if (!eligibility.actions.cancel && !recordedRecovery)
           throw new OrderAdminActionConflictError(
             'This order is not eligible for cancellation.',
             eligibility,

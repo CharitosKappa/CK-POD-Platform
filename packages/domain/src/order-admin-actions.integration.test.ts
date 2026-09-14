@@ -1916,6 +1916,147 @@ suite('order archive transaction integration', () => {
     expect(after.items).toEqual(before.items);
   });
 
+  it.each([
+    ['PARTIAL', 'unstarted', 'PARTIAL', 'ON_HOLD'],
+    ['FAILED', 'unstarted', 'FAILED', 'IN_PRODUCTION'],
+    ['REQUESTED', 'unstarted', 'FAILED', 'IN_PRODUCTION'],
+    ['PARTIAL', 'ambiguous', 'PARTIAL', 'ON_HOLD'],
+    ['FAILED', 'ambiguous', 'FAILED', 'IN_PRODUCTION'],
+    ['REQUESTED', 'ambiguous', 'FAILED', 'IN_PRODUCTION'],
+    ['PARTIAL', 'confirmed', 'PARTIAL', 'ON_HOLD'],
+    ['FAILED', 'confirmed', 'PARTIAL', 'ON_HOLD'],
+    ['REQUESTED', 'confirmed', 'PARTIAL', 'ON_HOLD'],
+  ])(
+    'recovers recorded %s cancellation with %s work after newer production evidence without provider mutation',
+    async (status, work, expectedStatus, expectedOrder) => {
+      const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+      const firstExternal = `recorded-first-${randomUUID()}`;
+      const targetExternal =
+        status === 'PARTIAL' ? `recorded-second-${randomUUID()}` : firstExternal;
+      await externalGroup(f, firstExternal);
+      const targetId = status === 'PARTIAL' ? await secondGroup(f, targetExternal) : f.groupId;
+      // Persist the aggregate and group evidence a prior worker left behind.
+      const cancellationId = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO app.order_cancellations
+      (order_id,status,refund_destination,refund_amount_cents,reason_code,notify_customer,initiated_by_staff_member_id,idempotency_key)
+      VALUES ($1,$2,'ORIGINAL_PAYMENT',500,'CUSTOMER_CANCELLATION_REQUEST',true,$3,$4) RETURNING id`,
+          [f.orderId, status, staff.staffMemberId, randomUUID()],
+        )
+      ).rows[0]!.id;
+      if (status === 'PARTIAL') {
+        await pool.query(
+          `INSERT INTO app.order_cancellation_groups (order_cancellation_id,fulfillment_group_id,external_order_id,status,attempt_count) VALUES ($1,$2,$3,'CANCELLED',1)`,
+          [cancellationId, f.groupId, firstExternal],
+        );
+        await pool.query(
+          `UPDATE app.order_fulfillment_groups SET status='CANCELLED',printing_status='CANCELLED',fulfillment_status='CANCELLED' WHERE id=$1`,
+          [f.groupId],
+        );
+      }
+      await pool.query(
+        `INSERT INTO app.order_cancellation_groups (order_cancellation_id,fulfillment_group_id,external_order_id,status,attempt_count) VALUES ($1,$2,$3,'REQUESTED',$4)`,
+        [cancellationId, targetId, targetExternal, work === 'unstarted' ? 0 : 1],
+      );
+      // New evidence must forbid fresh cancellation, not forbid reading/reconciling old work.
+      await pool.query(
+        `UPDATE app.order_fulfillment_groups SET printing_status='IN_PRODUCTION' WHERE id=$1`,
+        [targetId],
+      );
+      await pool.query(`UPDATE app.orders SET status=$2 WHERE id=$1`, [
+        f.orderId,
+        status === 'PARTIAL' ? 'ON_HOLD' : 'IN_PRODUCTION',
+      ]);
+      const detail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+      expect(detail!.eligibility.actions.cancel).toBe(false);
+      expect(detail!.actionRecovery.cancellation).toEqual({ cancellationId, status });
+      const requests: Array<{ method: string; url: string }> = [];
+      const fulfillment = new domain.PrintifyFulfillmentAdapter({
+        apiToken: 'fixture-only-secret',
+        shopId: 'recovery-fixture',
+        baseUrl: 'https://print.example.test/v1',
+        fetch: async (url, init) => {
+          const request = new Request(url, init);
+          requests.push({ method: request.method, url: request.url });
+          return Response.json({
+            id: targetExternal,
+            status: work === 'confirmed' ? 'canceled' : 'in-production',
+          });
+        },
+      });
+      const payments = new domain.FakePaymentService();
+      const refund = vi.spyOn(payments, 'refund');
+      const send = vi
+        .fn<domain.LifecycleMessagingService['send']>()
+        .mockResolvedValue({ providerMessageId: 'must-not-send' });
+      const { actions } = cancellationService(undefined, {
+        fulfillment,
+        payments,
+        lifecycle: new domain.LifecycleOrchestrator(pool, { send }),
+      });
+      const before = await snapshot(f.orderId);
+      await expect(actions.cancel(staff, cancellationInput(f.orderNumber))).rejects.toThrow(
+        'already has a cancellation',
+      );
+      await expect(
+        actions.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId: randomUUID(),
+          idempotencyKey: randomUUID(),
+        }),
+      ).rejects.toThrow('Cancellation not found for this order');
+      const retry = { orderNumber: f.orderNumber, cancellationId, idempotencyKey: randomUUID() };
+      const result = await actions.retryCancellation(staff, retry);
+      expect(result).toMatchObject({
+        cancellationId,
+        status: expectedStatus,
+        orderStatus: expectedOrder,
+        unresolvedFulfillmentGroupIds: [targetId],
+        ambiguousFulfillmentGroupIds: work === 'ambiguous' ? [targetId] : [],
+      });
+      expect(requests.map((request) => request.method)).toEqual(
+        work === 'unstarted' ? [] : ['GET'],
+      );
+      expect(requests.every((request) => request.url.includes(targetExternal))).toBe(true);
+      const rows = await cancellationRows(f.orderId);
+      expect(rows.cancellations).toHaveLength(1);
+      expect(rows.cancellations[0]).toMatchObject({ id: cancellationId, status: expectedStatus });
+      expect(
+        rows.attempts.find((attempt) => attempt.fulfillment_group_id === targetId),
+      ).toMatchObject({
+        status: work === 'unstarted' ? 'FAILED' : work === 'confirmed' ? 'CANCELLED' : 'REQUESTED',
+        attempt_count: work === 'unstarted' ? 0 : 1,
+      });
+      if (status === 'PARTIAL')
+        expect(
+          rows.attempts.find((attempt) => attempt.fulfillment_group_id === f.groupId),
+        ).toMatchObject({ status: 'CANCELLED', attempt_count: 1 });
+      const after = await snapshot(f.orderId);
+      expect(after.groups.find((group) => group.id === targetId)).toEqual(
+        before.groups.find((group) => group.id === targetId),
+      );
+      expect(after.payments).toEqual(before.payments);
+      expect(after.refunds).toEqual(before.refunds);
+      expect(after.items).toEqual(before.items);
+      expect(after.returns).toEqual(before.returns);
+      expect(after.history.some((event) => event.to_state === 'CANCELLED')).toBe(false);
+      expect(refund).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(
+        (await pool.query(`SELECT id FROM app.lifecycle_deliveries WHERE order_id=$1`, [f.orderId]))
+          .rows,
+      ).toEqual([]);
+      expect(await actions.retryCancellation(staff, retry)).toMatchObject({
+        cancellationId,
+        status: expectedStatus,
+        duplicate: true,
+      });
+      expect(requests.map((request) => request.method)).toEqual(
+        work === 'unstarted' ? [] : ['GET'],
+      );
+    },
+  );
+
   it('completes refund and notification with a one-connection cancellation pool', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const isolated = createDatabaseClient(integrationDatabaseUrl!);

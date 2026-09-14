@@ -167,26 +167,32 @@ describe('order action surfaces', () => {
       items: [{ orderItemId: 'item-1', productVariantId: 'variant-black-M', quantity: 2 }],
     });
   });
-  it('exposes server-authorized recovery without exposing a new cancellation', () => {
-    const eligibility = {
-      ...order.eligibility,
-      actions: { ...order.eligibility.actions, cancel: false },
-    };
-    const recovery = {
-      canResume: true,
-      cancellation: { cancellationId: 'cancel-1', status: 'PARTIAL' as const },
-    };
-    const options = orderActionOptions(eligibility, recovery);
-    expect(options.some((option) => option.action === 'cancel')).toBe(false);
-    expect(options).toContainEqual({ action: 'recoverCancellation', label: 'Review cancellation' });
-    const html = markup(CancellationRecoveryModal, {
-      ...props,
-      order: { ...order, eligibility, actionRecovery: recovery },
-    });
-    expect(html).toContain('Check / retry unresolved groups');
-    expect(html).not.toContain('Refund payments');
-    expect(html).not.toContain('Reason for cancellation');
-  });
+  it.each(['REQUESTED', 'PROCESSING', 'PARTIAL', 'FAILED'] as const)(
+    'exposes server-authorized %s recovery without exposing a new cancellation',
+    (status) => {
+      const eligibility = {
+        ...order.eligibility,
+        actions: { ...order.eligibility.actions, cancel: false },
+      };
+      const recovery = {
+        canResume: true,
+        cancellation: { cancellationId: 'cancel-1', status },
+      };
+      const options = orderActionOptions(eligibility, recovery);
+      expect(options.some((option) => option.action === 'cancel')).toBe(false);
+      expect(options).toContainEqual({
+        action: 'recoverCancellation',
+        label: 'Review cancellation',
+      });
+      const html = markup(CancellationRecoveryModal, {
+        ...props,
+        order: { ...order, eligibility, actionRecovery: recovery },
+      });
+      expect(html).toContain('Check / retry unresolved groups');
+      expect(html).not.toContain('Refund payments');
+      expect(html).not.toContain('Reason for cancellation');
+    },
+  );
   it('allows only recorded request recovery at zero refundable balance and none for read-only staff', () => {
     const eligibility = {
       ...order.eligibility,
