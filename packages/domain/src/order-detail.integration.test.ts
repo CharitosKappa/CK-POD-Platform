@@ -122,6 +122,36 @@ suite('order detail persistence integration', () => {
     );
   });
 
+  it('projects the immutable edited unit price instead of stale snapshot or mutable catalog prices', async () => {
+    const order = await fixture();
+    await pool.query(
+      `UPDATE app.order_items
+       SET item_snapshot=item_snapshot || '{"unitPriceCents":4321}'::jsonb
+       WHERE id=$1`,
+      [order.itemId],
+    );
+    await pool.query(
+      `UPDATE app.product_variants SET price_cents=9999
+       WHERE id=(SELECT product_variant_id FROM app.order_items WHERE id=$1)`,
+      [order.itemId],
+    );
+
+    const service = new OrderDetailService(pool);
+    const detail = await service.getOrder(staff, order.orderNumber);
+    const item = detail!.groups.flatMap((group) => group.items).find((row) => row.id === order.itemId);
+    expect(item).toMatchObject({ unitPriceCents: 4321, lineTotalCents: 8642 });
+
+    const group = await service.getPrintingGroup(
+      staff,
+      order.orderNumber,
+      detail!.groups[0]!.id,
+    );
+    expect(group?.items.find((row) => row.id === order.itemId)).toMatchObject({
+      unitPriceCents: 4321,
+      lineTotalCents: 8642,
+    });
+  });
+
   it('projects persisted action balances, archive actor, returns and current revision tax', async () => {
     const order = await fixture();
     await pool.query(

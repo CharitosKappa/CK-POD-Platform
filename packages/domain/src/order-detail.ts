@@ -605,7 +605,11 @@ export class OrderDetailService {
                 coalesce(item.item_snapshot->>'colorName', variant.color_name) AS color_name,
                 coalesce(item.item_snapshot->>'size', variant.size) AS size,
                 item.quantity,
-                coalesce((item.item_snapshot->>'unitRetailCents')::int, variant.price_cents) AS unit_price_cents,
+                coalesce(
+                  (item.item_snapshot->>'unitPriceCents')::int,
+                  (item.item_snapshot->>'unitRetailCents')::int,
+                  variant.price_cents
+                ) AS unit_price_cents,
                 item.product_variant_id, item.project_id, item.project_version_id, item.mockup_id,
                 prepress.status AS prepress_status,
                 (derivative.derivative_asset_id IS NOT NULL AND derivative.status = 'READY') AS derivative_ready,
@@ -1011,7 +1015,7 @@ export class OrderDetailService {
               EXISTS (SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=orders.id AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
                 UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=orders.id
                 UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=orders.id AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
-                UNION ALL SELECT 1 FROM app.order_cancellations c WHERE c.order_id=orders.id AND (c.status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=c.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))) AS edit_blocked,
+                UNION ALL SELECT 1 FROM app.order_cancellations c WHERE c.order_id=orders.id AND (c.status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=c.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN')))) AS edit_blocked,
               nullif(trim(concat_ws(' ', customer.first_name, customer.last_name)), '') AS customer_name,
               nullif(orders.shipping_address_snapshot->>'phone','') AS customer_phone,
               CASE WHEN orders.customer_profile_id IS NULL THEN 1 ELSE (
@@ -1064,7 +1068,11 @@ export class OrderDetailService {
                 coalesce(item.item_snapshot->>'colorName', variant.color_name) AS color_name,
                 coalesce(item.item_snapshot->>'size', variant.size) AS size,
                 item.quantity,
-                coalesce((item.item_snapshot->>'unitRetailCents')::int, variant.price_cents) AS unit_price_cents,
+                coalesce(
+                  (item.item_snapshot->>'unitPriceCents')::int,
+                  (item.item_snapshot->>'unitRetailCents')::int,
+                  variant.price_cents
+                ) AS unit_price_cents,
                 item.product_variant_id, item.project_id, item.project_version_id, item.mockup_id,
                 COALESCE((SELECT jsonb_agg(jsonb_build_object('id',option.id,'color',option.color_name,'size',option.size)
                   ORDER BY option.color_name,option.size,option.id)
