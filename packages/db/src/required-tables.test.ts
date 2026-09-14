@@ -68,7 +68,7 @@ describe('required application tables', () => {
     expect(sql).toContain('UNIQUE (order_id, idempotency_key)');
     expect(sql).toContain('CHECK (quantity > 0)');
     expect(sql).toMatch(
-      /ADD CONSTRAINT order_refunds_destination_backing_check CHECK \([\s\S]+?\n  \) NOT VALID;/,
+      /ADD CONSTRAINT order_refunds_destination_backing_check CHECK \([\s\S]+?\n {2}\) NOT VALID;/,
     );
   });
 

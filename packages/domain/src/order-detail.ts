@@ -1013,7 +1013,7 @@ export class OrderDetailService {
                 UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=orders.id AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
                 UNION ALL SELECT 1 FROM app.order_cancellations c WHERE c.order_id=orders.id AND (c.status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=c.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))) AS edit_blocked,
               nullif(trim(concat_ws(' ', customer.first_name, customer.last_name)), '') AS customer_name,
-              customer.phone AS customer_phone,
+              nullif(orders.shipping_address_snapshot->>'phone','') AS customer_phone,
               CASE WHEN orders.customer_profile_id IS NULL THEN 1 ELSE (
                 SELECT count(*)::int FROM app.orders customer_order
                 WHERE customer_order.customer_profile_id = orders.customer_profile_id

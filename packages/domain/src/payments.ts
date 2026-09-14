@@ -1,5 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
+import { PaymentRefundRejectedError, PaymentRefundUncertainError } from './commerce-contracts';
+
 import type {
   PaymentIntentRequest,
   PaymentIntentResult,
@@ -136,17 +138,48 @@ export class StripePaymentService implements PaymentService {
       payment_intent: input.providerPaymentId,
       amount: String(input.amountCents),
     });
-    const response = await fetch(`${this.baseUrl}/refunds`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.secretKey}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Idempotency-Key': input.idempotencyKey,
-      },
-      body: form,
-    });
-    if (!response.ok) throw new Error('Stripe could not process the refund.');
-    const result = (await response.json()) as { id: string };
+    let response: Response;
+    let result: Record<string, unknown>;
+    try {
+      response = await fetch(`${this.baseUrl}/refunds`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Idempotency-Key': input.idempotencyKey,
+        },
+        body: form,
+      });
+      result = (await response.json()) as Record<string, unknown>;
+      if (!result || typeof result !== 'object') throw new PaymentRefundUncertainError();
+    } catch {
+      throw new PaymentRefundUncertainError();
+    }
+    if (!response.ok) {
+      const error = result.error as { type?: unknown } | undefined;
+      // Timeouts, 5xx, rate limiting and idempotency conflicts can follow a remote
+      // side effect. Only an explicit validation/auth/card refusal is definitive.
+      const refusalType = new Map<number, string[]>([
+        [400, ['invalid_request_error']],
+        [401, ['authentication_error']],
+        [402, ['card_error']],
+        [403, ['permission_error']],
+        [404, ['invalid_request_error']],
+      ]);
+      if (typeof error?.type === 'string' && refusalType.get(response.status)?.includes(error.type))
+        throw new PaymentRefundRejectedError();
+      throw new PaymentRefundUncertainError();
+    }
+    if (
+      typeof result.id !== 'string' ||
+      !result.id.startsWith('re_') ||
+      result.payment_intent !== input.providerPaymentId ||
+      result.amount !== input.amountCents
+    )
+      throw new PaymentRefundUncertainError();
+    if (result.status === 'failed' || result.status === 'canceled')
+      throw new PaymentRefundRejectedError();
+    if (result.status !== 'succeeded') throw new PaymentRefundUncertainError();
     return { providerRefundId: result.id };
   }
 }

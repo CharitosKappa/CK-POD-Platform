@@ -42,6 +42,22 @@ export interface VerifiedPaymentEvent {
   metadata: Record<string, unknown>;
 }
 
+/** Only a definitive provider refusal can release a reserved refund amount. */
+export class PaymentRefundRejectedError extends Error {
+  constructor() {
+    super('Stripe could not process the refund.');
+  }
+}
+
+/** An uncertain external result must keep its durable reservation until reconciled. */
+export class PaymentRefundUncertainError extends Error {
+  constructor() {
+    super(
+      'Refund outcome is not confirmed. Check the existing refund before taking another action.',
+    );
+  }
+}
+
 export interface PaymentService {
   createIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult>;
   verifyWebhook(input: {

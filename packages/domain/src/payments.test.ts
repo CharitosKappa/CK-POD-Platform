@@ -1,10 +1,28 @@
 import { createHmac } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FakePaymentService, FakeTaxService, StripePaymentService } from './payments.js';
 
 describe('platform payment and tax adapters', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    { id: 're_pending', status: 'pending', payment_intent: 'pi_expected', amount: 100 },
+    { id: 're_other', status: 'succeeded', payment_intent: 'pi_other', amount: 100 },
+    { id: 're_amount', status: 'succeeded', payment_intent: 'pi_expected', amount: 200 },
+    { status: 'succeeded', payment_intent: 'pi_expected', amount: 100 },
+  ])('does not declare an unconfirmed refund successful: %j', async (response) => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(response)));
+    const payments = new StripePaymentService('fixture', 'fixture');
+    await expect(
+      payments.refund({
+        providerPaymentId: 'pi_expected',
+        amountCents: 100,
+        idempotencyKey: 'fixture-key-0001',
+      }),
+    ).rejects.toThrow('Refund outcome is not confirmed');
+  });
   it('supports deterministic success, failure, cancellation, pending, and duplicate-safe fake event identifiers', async () => {
     const payments = new FakePaymentService();
     const intent = await payments.createIntent({

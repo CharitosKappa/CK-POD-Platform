@@ -252,6 +252,12 @@ suite('order archive transaction integration', () => {
       customer_email: 'edited@example.test',
       shipping_address_snapshot: { phone: '+1 555 123 4567' },
     });
+    const editedDetail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(editedDetail).not.toBeNull();
+    expect(editedDetail!.customer).toMatchObject({
+      email: 'edited@example.test',
+      phone: '+1 555 123 4567',
+    });
     for (const key of ['payments', 'refunds', 'returns', 'history', 'groups', 'items'] as const)
       expect(after[key]).toEqual(before[key]);
     const revision = (
@@ -272,7 +278,21 @@ suite('order archive transaction integration', () => {
         ])
       ).rows,
     ).toHaveLength(1);
-    await actions.editOrder(staff, { ...f.input(), customerEmail: 'newer@example.test' });
+    await pool.query(
+      'UPDATE app.customer_profiles SET phone=$2 WHERE id=(SELECT customer_profile_id FROM app.orders WHERE id=$1)',
+      [f.orderId, '+1 555 111 2222'],
+    );
+    await actions.editOrder(staff, {
+      ...f.input(),
+      customerEmail: 'newer@example.test',
+      customerPhone: '',
+    });
+    const clearedPhoneDetail = await new domain.OrderDetailService(pool).getOrder(
+      staff,
+      f.orderNumber,
+    );
+    expect(clearedPhoneDetail).not.toBeNull();
+    expect(clearedPhoneDetail!.customer.phone).toBeNull();
     expect(await actions.editOrder(staff, input)).toEqual({ ...result, duplicate: true });
     expect((await snapshot(f.orderId)).order!.customer_email).toBe('newer@example.test');
   });
@@ -908,7 +928,7 @@ suite('order archive transaction integration', () => {
     vi.spyOn(payments, 'refund').mockImplementation(async () => {
       captured();
       await wait;
-      throw new Error('Refund rejected');
+      throw new domain.PaymentRefundRejectedError();
     });
     const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
     const pending = Promise.allSettled([
@@ -1131,7 +1151,7 @@ suite('order archive transaction integration', () => {
     vi.spyOn(payments, 'refund').mockImplementation(async () => {
       entered.resolve();
       await release.promise;
-      throw new Error('Settlement rejected');
+      throw new domain.PaymentRefundRejectedError();
     });
     const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
     const actor = {
@@ -2170,7 +2190,7 @@ suite('order archive transaction integration', () => {
     const payments = new domain.FakePaymentService();
     const refund = vi
       .spyOn(payments, 'refund')
-      .mockRejectedValue(new Error('Fixture payment transport unavailable'));
+      .mockRejectedValue(new domain.PaymentRefundRejectedError());
     const { actions, refunds } = cancellationService(undefined, { payments });
     const input = {
       ...cancellationInput(f.orderNumber),
@@ -2865,6 +2885,58 @@ suite('order archive transaction integration', () => {
       await operation;
     }
     expect(await operation).toMatchObject([{ status: 'fulfilled' }]);
+  });
+
+  it('takes the order lock before finalizing production so concurrent admin actions can lock its action row', async () => {
+    const f = await productionFixture();
+    const fulfillment = new ArchiveFixtureFulfillment();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const originalSubmit = fulfillment.submitProduction.bind(fulfillment);
+    fulfillment.submitProduction = async (input) => {
+      await originalSubmit(input);
+      entered.resolve();
+      await release.promise;
+    };
+    const operations = new domain.OrderOperationsService(
+      actionDatabase.pool,
+      new MemoryObjectStorage(),
+      fulfillment,
+      { fulfillmentAdapter: 'fake', realProductionSubmissionEnabled: false },
+    );
+    await operations.evaluateFulfillmentGroupReadiness(staff, {
+      orderNumber: f.orderNumber,
+      fulfillmentGroupId: f.groupId,
+    });
+    const operation = Promise.allSettled([
+      operations.submitFulfillmentGroup(staff, {
+        orderNumber: f.orderNumber,
+        fulfillmentGroupId: f.groupId,
+      }),
+    ]);
+    const holder = await pool.connect();
+    try {
+      await entered.promise;
+      await holder.query('BEGIN');
+      await holder.query('SELECT id FROM app.orders WHERE id=$1 FOR UPDATE', [f.orderId]);
+      release.resolve();
+      await waitForDatabaseLock();
+      // Admin actions already own the order and inspect these rows next. An action-first
+      // provider finalization would hold this row while waiting on the order: a cycle.
+      await expect(
+        holder.query(
+          "SELECT id FROM app.order_fulfillment_actions WHERE order_id=$1 AND action='SUBMIT_TO_PRODUCTION' FOR UPDATE NOWAIT",
+          [f.orderId],
+        ),
+      ).resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      release.resolve();
+      await holder.query('ROLLBACK');
+      holder.release();
+      await operation;
+    }
+    expect(await operation).toMatchObject([{ status: 'fulfilled', value: { duplicate: false } }]);
+    expect((await snapshot(f.orderId)).groups).toMatchObject([{ printing_status: 'SUBMITTED' }]);
   });
 
   it('takes the order lock before committing a newly created group provider reference', async () => {

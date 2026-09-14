@@ -1,6 +1,10 @@
 import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 
-import type { PaymentService } from './commerce-contracts';
+import {
+  PaymentRefundRejectedError,
+  PaymentRefundUncertainError,
+  type PaymentService,
+} from './commerce-contracts';
 import { adjustStoreCreditWithClient } from './store-credit';
 
 export type RefundActor =
@@ -284,11 +288,25 @@ export class OrderRefundService {
         idempotencyKey: input.idempotencyKey,
       });
     } catch (error) {
+      if (!(error instanceof PaymentRefundRejectedError)) {
+        // The provider may already have refunded money. Retain both the monetary
+        // reservation and edit allocation; replay is read-only, even with a new key.
+        await withTransaction(this.pool, async (client) => {
+          await lockRefundOrder(client, reservation.order.id);
+          await this.audit(client, reservation.order.id, 'refund_outcome_unknown', actor, input, {
+            refundId: reservation.refund.id,
+            amountCents: reservation.refund.amount_cents,
+            destination: 'ORIGINAL_PAYMENT',
+            result: 'PENDING',
+          });
+        });
+        throw new PaymentRefundUncertainError();
+      }
       await withTransaction(this.pool, async (client) => {
         await lockRefundOrder(client, reservation.order.id);
         await importLegacyEditBalanceBasis(client, reservation.order.id);
         const failed = await client.query(
-          `UPDATE app.order_refunds SET status='FAILED' WHERE id=$1 AND status='PENDING' RETURNING id`,
+          `UPDATE app.order_refunds SET status='FAILED', completed_at=now() WHERE id=$1 AND status='PENDING' RETURNING id`,
           [reservation.refund.id],
         );
         if (failed.rows.length)

@@ -18,6 +18,8 @@ const integrationTests = [
   'packages/domain/src/customer-consent.integration.test.ts',
   'packages/domain/src/store-credit.integration.test.ts',
   'packages/domain/src/order-detail.integration.test.ts',
+  'packages/domain/src/order-admin-actions.integration.test.ts',
+  'apps/web/app/api/admin/orders/[orderNumber]/_actions/actions.integration.test.ts',
 ];
 
 async function main() {

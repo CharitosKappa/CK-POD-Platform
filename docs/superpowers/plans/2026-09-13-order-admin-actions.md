@@ -72,7 +72,7 @@ expect(
 ).toBe(false);
 ```
 
-Add cases for fulfilled and partially fulfilled cancellation, `SUBMITTING`, mixed-group `PARTIALLY_IN_PRODUCTION`, refund with zero balance, Return with returnable fulfilled quantity, Archive for delivered/cancelled only, Unarchive, read-only staff, item editing after production, and shipping-address editing after shipment.
+Add cases for fulfilled and partially fulfilled cancellation, `SUBMITTING`, mixed-group `PARTIALLY_IN_PRODUCTION`, refund with zero balance, Return with returnable fulfilled quantity, Archive for fulfilled/delivered/cancelled only, Unarchive, read-only staff, item editing after production, and shipping-address editing after shipment.
 
 - [ ] **Step 2: Run the contract test and verify RED**
 
@@ -82,10 +82,30 @@ Expected: FAIL because the contract module does not exist.
 - [ ] **Step 3: Implement immutable enums and the pure resolver**
 
 ```ts
-export const orderAdminActions = ['EDIT', 'CANCEL', 'REFUND', 'RETURN', 'ARCHIVE', 'UNARCHIVE'] as const;
-export const returnStates = ['REQUESTED', 'APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CLOSED', 'REJECTED'] as const;
+export const orderAdminActions = [
+  'EDIT',
+  'CANCEL',
+  'REFUND',
+  'RETURN',
+  'ARCHIVE',
+  'UNARCHIVE',
+] as const;
+export const returnStates = [
+  'REQUESTED',
+  'APPROVED',
+  'IN_TRANSIT',
+  'RECEIVED',
+  'CLOSED',
+  'REJECTED',
+] as const;
 export const refundDestinations = ['ORIGINAL_PAYMENT', 'STORE_CREDIT', 'LATER'] as const;
-export const cancellationStatuses = ['REQUESTED', 'PROCESSING', 'SUCCEEDED', 'PARTIAL', 'FAILED'] as const;
+export const cancellationStatuses = [
+  'REQUESTED',
+  'PROCESSING',
+  'SUCCEEDED',
+  'PARTIAL',
+  'FAILED',
+] as const;
 
 export type OrderAdminAction = (typeof orderAdminActions)[number];
 export type ReturnState = (typeof returnStates)[number];
@@ -116,7 +136,9 @@ export interface OrderActionEligibility {
   editFields: OrderEditFieldEligibility;
 }
 
-export function resolveOrderActionEligibility(input: OrderActionEligibilityInput): OrderActionEligibility {
+export function resolveOrderActionEligibility(
+  input: OrderActionEligibilityInput,
+): OrderActionEligibility {
   const canMutate = input.role === 'OWNER' || input.role === 'OPERATIONS';
   const productionLocked = input.printingStates.some((state) =>
     ['IN_PRODUCTION', 'PRINTED'].includes(state),
@@ -132,7 +154,8 @@ export function resolveOrderActionEligibility(input: OrderActionEligibilityInput
       cancel: canMutate && fullyUnfulfilled && !cancellationLocked,
       refund: canMutate && input.refundableCents > 0,
       return: canMutate && input.returnableQuantity > 0,
-      archive: canMutate && !input.archived && (fulfilled || input.fulfillmentState === 'CANCELLED'),
+      archive:
+        canMutate && !input.archived && (fulfilled || input.fulfillmentState === 'CANCELLED'),
       unarchive: canMutate && input.archived,
     },
     editFields: {
@@ -181,8 +204,12 @@ git commit -m "feat: define order admin action eligibility"
 Require all six new tables and assert the migration contains:
 
 ```ts
-expect(sql).toContain("CHECK (status IN ('REQUESTED','PROCESSING','SUCCEEDED','PARTIAL','FAILED'))");
-expect(sql).toContain("CHECK (state IN ('REQUESTED','APPROVED','IN_TRANSIT','RECEIVED','CLOSED','REJECTED'))");
+expect(sql).toContain(
+  "CHECK (status IN ('REQUESTED','PROCESSING','SUCCEEDED','PARTIAL','FAILED'))",
+);
+expect(sql).toContain(
+  "CHECK (state IN ('REQUESTED','APPROVED','IN_TRANSIT','RECEIVED','CLOSED','REJECTED'))",
+);
 expect(sql).toContain('UNIQUE (order_id, idempotency_key)');
 expect(sql).toContain('CHECK (quantity > 0)');
 ```
@@ -537,7 +564,7 @@ await expect(
 ).resolves.toMatchObject({ archived: true, duplicate: false });
 ```
 
-Test delivered/cancelled eligibility, rejection for active unfulfilled order, read-only rejection, duplicate idempotency, Unarchive, and no mutation of order/payment/printing/fulfillment states.
+Test fulfilled/delivered/cancelled eligibility, rejection for active unfulfilled order, read-only rejection, duplicate idempotency, Unarchive, and no mutation of order/payment/printing/fulfillment states.
 
 - [ ] **Step 2: Run tests and verify RED**
 

@@ -1248,11 +1248,11 @@ export class OrderOperationsService {
         externalOrderId: external.externalOrderId,
       });
       await withTransaction(this.pool, async (client) => {
-        await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         const order = await lockOrder(client, orderNumber);
         await transitionOrderPrintingGroups(client, order.id, 'SUBMITTED', session, {
           externalOrderId: external.externalOrderId,
         });
+        await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         await client.query(
           `UPDATE app.order_fulfillment_groups
            SET status = 'SUBMITTED', updated_at = now()
@@ -1349,13 +1349,13 @@ export class OrderOperationsService {
         externalOrderId: external.externalOrderId,
       });
       await withTransaction(this.pool, async (client) => {
-        await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         const order = await lockOrder(client, input.orderNumber);
         const currentPrintingState = await lockPrintingGroupState(
           client,
           order.id,
           input.fulfillmentGroupId,
         );
+        await this.finishAction(client, action.id, 'SUCCEEDED', external.externalOrderId);
         await transitionPrintingGroup(client, {
           orderId: order.id,
           fulfillmentGroupId: input.fulfillmentGroupId,
@@ -1827,13 +1827,13 @@ export class OrderOperationsService {
       });
       await withTransaction(this.pool, async (client) => {
         await lockOrder(client, group.orderNumber);
-        await this.finishAction(client, action.id, 'SUCCEEDED', result.externalOrderId);
         await client.query(
           `UPDATE app.order_fulfillment_groups
            SET external_order_id = $2, status = 'READY_FOR_PRODUCTION', updated_at = now()
            WHERE id = $1 AND external_order_id IS NULL`,
           [group.id, result.externalOrderId],
         );
+        await this.finishAction(client, action.id, 'SUCCEEDED', result.externalOrderId);
         await this.audit(client, group.orderId, 'fulfillment_group_order_created', session, null, {
           fulfillmentGroupId: group.id,
           externalOrderId: result.externalOrderId,

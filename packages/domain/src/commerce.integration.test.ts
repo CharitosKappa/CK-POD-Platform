@@ -711,7 +711,19 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
           key,
         });
         await beforeResponse?.();
-        return new Response(JSON.stringify({ id: `re_${key}` }), { status: fail ? 503 : 200 });
+        return new Response(
+          JSON.stringify(
+            fail
+              ? { error: { type: 'invalid_request_error' } }
+              : {
+                  id: `re_${key}`,
+                  status: 'succeeded',
+                  amount: Number(form.get('amount')),
+                  payment_intent: form.get('payment_intent'),
+                },
+          ),
+          { status: fail ? 400 : 200 },
+        );
       });
       return requests;
     }
@@ -983,8 +995,64 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         duplicate: true,
       });
       expect(requests.map((request) => request.amountCents)).toEqual([f.amount_cents]);
+      expect((await state(f.id)).refunds[0]).toMatchObject({ completed_at: expect.any(Date) });
       await refunds.refundToStoreCredit(f.staff, f.input(f.amount_cents));
       expect((await state(f.id)).balance).toBe(f.amount_cents);
+    });
+
+    it.each(['lost-response', 'server-error'] as const)(
+      'keeps an uncertain %s refund reserved across retries and new keys',
+      async (failure) => {
+        const f = await fixture();
+        const refunds = service();
+        const accepted: string[] = [];
+        vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+          accepted.push(new Headers(init.headers).get('Idempotency-Key')!);
+          if (failure === 'lost-response') throw new Error('secret provider response lost');
+          return new Response(
+            JSON.stringify({ error: { type: 'api_error', message: 'secret upstream failure' } }),
+            { status: 503 },
+          );
+        });
+        const input = f.input(f.amount_cents);
+        await expect(refunds.refundOriginalPayment(f.staff, input)).rejects.toThrow(
+          'Refund outcome is not confirmed',
+        );
+        expect(await refunds.refundOriginalPayment(f.staff, input)).toMatchObject({
+          status: 'PENDING',
+          duplicate: true,
+        });
+        await expect(refunds.refundToStoreCredit(f.staff, f.input(1))).rejects.toThrow(
+          'exceeds the captured payment',
+        );
+        expect((await state(f.id)).refunds).toMatchObject([
+          { status: 'PENDING', completed_at: null, amount_cents: f.amount_cents },
+        ]);
+        expect(accepted).toEqual([input.idempotencyKey]);
+      },
+    );
+
+    it('serializes the same monetary key across different orders into exactly one effect', async () => {
+      const first = await fixture();
+      const second = await fixture();
+      const refunds = service();
+      const key = randomUUID();
+      const results = await Promise.allSettled([
+        refunds.refundToStoreCredit(first.staff, first.input(700, key)),
+        refunds.refundToStoreCredit(second.staff, second.input(700, key)),
+      ]);
+      expect(results.filter((entry) => entry.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter((entry) => entry.status === 'rejected')).toMatchObject([
+        {
+          reason: expect.objectContaining({
+            message: 'Refund idempotency key belongs to another order.',
+          }),
+        },
+      ]);
+      const states = await Promise.all([state(first.id), state(second.id)]);
+      expect(states.reduce((sum, entry) => sum + entry.balance, 0)).toBe(700);
+      expect(states.flatMap((entry) => entry.refunds)).toHaveLength(1);
+      expect(states.flatMap((entry) => entry.ledger)).toHaveLength(1);
     });
 
     // Committing the helper independently would leave spendable credit after the refund transaction fails.

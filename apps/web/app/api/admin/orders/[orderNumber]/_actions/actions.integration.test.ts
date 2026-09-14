@@ -232,11 +232,11 @@ suite('Order action API real domain failure recovery', () => {
           reasonCode: 'CUSTOMER_REQUEST',
         };
         const response = await refund(requestFor(body, 'POST', idempotencyKey), f.context);
-        expect(response.status).toBe(failure === 'transport' ? 409 : 202);
+        expect(response.status).toBe(202);
         const payload = await response.json();
         expect(payload).toMatchObject({
           result: {
-            status: failure === 'transport' ? 'FAILED' : 'PENDING',
+            status: 'PENDING',
             amountCents: 1200,
             destination: 'ORIGINAL_PAYMENT',
           },
