@@ -1144,10 +1144,14 @@ export class CommerceService {
       throw new CommerceValidationError('Payment amount does not match the server checkout total.');
     }
     const status = paymentStatus(event.outcome);
+    // A successful capture is terminal. Provider events can arrive out of order;
+    // retain their audit records and fee enrichment without undoing paid evidence.
     await client.query(
       `INSERT INTO app.payments (checkout_attempt_id, provider, provider_payment_id, status, amount_cents, currency, provider_fee_cents, provider_metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-       ON CONFLICT (checkout_attempt_id) DO UPDATE SET status = EXCLUDED.status, provider_fee_cents = COALESCE(EXCLUDED.provider_fee_cents, app.payments.provider_fee_cents), updated_at = now()`,
+       ON CONFLICT (checkout_attempt_id) DO UPDATE
+       SET status = CASE WHEN app.payments.status = 'SUCCEEDED' THEN 'SUCCEEDED' ELSE EXCLUDED.status END,
+           provider_fee_cents = COALESCE(EXCLUDED.provider_fee_cents, app.payments.provider_fee_cents), updated_at = now()`,
       [
         checkout.id,
         event.provider,
@@ -1160,7 +1164,9 @@ export class CommerceService {
       ],
     );
     await client.query(
-      `UPDATE app.checkout_attempts SET status = $2, updated_at = now() WHERE id = $1`,
+      `UPDATE app.checkout_attempts
+       SET status = CASE WHEN status = 'PAID' THEN 'PAID' ELSE $2 END, updated_at = now()
+       WHERE id = $1`,
       [checkout.id, checkoutStatus(event.outcome)],
     );
     if (event.outcome !== 'SUCCEEDED') return { duplicate: false, orderNumber: null };

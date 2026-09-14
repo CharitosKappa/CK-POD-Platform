@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createDatabaseClient, integrationTestDatabaseUrl } from '@let-it-be/db';
 import { MemoryObjectStorage } from '@let-it-be/storage';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { CustomerOperationsService, reconcileCustomerProfiles } from './customer-operations';
 import {
@@ -45,7 +45,7 @@ suite('customer profile reconciliation integration', () => {
     email: `customer-financials-${randomUUID()}@example.test`,
   };
 
-  async function paidOrder(customerEmail: string) {
+  async function paidOrder(customerEmail: string, initialOutcome?: 'FAILED' | 'PENDING') {
     const guest = await new IdentityService(database.pool).createGuestSession();
     const project = await new ProjectService(database.pool).create(guest, {
       productModelId: 'essential-dtg-tee',
@@ -97,8 +97,9 @@ suite('customer profile reconciliation integration', () => {
       billingAddress: null,
       idempotencyKey: randomUUID(),
     });
+    if (initialOutcome) await commerce.simulateFakePayment(guest, checkout.id, initialOutcome);
     const paid = await commerce.simulateFakePayment(guest, checkout.id, 'SUCCEEDED');
-    return (
+    const order = (
       await database.pool.query<{
         order_id: string;
         customer_profile_id: string;
@@ -113,6 +114,7 @@ suite('customer profile reconciliation integration', () => {
         [paid.orderNumber],
       )
     ).rows[0]!;
+    return { ...order, commerce, checkoutId: checkout.id, orderNumber: paid.orderNumber };
   }
 
   async function expectFinancials(
@@ -137,6 +139,14 @@ suite('customer profile reconciliation integration', () => {
       averageOrderValueCents: expectedCents,
     });
   }
+
+  beforeAll(async () => {
+    await database.pool.query(
+      `INSERT INTO app.staff_members (id,normalized_email,role,status)
+       VALUES ($1,$2,'OPERATIONS','ACTIVE')`,
+      [staffMemberId, staff.email],
+    );
+  });
 
   afterAll(async () => {
     await database.pool.query(`DELETE FROM app.customer_profiles WHERE normalized_email=$1`, [
@@ -170,11 +180,6 @@ suite('customer profile reconciliation integration', () => {
   });
 
   it('projects customer spend from successful captures and actual refunds instead of edited totals', async () => {
-    await database.pool.query(
-      `INSERT INTO app.staff_members (id,normalized_email,role,status)
-       VALUES ($1,$2,'OPERATIONS','ACTIVE')`,
-      [staffMemberId, staff.email],
-    );
     const decreasedEmail = `decreased-${randomUUID()}@example.test`;
     const decreased = await paidOrder(decreasedEmail);
     const decreasedRefundId = randomUUID();
@@ -269,4 +274,110 @@ suite('customer profile reconciliation integration', () => {
     );
     await expectFinancials(increased.customer_profile_id, increasedEmail, 12000);
   });
+
+  it.each([
+    ['FAILED', 'payment_intent.payment_failed'],
+    ['PENDING', 'payment_intent.processing'],
+    ['CANCELLED', 'payment_intent.canceled'],
+  ])(
+    'preserves captured customer spend after a distinct stale %s webhook',
+    async (outcome, type) => {
+      const customerEmail = `stale-payment-${randomUUID()}@example.test`;
+      const order = await paidOrder(customerEmail);
+      // The fixture captures $39.99 merchandise + $5.50 shipping with no tax.
+      await expectFinancials(order.customer_profile_id, customerEmail, 4549);
+      const eventId = `stale-event-${randomUUID()}`;
+      await expect(
+        order.commerce.ingestPaymentWebhook({
+          signature: 'fake-payment-signature',
+          body: JSON.stringify({
+            id: eventId,
+            type,
+            data: {
+              object: { id: order.provider_payment_id, amount: 4549, currency: 'usd' },
+            },
+          }),
+        }),
+      ).resolves.toEqual({ duplicate: false, orderNumber: null });
+
+      await expectFinancials(order.customer_profile_id, customerEmail, 4549);
+      expect(
+        (
+          await database.pool.query(
+            `SELECT payment.status AS payment_status,checkout.status AS checkout_status,
+                  orders.status AS order_status,
+                  (SELECT count(*)::int FROM app.orders WHERE checkout_attempt_id=$1) AS order_count
+           FROM app.payments payment
+           JOIN app.checkout_attempts checkout ON checkout.id=payment.checkout_attempt_id
+           JOIN app.orders orders ON orders.checkout_attempt_id=checkout.id
+           WHERE checkout.id=$1`,
+            [order.checkoutId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          payment_status: 'SUCCEEDED',
+          checkout_status: 'PAID',
+          order_status: 'PAID',
+          order_count: 1,
+        },
+      ]);
+      expect(
+        (
+          await database.pool.query(
+            `SELECT verification_status,normalized_payload->>'outcome' AS outcome
+           FROM app.payment_events WHERE provider='FAKE' AND provider_event_id=$1`,
+            [eventId],
+          )
+        ).rows,
+      ).toEqual([{ verification_status: 'VERIFIED', outcome }]);
+    },
+  );
+
+  it.each(['FAILED', 'PENDING'] as const)(
+    'still settles an initially %s payment and enriches fees on a later success event',
+    async (initialOutcome) => {
+      const customerEmail = `retried-payment-${randomUUID()}@example.test`;
+      const order = await paidOrder(customerEmail, initialOutcome);
+      await expectFinancials(order.customer_profile_id, customerEmail, 4549);
+      await expect(
+        order.commerce.ingestPaymentWebhook({
+          signature: 'fake-payment-signature',
+          body: JSON.stringify({
+            id: `fee-event-${randomUUID()}`,
+            type: 'payment_intent.succeeded',
+            data: {
+              object: {
+                id: order.provider_payment_id,
+                amount: 4549,
+                currency: 'usd',
+                application_fee_amount: 162,
+              },
+            },
+          }),
+        }),
+      ).resolves.toEqual({ duplicate: false, orderNumber: order.orderNumber });
+      expect(
+        (
+          await database.pool.query(
+            `SELECT payment.status AS payment_status,payment.provider_fee_cents,
+                    checkout.status AS checkout_status,
+                    (SELECT count(*)::int FROM app.orders WHERE checkout_attempt_id=$1) AS order_count
+             FROM app.payments payment
+             JOIN app.checkout_attempts checkout ON checkout.id=payment.checkout_attempt_id
+             WHERE checkout.id=$1`,
+            [order.checkoutId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          payment_status: 'SUCCEEDED',
+          provider_fee_cents: 162,
+          checkout_status: 'PAID',
+          order_count: 1,
+        },
+      ]);
+      await expectFinancials(order.customer_profile_id, customerEmail, 4549);
+    },
+  );
 });
