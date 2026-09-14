@@ -165,7 +165,7 @@ export interface CancelOrderResult {
   refund: {
     destination: RefundDestination;
     amountCents: number;
-    status: 'LATER' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
+    status: 'LATER' | 'PENDING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED';
     refundId: string | null;
     retryable: boolean;
   };
@@ -1311,10 +1311,12 @@ export class OrderAdminActionsService {
       [cancellationId],
     );
     const refund = (
-      await client.query<{ id: string; status: 'PENDING' | 'SUCCEEDED' | 'FAILED' }>(
-        'SELECT id,status FROM app.order_refunds WHERE idempotency_key=$1',
-        [`cancellation-refund:${cancellationId}`],
-      )
+      await client.query<{
+        id: string;
+        status: 'PENDING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED';
+      }>('SELECT id,status FROM app.order_refunds WHERE idempotency_key=$1', [
+        `cancellation-refund:${cancellationId}`,
+      ])
     ).rows[0];
     const failed =
       (
@@ -1488,10 +1490,24 @@ export class OrderAdminActionsService {
          CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents+
            COALESCE((SELECT sum(capture.amount_cents) FROM app.order_payment_captures capture
              WHERE capture.order_id=orders.id),0) ELSE 0 END AS paid_cents,
-         COALESCE((SELECT sum(amount_cents) FROM app.order_refunds
-           WHERE order_id=orders.id AND status='SUCCEEDED'),0)::int AS refunded_cents,
-         COALESCE((SELECT sum(amount_cents) FROM app.order_refunds
-           WHERE order_id=orders.id AND status IN ('PENDING','SUCCEEDED')),0)::int AS reserved_refund_cents,
+         COALESCE((SELECT sum(actual.amount_cents) FROM (
+           SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+           WHERE allocation.order_id=orders.id AND allocation.status='SUCCEEDED'
+           UNION ALL
+           SELECT refund.amount_cents FROM app.order_refunds refund
+           WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+             AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                             WHERE allocation.order_refund_id=refund.id)
+         ) actual),0)::int AS refunded_cents,
+         COALESCE((SELECT sum(reserved.amount_cents) FROM (
+           SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+           WHERE allocation.order_id=orders.id AND allocation.status IN ('PENDING','SUCCEEDED')
+           UNION ALL
+           SELECT refund.amount_cents FROM app.order_refunds refund
+           WHERE refund.order_id=orders.id AND refund.status IN ('PENDING','SUCCEEDED')
+             AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                             WHERE allocation.order_refund_id=refund.id)
+         ) reserved),0)::int AS reserved_refund_cents,
          COALESCE((SELECT sum(GREATEST(0,item.quantity-COALESCE((
            SELECT sum(return_item.quantity) FROM app.order_return_items return_item
            JOIN app.order_returns returned ON returned.id=return_item.order_return_id

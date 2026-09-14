@@ -1617,9 +1617,15 @@ function orderSummarySql(alias = 'order_summary') {
                    AS returned_order_count
           FROM app.orders orders
           LEFT JOIN LATERAL (
-            SELECT coalesce(sum(refund.amount_cents), 0)::int AS refunded_cents
-            FROM app.order_refunds refund
-            WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+            SELECT coalesce(sum(actual.amount_cents),0)::int AS refunded_cents FROM (
+              SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+              WHERE allocation.order_id=orders.id AND allocation.status='SUCCEEDED'
+              UNION ALL
+              SELECT refund.amount_cents FROM app.order_refunds refund
+              WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+                AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                                WHERE allocation.order_refund_id=refund.id)
+            ) actual
           ) succeeded_refund ON true
           WHERE (orders.customer_profile_id=cp.id
             OR (orders.customer_profile_id IS NULL
@@ -1629,10 +1635,17 @@ function orderSummarySql(alias = 'order_summary') {
 
 function customerOrderSummariesCteSql() {
   return `refunded_orders AS (
-            SELECT refund.order_id, coalesce(sum(refund.amount_cents), 0)::int AS refunded_cents
-            FROM app.order_refunds refund
-            WHERE refund.status='SUCCEEDED'
-            GROUP BY refund.order_id
+            SELECT actual.order_id,coalesce(sum(actual.amount_cents),0)::int AS refunded_cents
+            FROM (
+              SELECT allocation.order_id,allocation.amount_cents
+              FROM app.order_refund_allocations allocation WHERE allocation.status='SUCCEEDED'
+              UNION ALL
+              SELECT refund.order_id,refund.amount_cents FROM app.order_refunds refund
+              WHERE refund.status='SUCCEEDED'
+                AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                                WHERE allocation.order_refund_id=refund.id)
+            ) actual
+            GROUP BY actual.order_id
           ),
           order_summaries AS (
             SELECT orders.customer_profile_id,

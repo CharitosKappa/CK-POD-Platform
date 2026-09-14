@@ -152,7 +152,16 @@ export class AnalyticsEventService {
         (SELECT count(*) FROM app.generations WHERE created_at >= $1 AND created_at < $2)::text AS generations,
         (SELECT count(*) FROM app.generations WHERE status = 'SUCCEEDED' AND created_at >= $1 AND created_at < $2)::text AS successful,
         (SELECT count(*) FROM app.analytics_events WHERE event_name = 'add_to_cart' AND occurred_at >= $1 AND occurred_at < $2)::text AS add_to_cart,
-        (SELECT coalesce(sum(amount_cents),0) FROM app.order_refunds WHERE status = 'SUCCEEDED' AND created_at >= $1 AND created_at < $2)::text AS refunds,
+        (SELECT coalesce(sum(actual.amount_cents),0) FROM (
+          SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+          JOIN app.order_refunds refund ON refund.id=allocation.order_refund_id
+          WHERE allocation.status='SUCCEEDED' AND refund.created_at >= $1 AND refund.created_at < $2
+          UNION ALL
+          SELECT refund.amount_cents FROM app.order_refunds refund
+          WHERE refund.status='SUCCEEDED' AND refund.created_at >= $1 AND refund.created_at < $2
+            AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                            WHERE allocation.order_refund_id=refund.id)
+        ) actual)::text AS refunds,
         (SELECT count(*) FROM app.order_reprints WHERE created_at >= $1 AND created_at < $2)::text AS reprints,
         (SELECT count(*) FROM app.provider_defects WHERE created_at >= $1 AND created_at < $2)::text AS defects,
         (SELECT count(*) FROM app.external_fulfillment_orders WHERE created_at >= $1 AND created_at < $2)::text AS external_orders,

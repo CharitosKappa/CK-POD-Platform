@@ -22,6 +22,12 @@ FROM app.orders orders WHERE orders.id=attempt.order_id;
 ALTER TABLE app.order_edit_payment_attempts
   ALTER COLUMN request_snapshot SET NOT NULL;
 --> statement-breakpoint
+-- Every PREPARING row predates the durable submission marker. Treat it as potentially
+-- submitted so an upgrade can only recover it through provider reads.
+UPDATE app.order_edit_payment_attempts
+SET provider_submission_started_at=COALESCE(updated_at,created_at)
+WHERE status='PREPARING';
+--> statement-breakpoint
 DO $$
 DECLARE backing_constraint text;
 BEGIN
@@ -47,13 +53,11 @@ ALTER TABLE app.order_edit_payment_attempts
     OR (status<>'PREPARING' AND provider IS NOT NULL AND provider_payment_id IS NOT NULL)
   );
 --> statement-breakpoint
-UPDATE app.order_edit_payment_attempts SET status='PENDING' WHERE status='FAILED';
---> statement-breakpoint
 DROP INDEX app.order_edit_payment_attempts_one_active_idx;
 --> statement-breakpoint
 CREATE UNIQUE INDEX order_edit_payment_attempts_one_active_idx
   ON app.order_edit_payment_attempts(order_id)
-  WHERE status IN ('PREPARING','PENDING') OR (status='FAILED' AND provider_payment_id IS NOT NULL);
+  WHERE status IN ('PREPARING','PENDING');
 --> statement-breakpoint
 CREATE FUNCTION app.reject_order_edit_payment_request_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -86,6 +90,17 @@ CREATE TABLE app.order_payment_captures (
 CREATE INDEX order_payment_captures_order_idx
   ON app.order_payment_captures(order_id,captured_at,id);
 --> statement-breakpoint
+INSERT INTO app.order_payment_captures
+  (order_id,order_edit_payment_attempt_id,provider,provider_payment_id,amount_cents,
+   currency,request_snapshot,captured_at)
+SELECT attempt.order_id,attempt.id,attempt.provider,attempt.provider_payment_id,
+       attempt.amount_cents,attempt.currency,attempt.request_snapshot,
+       COALESCE(attempt.completed_at,attempt.updated_at,attempt.created_at)
+FROM app.order_edit_payment_attempts attempt
+WHERE attempt.status='SUCCEEDED'
+  AND attempt.provider IS NOT NULL
+  AND attempt.provider_payment_id IS NOT NULL;
+--> statement-breakpoint
 CREATE FUNCTION app.reject_order_payment_capture_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -97,22 +112,36 @@ CREATE TRIGGER order_payment_captures_immutable
 BEFORE UPDATE OR DELETE ON app.order_payment_captures
 FOR EACH ROW EXECUTE FUNCTION app.reject_order_payment_capture_mutation();
 --> statement-breakpoint
+ALTER TABLE app.order_refunds DROP CONSTRAINT order_refunds_status_check;
+--> statement-breakpoint
+ALTER TABLE app.order_refunds
+  ADD CONSTRAINT order_refunds_status_check
+  CHECK (status IN ('PENDING','SUCCEEDED','PARTIAL','FAILED'));
+--> statement-breakpoint
 CREATE TABLE app.order_refund_allocations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_refund_id uuid NOT NULL REFERENCES app.order_refunds(id) ON DELETE RESTRICT,
   order_id uuid NOT NULL REFERENCES app.orders(id) ON DELETE RESTRICT,
   checkout_payment_id uuid REFERENCES app.payments(id) ON DELETE RESTRICT,
   order_payment_capture_id uuid REFERENCES app.order_payment_captures(id) ON DELETE RESTRICT,
+  allocation_sequence integer NOT NULL
+    CONSTRAINT order_refund_allocations_sequence_positive_check
+    CHECK (allocation_sequence > 0),
   provider text NOT NULL CHECK (provider IN ('FAKE','STRIPE')),
   provider_payment_id text NOT NULL,
   amount_cents integer NOT NULL CHECK (amount_cents > 0),
   currency text NOT NULL CHECK (currency = 'USD'),
   status text NOT NULL CHECK (status IN ('PENDING','SUCCEEDED','FAILED')),
+  submission_state text NOT NULL DEFAULT 'UNSUBMITTED'
+    CONSTRAINT order_refund_allocations_submission_state_check
+    CHECK (submission_state IN ('UNSUBMITTED','SUBMISSION_STARTED','IDENTIFIED')),
   provider_refund_id text UNIQUE,
   -- Legacy USER/CX keys predate the staff API's minimum length validation.
   idempotency_key text NOT NULL UNIQUE CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
+  CONSTRAINT order_refund_allocations_refund_sequence_unique
+    UNIQUE (order_refund_id,allocation_sequence),
   CHECK ((checkout_payment_id IS NULL) <> (order_payment_capture_id IS NULL))
 );
 --> statement-breakpoint
@@ -121,10 +150,11 @@ CREATE INDEX order_refund_allocations_order_refund_idx
 --> statement-breakpoint
 INSERT INTO app.order_refund_allocations
   (order_refund_id,order_id,checkout_payment_id,provider,provider_payment_id,
-   amount_cents,currency,status,provider_refund_id,idempotency_key,created_at,completed_at)
-SELECT refund.id,refund.order_id,refund.payment_id,payment.provider,payment.provider_payment_id,
-       refund.amount_cents,payment.currency,refund.status,refund.provider_refund_id,
-       refund.idempotency_key || ':capture:1',refund.created_at,refund.completed_at
+   allocation_sequence,amount_cents,currency,status,submission_state,provider_refund_id,idempotency_key,created_at,completed_at)
+SELECT refund.id,refund.order_id,refund.payment_id,payment.provider,payment.provider_payment_id,1,
+       refund.amount_cents,payment.currency,refund.status,
+       CASE WHEN refund.provider_refund_id IS NULL THEN 'SUBMISSION_STARTED' ELSE 'IDENTIFIED' END,
+       refund.provider_refund_id,refund.idempotency_key,refund.created_at,refund.completed_at
 FROM app.order_refunds refund
 JOIN app.payments payment ON payment.id=refund.payment_id
 WHERE refund.destination='ORIGINAL_PAYMENT';

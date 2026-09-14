@@ -1060,10 +1060,24 @@ export class OrderDetailService {
                 FROM app.order_payment_captures capture WHERE capture.order_id=orders.id),0))::int AS payment_amount_cents,
               payment.currency AS payment_currency,
               payment.provider AS payment_provider, payment.provider_metadata AS payment_metadata,
-              coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
-                        WHERE refund.order_id = orders.id AND refund.status = 'SUCCEEDED'), 0) AS refunded_cents,
-              coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
-                        WHERE refund.order_id = orders.id AND refund.status = 'PENDING'), 0) AS pending_refund_cents,
+              coalesce((SELECT sum(actual.amount_cents)::int FROM (
+                SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+                WHERE allocation.order_id=orders.id AND allocation.status='SUCCEEDED'
+                UNION ALL
+                SELECT refund.amount_cents FROM app.order_refunds refund
+                WHERE refund.order_id=orders.id AND refund.status='SUCCEEDED'
+                  AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                                  WHERE allocation.order_refund_id=refund.id)
+              ) actual),0) AS refunded_cents,
+              coalesce((SELECT sum(reserved.amount_cents)::int FROM (
+                SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+                WHERE allocation.order_id=orders.id AND allocation.status='PENDING'
+                UNION ALL
+                SELECT refund.amount_cents FROM app.order_refunds refund
+                WHERE refund.order_id=orders.id AND refund.status='PENDING'
+                  AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                                  WHERE allocation.order_refund_id=refund.id)
+              ) reserved),0) AS pending_refund_cents,
               orders.shipping_address_snapshot, orders.billing_address_snapshot,
               orders.pricing_snapshot, coalesce(orders.financial_snapshot->'taxSnapshot',checkout.tax_snapshot) AS tax_snapshot, orders.created_at
        FROM app.orders orders

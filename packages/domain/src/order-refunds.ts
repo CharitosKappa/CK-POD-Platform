@@ -25,7 +25,11 @@ export interface RefundOrderResult {
   refundId: string;
   destination: 'ORIGINAL_PAYMENT' | 'STORE_CREDIT';
   amountCents: number;
-  status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
+  /** Money confirmed by the provider, excluding pending or failed allocations. */
+  succeededAmountCents: number;
+  /** Definitively refused money that may be submitted as a replacement refund. */
+  failedAmountCents: number;
+  status: 'PENDING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED';
   duplicate: boolean;
   /** Retained for the existing CX refund response. */
   providerRefundId: string | null;
@@ -62,7 +66,8 @@ interface RefundAllocationRow {
   provider_payment_id: string;
   amount_cents: number;
   currency: 'USD';
-  status: RefundOrderResult['status'];
+  status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
+  submission_state: 'UNSUBMITTED' | 'SUBMISSION_STARTED' | 'IDENTIFIED';
   provider_refund_id: string | null;
   idempotency_key: string;
 }
@@ -86,11 +91,30 @@ interface RefundAnalytics {
   }): Promise<void>;
 }
 
-function result(row: RefundRow, duplicate: boolean): RefundOrderResult {
+function allocationAmounts(allocations: RefundAllocationRow[]) {
+  return {
+    succeededCents: allocations
+      .filter((allocation) => allocation.status === 'SUCCEEDED')
+      .reduce((sum, allocation) => sum + allocation.amount_cents, 0),
+    failedCents: allocations
+      .filter((allocation) => allocation.status === 'FAILED')
+      .reduce((sum, allocation) => sum + allocation.amount_cents, 0),
+  };
+}
+
+function result(
+  row: RefundRow,
+  duplicate: boolean,
+  allocationAmounts?: { succeededCents: number; failedCents: number },
+): RefundOrderResult {
   return {
     refundId: row.id,
     destination: row.destination,
     amountCents: row.amount_cents,
+    succeededAmountCents:
+      allocationAmounts?.succeededCents ?? (row.status === 'SUCCEEDED' ? row.amount_cents : 0),
+    failedAmountCents:
+      allocationAmounts?.failedCents ?? (row.status === 'FAILED' ? row.amount_cents : 0),
     status: row.status,
     providerRefundId: row.provider_refund_id,
     duplicate,
@@ -156,7 +180,15 @@ async function editBalanceContext(client: SqlClient, orderId: string) {
       `SELECT (orders.pricing_snapshot->>'totalCents')::int AS total,orders.amount_due_cents,orders.refundable_adjustment_cents,
        (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END
         + COALESCE((SELECT sum(amount_cents) FROM app.order_payment_captures WHERE order_id=$1),0)
-        - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid,
+        - COALESCE((SELECT sum(reserved.amount_cents) FROM (
+          SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+          WHERE allocation.order_id=$1 AND allocation.status IN ('PENDING','SUCCEEDED')
+          UNION ALL
+          SELECT refund.amount_cents FROM app.order_refunds refund
+          WHERE refund.order_id=$1 AND refund.status IN ('PENDING','SUCCEEDED')
+            AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                            WHERE allocation.order_refund_id=refund.id)
+        ) reserved),0))::int AS paid,
        EXISTS (SELECT 1 FROM app.order_operational_audits WHERE order_id=$1 AND action='order_edit_balance_revised' AND metadata->>'revisionId'=orders.financial_snapshot->>'editBalanceRevisionId') AS attributed,
        orders.financial_snapshot->>'editBalanceRevisionId' AS balance_revision_id,
        (SELECT revision.id FROM app.order_revisions revision WHERE revision.order_id=$1 AND (
@@ -248,6 +280,7 @@ async function restoreFailedEditRefundSettlement(
   client: SqlClient,
   orderId: string,
   refundId: string,
+  failedCents?: number,
 ) {
   const result = (
     await client.query<{ amount: number }>(
@@ -262,11 +295,12 @@ async function restoreFailedEditRefundSettlement(
       [orderId, refundId],
     )
   ).rows[0]!.amount;
-  if (!result) return;
+  const restored = failedCents === undefined ? result : Math.min(result, failedCents);
+  if (!restored) return;
   await client.query(
     `UPDATE app.orders SET amount_due_cents=GREATEST(0,amount_due_cents-refundable_adjustment_cents-$2),
     refundable_adjustment_cents=GREATEST(0,refundable_adjustment_cents-amount_due_cents+$2),updated_at=now() WHERE id=$1`,
-    [orderId, result],
+    [orderId, restored],
   );
 }
 
@@ -329,9 +363,9 @@ export class OrderRefundService {
     orderNumber: string,
     refund: RefundReconciliationRow,
   ): Promise<RefundOrderResult> {
-    if (refund.status !== 'PENDING' || refund.destination !== 'ORIGINAL_PAYMENT')
-      return result(refund, true);
     const allocations = await this.refundAllocations(refund.id);
+    if (refund.status !== 'PENDING' || refund.destination !== 'ORIGINAL_PAYMENT')
+      return result(refund, true, allocations.length ? allocationAmounts(allocations) : undefined);
     if (allocations.length)
       return this.reconcileAllocatedRefund(actor, orderNumber, refund, allocations);
     const persistedInput: RefundOrderInput = {
@@ -444,7 +478,11 @@ export class OrderRefundService {
     if (reservation.duplicate) {
       if (reservation.refund.status === 'PENDING')
         return (await this.recoverRefundResult(actor, input)) ?? result(reservation.refund, true);
-      return result(reservation.refund, true);
+      return result(
+        reservation.refund,
+        true,
+        reservation.allocations.length ? allocationAmounts(reservation.allocations) : undefined,
+      );
     }
 
     if (reservation.allocations.length)
@@ -592,7 +630,7 @@ export class OrderRefundService {
   ): Promise<RefundAllocationRow[]> {
     return (
       await client.query<RefundAllocationRow>(
-        'SELECT * FROM app.order_refund_allocations WHERE order_refund_id=$1 ORDER BY id',
+        'SELECT * FROM app.order_refund_allocations WHERE order_refund_id=$1 ORDER BY allocation_sequence',
         [refundId],
       )
     ).rows;
@@ -605,66 +643,7 @@ export class OrderRefundService {
     refund: RefundRow,
     allocations: RefundAllocationRow[],
   ): Promise<RefundOrderResult> {
-    let definitiveFailure: PaymentRefundRejectedError | null = null;
-    for (const allocation of allocations) {
-      if (allocation.status !== 'PENDING') continue;
-      let provider: PaymentRefundSubmissionResult;
-      try {
-        provider = await this.payments.refund({
-          providerPaymentId: allocation.provider_payment_id,
-          amountCents: allocation.amount_cents,
-          idempotencyKey: allocation.idempotency_key,
-        });
-        if (!['PENDING', 'SUCCEEDED'].includes(provider.status))
-          throw new PaymentRefundRejectedError();
-      } catch (error) {
-        if (!(error instanceof PaymentRefundRejectedError)) {
-          await this.audit(this.pool, orderId, 'refund_outcome_unknown', actor, input, {
-            refundId: refund.id,
-            allocationId: allocation.id,
-            amountCents: allocation.amount_cents,
-            destination: 'ORIGINAL_PAYMENT',
-            result: 'PENDING',
-          });
-          throw new PaymentRefundUncertainError();
-        }
-        definitiveFailure = error;
-        await withTransaction(this.pool, async (client) => {
-          await lockRefundOrder(client, orderId);
-          await client.query(
-            `UPDATE app.order_refund_allocations SET status='FAILED',completed_at=now()
-             WHERE id=$1 AND status='PENDING'`,
-            [allocation.id],
-          );
-        });
-        continue;
-      }
-      await withTransaction(this.pool, async (client) => {
-        await lockRefundOrder(client, orderId);
-        if (allocations.length === 1) {
-          const identified = await client.query(
-            `UPDATE app.order_refunds SET provider_refund_id=$2
-             WHERE id=$1 AND status='PENDING'
-               AND (provider_refund_id IS NULL OR provider_refund_id=$2)
-             RETURNING id`,
-            [refund.id, provider.providerRefundId],
-          );
-          if (!identified.rows[0]) throw new PaymentRefundUncertainError();
-        }
-        await client.query(
-          `UPDATE app.order_refund_allocations
-           SET provider_refund_id=$2,status=$3,completed_at=CASE WHEN $3='SUCCEEDED' THEN now() ELSE NULL END
-           WHERE id=$1 AND status='PENDING'`,
-          [allocation.id, provider.providerRefundId, provider.status],
-        );
-      });
-    }
-    const completed = await this.finalizeAllocatedRefund(actor, input, orderId, refund.id);
-    if (definitiveFailure) {
-      if (completed.status === 'FAILED') throw definitiveFailure;
-      throw new PaymentRefundUncertainError();
-    }
-    return result(completed, false);
+    return this.progressAllocatedRefund(actor, input, orderId, refund, allocations, false);
   }
 
   private async reconcileAllocatedRefund(
@@ -680,39 +659,136 @@ export class OrderRefundService {
       ...(refund.notes === null ? {} : { note: refund.notes }),
       idempotencyKey: refund.idempotency_key,
     };
-    for (const allocation of allocations) {
-      if (allocation.status !== 'PENDING') continue;
-      let provider: PaymentRefundResult | null = null;
-      try {
-        provider = allocation.provider_refund_id
-          ? ((await this.payments.getRefundStatus?.({
-              providerRefundId: allocation.provider_refund_id,
-              providerPaymentId: allocation.provider_payment_id,
-              amountCents: allocation.amount_cents,
-            })) ?? null)
-          : ((await this.payments.findRefund?.({
-              providerPaymentId: allocation.provider_payment_id,
-              amountCents: allocation.amount_cents,
-              idempotencyKey: allocation.idempotency_key,
-            })) ?? null);
-      } catch {
-        provider = null;
-      }
-      if (!provider) continue;
-      await withTransaction(this.pool, async (client) => {
-        await lockRefundOrder(client, refund.order_id);
-        await client.query(
-          `UPDATE app.order_refund_allocations SET provider_refund_id=$2,status=$3,
-           completed_at=CASE WHEN $3 IN ('SUCCEEDED','FAILED') THEN now() ELSE NULL END
-           WHERE id=$1 AND status='PENDING'`,
-          [allocation.id, provider.providerRefundId, provider.status],
-        );
-      });
-    }
-    return result(
-      await this.finalizeAllocatedRefund(actor, persistedInput, refund.order_id, refund.id),
+    return this.progressAllocatedRefund(
+      actor,
+      persistedInput,
+      refund.order_id,
+      refund,
+      allocations,
       true,
     );
+  }
+
+  private async progressAllocatedRefund(
+    actor: RefundActor,
+    input: RefundOrderInput,
+    orderId: string,
+    refund: RefundRow,
+    initialAllocations: RefundAllocationRow[],
+    duplicate: boolean,
+  ): Promise<RefundOrderResult> {
+    let definitiveFailure: PaymentRefundRejectedError | null = null;
+    let allocations = initialAllocations;
+    for (;;) {
+      const allocation = allocations.find((row) => row.status === 'PENDING');
+      if (!allocation) break;
+      let provider: PaymentRefundResult | null = null;
+      if (allocation.submission_state === 'UNSUBMITTED') {
+        const claimed = await withTransaction(this.pool, async (client) => {
+          await lockRefundOrder(client, orderId);
+          return (
+            await client.query<RefundAllocationRow>(
+              `UPDATE app.order_refund_allocations SET submission_state='SUBMISSION_STARTED'
+               WHERE id=$1 AND order_refund_id=$2 AND status='PENDING'
+                 AND submission_state='UNSUBMITTED' RETURNING *`,
+              [allocation.id, refund.id],
+            )
+          ).rows[0];
+        });
+        if (!claimed) {
+          allocations = await this.refundAllocations(refund.id);
+          continue;
+        }
+        try {
+          provider = await this.payments.refund({
+            providerPaymentId: claimed.provider_payment_id,
+            amountCents: claimed.amount_cents,
+            idempotencyKey: claimed.idempotency_key,
+          });
+          if (!['PENDING', 'SUCCEEDED'].includes(provider.status))
+            throw new PaymentRefundRejectedError();
+        } catch (error) {
+          if (!(error instanceof PaymentRefundRejectedError)) {
+            await this.audit(this.pool, orderId, 'refund_outcome_unknown', actor, input, {
+              refundId: refund.id,
+              allocationId: claimed.id,
+              amountCents: claimed.amount_cents,
+              destination: 'ORIGINAL_PAYMENT',
+              result: 'PENDING',
+            });
+            throw new PaymentRefundUncertainError();
+          }
+          definitiveFailure = error;
+          await withTransaction(this.pool, async (client) => {
+            await lockRefundOrder(client, orderId);
+            await client.query(
+              `UPDATE app.order_refund_allocations SET status='FAILED',completed_at=now()
+               WHERE id=$1 AND status='PENDING' AND submission_state='SUBMISSION_STARTED'`,
+              [claimed.id],
+            );
+          });
+          allocations = await this.refundAllocations(refund.id);
+          continue;
+        }
+      } else {
+        try {
+          provider =
+            allocation.submission_state === 'IDENTIFIED' && allocation.provider_refund_id
+              ? ((await this.payments.getRefundStatus?.({
+                  providerRefundId: allocation.provider_refund_id,
+                  providerPaymentId: allocation.provider_payment_id,
+                  amountCents: allocation.amount_cents,
+                })) ?? null)
+              : ((await this.payments.findRefund?.({
+                  providerPaymentId: allocation.provider_payment_id,
+                  amountCents: allocation.amount_cents,
+                  idempotencyKey: allocation.idempotency_key,
+                })) ?? null);
+        } catch {
+          provider = null;
+        }
+        if (!provider) {
+          const current = await this.finalizeAllocatedRefund(actor, input, orderId, refund.id);
+          return result(current.refund, duplicate, current);
+        }
+      }
+      await withTransaction(this.pool, async (client) => {
+        await lockRefundOrder(client, orderId);
+        if (allocations.length === 1) {
+          const parentIdentity = await client.query(
+            `UPDATE app.order_refunds SET provider_refund_id=$2
+             WHERE id=$1 AND status='PENDING'
+               AND (provider_refund_id IS NULL OR provider_refund_id=$2)
+             RETURNING id`,
+            [refund.id, provider.providerRefundId],
+          );
+          if (!parentIdentity.rows[0]) throw new PaymentRefundUncertainError();
+        }
+        const identified = await client.query(
+          `UPDATE app.order_refund_allocations
+           SET submission_state='IDENTIFIED',provider_refund_id=$2,status=$3,
+               completed_at=CASE WHEN $3 IN ('SUCCEEDED','FAILED') THEN now() ELSE NULL END
+           WHERE id=$1 AND status='PENDING'
+             AND (provider_refund_id IS NULL OR provider_refund_id=$2)
+           RETURNING id`,
+          [allocation.id, provider.providerRefundId, provider.status],
+        );
+        if (!identified.rows[0]) throw new PaymentRefundUncertainError();
+      });
+      if (provider.status === 'PENDING') {
+        const current = await this.finalizeAllocatedRefund(actor, input, orderId, refund.id);
+        return result(current.refund, duplicate, current);
+      }
+      allocations = await this.refundAllocations(refund.id);
+    }
+    const finalized = await this.finalizeAllocatedRefund(actor, input, orderId, refund.id);
+    if (finalized.transitioned && finalized.succeededCents > 0)
+      await this.emitRefund(this.pool, orderId, {
+        ...input,
+        amountCents: finalized.succeededCents,
+      });
+    if (definitiveFailure && finalized.refund.status === 'FAILED') throw definitiveFailure;
+    return result(finalized.refund, duplicate, finalized);
   }
 
   private async finalizeAllocatedRefund(
@@ -720,38 +796,40 @@ export class OrderRefundService {
     input: RefundOrderInput,
     orderId: string,
     refundId: string,
-  ): Promise<RefundRow> {
+  ): Promise<{
+    refund: RefundRow;
+    succeededCents: number;
+    failedCents: number;
+    transitioned: boolean;
+  }> {
     const finalized = await withTransaction(this.pool, async (client) => {
       await lockRefundOrder(client, orderId);
       const allocations = await this.refundAllocations(refundId, client);
-      const allSucceeded =
-        allocations.length > 0 && allocations.every((row) => row.status === 'SUCCEEDED');
-      const allFailed =
-        allocations.length > 0 && allocations.every((row) => row.status === 'FAILED');
+      const { succeededCents, failedCents } = allocationAmounts(allocations);
+      const pending = allocations.some((row) => row.status === 'PENDING');
+      const allSucceeded = allocations.length > 0 && failedCents === 0 && !pending;
+      const allFailed = allocations.length > 0 && succeededCents === 0 && !pending;
+      const partial = succeededCents > 0 && failedCents > 0 && !pending;
       const status: RefundOrderResult['status'] = allSucceeded
         ? 'SUCCEEDED'
         : allFailed
           ? 'FAILED'
-          : 'PENDING';
+          : partial
+            ? 'PARTIAL'
+            : 'PENDING';
       const providerRefundId = allocations.length === 1 ? allocations[0]!.provider_refund_id : null;
       let updated: RefundRow;
-      if (allSucceeded) {
+      let transitioned = false;
+      if (status !== 'PENDING') {
         updated = (
           await client.query<RefundRow>(
-            `UPDATE app.order_refunds SET status='SUCCEEDED',
-             provider_refund_id=COALESCE(provider_refund_id,$2),completed_at=now()
+            `UPDATE app.order_refunds SET status=$2,
+             provider_refund_id=COALESCE(provider_refund_id,$3),completed_at=now()
              WHERE id=$1 AND status='PENDING' RETURNING *`,
-            [refundId, providerRefundId],
+            [refundId, status, providerRefundId],
           )
         ).rows[0]!;
-      } else if (allFailed) {
-        updated = (
-          await client.query<RefundRow>(
-            `UPDATE app.order_refunds SET status='FAILED',completed_at=now()
-             WHERE id=$1 AND status='PENDING' RETURNING *`,
-            [refundId],
-          )
-        ).rows[0]!;
+        transitioned = Boolean(updated);
       } else {
         updated = (
           await client.query<RefundRow>(
@@ -764,22 +842,30 @@ export class OrderRefundService {
       updated ??= (
         await client.query<RefundRow>('SELECT * FROM app.order_refunds WHERE id=$1', [refundId])
       ).rows[0]!;
-      if (allFailed) {
+      if (transitioned && (allFailed || partial)) {
         await importLegacyEditBalanceBasis(client, orderId);
-        await restoreFailedEditRefundSettlement(client, orderId, refundId);
+        await restoreFailedEditRefundSettlement(client, orderId, refundId, failedCents);
       }
-      if (allSucceeded)
-        await this.audit(client, orderId, 'refund_succeeded', actor, input, {
-          amountCents: updated.amount_cents,
-          allocations: allocations.map((allocation) => ({
-            allocationId: allocation.id,
-            providerRefundId: allocation.provider_refund_id,
-            amountCents: allocation.amount_cents,
-          })),
-        });
-      return updated;
+      if (transitioned && (allSucceeded || partial))
+        await this.audit(
+          client,
+          orderId,
+          partial ? 'refund_partially_succeeded' : 'refund_succeeded',
+          actor,
+          input,
+          {
+            amountCents: succeededCents,
+            failedAmountCents: failedCents,
+            allocations: allocations.map((allocation) => ({
+              allocationId: allocation.id,
+              providerRefundId: allocation.provider_refund_id,
+              amountCents: allocation.amount_cents,
+              status: allocation.status,
+            })),
+          },
+        );
+      return { refund: updated, succeededCents, failedCents, transitioned };
     });
-    if (finalized.status === 'SUCCEEDED') await this.emitRefund(this.pool, orderId, input);
     return finalized;
   }
 
@@ -896,8 +982,15 @@ export class OrderRefundService {
     );
     const capturedCents = order.amount_cents + Number(supplementalCaptured.rows[0]?.amount ?? 0);
     const prior = await client.query<{ amount: string }>(
-      `SELECT coalesce(sum(amount_cents),0)::text AS amount FROM app.order_refunds
-       WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')`,
+      `SELECT coalesce(sum(reserved.amount_cents),0)::text AS amount FROM (
+         SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
+         WHERE allocation.order_id=$1 AND allocation.status IN ('PENDING','SUCCEEDED')
+         UNION ALL
+         SELECT refund.amount_cents FROM app.order_refunds refund
+         WHERE refund.order_id=$1 AND refund.status IN ('PENDING','SUCCEEDED')
+           AND NOT EXISTS (SELECT 1 FROM app.order_refund_allocations allocation
+                           WHERE allocation.order_refund_id=refund.id)
+       ) reserved`,
       [order.id],
     );
     if (Number(prior.rows[0]?.amount ?? 0) + input.amountCents > capturedCents)
@@ -988,14 +1081,15 @@ export class OrderRefundService {
       const inserted = (
         await client.query<RefundAllocationRow>(
           `INSERT INTO app.order_refund_allocations
-           (order_refund_id,order_id,checkout_payment_id,order_payment_capture_id,provider,
-            provider_payment_id,amount_cents,currency,status,idempotency_key)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING',$9) RETURNING *`,
+            (order_refund_id,order_id,checkout_payment_id,order_payment_capture_id,allocation_sequence,provider,
+             provider_payment_id,amount_cents,currency,status,idempotency_key)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10) RETURNING *`,
           [
             refund.id,
             order.id,
             source.source_type === 'CHECKOUT' ? source.source_id : null,
             source.source_type === 'ORDER_EDIT' ? source.source_id : null,
+            index + 1,
             source.provider,
             source.provider_payment_id,
             amount,

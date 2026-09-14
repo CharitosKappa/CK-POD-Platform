@@ -8,18 +8,26 @@ import { actionRequest, object, uuid } from '../../../_actions/request';
 export const dynamic = 'force-dynamic';
 
 function reconciliationResponse(refund: RefundOrderResult) {
-  return NextResponse.json(
-    {
-      result: {
-        refundId: refund.refundId,
-        destination: refund.destination,
-        amountCents: refund.amountCents,
-        status: refund.status,
-        duplicate: refund.duplicate,
+  const result = {
+    refundId: refund.refundId,
+    destination: refund.destination,
+    amountCents: refund.amountCents,
+    succeededAmountCents: refund.succeededAmountCents,
+    failedAmountCents: refund.failedAmountCents,
+    status: refund.status,
+    duplicate: refund.duplicate,
+  };
+  if (refund.status === 'PARTIAL')
+    return NextResponse.json(
+      {
+        error:
+          'Only part of the refund completed. The remaining amount is available to refund again.',
+        code: 'REFUND_PARTIAL',
+        result,
       },
-    },
-    { status: refund.status === 'PENDING' ? 202 : 200 },
-  );
+      { status: 409 },
+    );
+  return NextResponse.json({ result }, { status: refund.status === 'PENDING' ? 202 : 200 });
 }
 
 export async function POST(

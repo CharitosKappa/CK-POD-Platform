@@ -20,9 +20,21 @@ function refundResponse(refund: RefundOrderResult) {
     refundId: refund.refundId,
     destination: refund.destination,
     amountCents: refund.amountCents,
+    succeededAmountCents: refund.succeededAmountCents,
+    failedAmountCents: refund.failedAmountCents,
     status: refund.status,
     duplicate: refund.duplicate,
   };
+  if (result.status === 'PARTIAL')
+    return NextResponse.json(
+      {
+        error:
+          'Only part of the refund completed. The remaining amount is available to refund again.',
+        code: 'REFUND_PARTIAL',
+        result,
+      },
+      { status: 409 },
+    );
   if (result.status === 'FAILED')
     return NextResponse.json(
       {

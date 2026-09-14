@@ -57,6 +57,36 @@ describe('pending refund reconciliation', () => {
     expect(JSON.stringify(payload)).not.toContain('provider-private');
   });
 
+  it('returns 409 and safe amounts when reconciliation reaches a terminal partial result', async () => {
+    doubles.reconcileRefund.mockResolvedValue({
+      refundId: uuid,
+      destination: 'ORIGINAL_PAYMENT',
+      amountCents: 1200,
+      succeededAmountCents: 700,
+      failedAmountCents: 500,
+      status: 'PARTIAL',
+      duplicate: true,
+      providerRefundId: 'provider-private',
+    });
+
+    const response = await POST(requestFor({}), context);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error:
+        'Only part of the refund completed. The remaining amount is available to refund again.',
+      code: 'REFUND_PARTIAL',
+      result: {
+        refundId: uuid,
+        destination: 'ORIGINAL_PAYMENT',
+        amountCents: 1200,
+        succeededAmountCents: 700,
+        failedAmountCents: 500,
+        status: 'PARTIAL',
+        duplicate: true,
+      },
+    });
+  });
+
   it('returns 404 when the refund does not belong to the order', async () => {
     doubles.reconcileRefund.mockResolvedValue(null);
     expect((await POST(requestFor({}), context)).status).toBe(404);

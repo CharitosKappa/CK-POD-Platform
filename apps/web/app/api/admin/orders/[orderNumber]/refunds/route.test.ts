@@ -98,4 +98,29 @@ describe('Refund settlement outcomes', () => {
       expect(response.status).toBe(httpStatus);
       expect(await response.json()).toMatchObject({ result: { status } });
     });
+
+  it('returns an explicit incomplete response with safe partial settlement amounts', async () => {
+    doubles.refundOriginalPayment.mockResolvedValue({
+      status: 'PARTIAL',
+      refundId: uuid,
+      providerRefundId: 'provider-private',
+      amountCents: 3999,
+      succeededAmountCents: 2500,
+      failedAmountCents: 1499,
+    });
+    const response = await POST(requestFor({ ...base, destination: 'ORIGINAL_PAYMENT' }), context);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error:
+        'Only part of the refund completed. The remaining amount is available to refund again.',
+      code: 'REFUND_PARTIAL',
+      result: {
+        refundId: uuid,
+        status: 'PARTIAL',
+        amountCents: 3999,
+        succeededAmountCents: 2500,
+        failedAmountCents: 1499,
+      },
+    });
+  });
 });

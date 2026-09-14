@@ -183,7 +183,16 @@ export function pendingOrderActions(apiBase: string, orderNumber: string): Order
 function journalOutcome(outcome: OrderActionOutcome): OrderActionOutcome {
   const result = outcome.result
     ? Object.fromEntries(
-        ['status', 'cancellationId', 'refundId', 'amountCents', 'destination', 'refund']
+        [
+          'status',
+          'cancellationId',
+          'refundId',
+          'amountCents',
+          'succeededAmountCents',
+          'failedAmountCents',
+          'destination',
+          'refund',
+        ]
           .filter((key) => outcome.result![key] !== undefined)
           .map((key) => [key, outcome.result![key]]),
       )
@@ -201,7 +210,11 @@ function terminalActionOutcome(outcome: OrderActionOutcome): boolean {
   return (
     outcome.kind === 'success' ||
     (outcome.kind === 'error' && [400, 403, 404, 409].includes(outcome.status ?? 0)) ||
-    (outcome.result?.status === 'SUCCEEDED' && refund?.status === 'FAILED') ||
+    (outcome.result?.status === 'SUCCEEDED' &&
+      (refund?.status === 'FAILED' || refund?.status === 'PARTIAL')) ||
+    (outcome.result?.status === 'PARTIAL' &&
+      typeof outcome.result.refundId === 'string' &&
+      !outcome.result.cancellationId) ||
     (outcome.result?.status === 'FAILED' &&
       typeof outcome.result.refundId === 'string' &&
       !outcome.result.cancellationId)

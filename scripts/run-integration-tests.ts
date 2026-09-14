@@ -4,6 +4,7 @@ import { createDatabaseClient } from '../packages/db/src/index';
 import { resolveIntegrationDatabaseUrls } from '../packages/db/src/integration-test-database';
 
 const integrationTests = [
+  'packages/db/src/order-edit-payment-migrations.integration.test.ts',
   'packages/domain/src/identity-projects.integration.test.ts',
   'packages/domain/src/generation.integration.test.ts',
   'packages/domain/src/prepress.integration.test.ts',

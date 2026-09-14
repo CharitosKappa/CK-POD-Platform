@@ -646,6 +646,215 @@ suite('order archive transaction integration', () => {
     ]);
   });
 
+  it('recovers an ambiguous allocation, submits the untouched allocation once, and releases a partial remainder', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const provider = new domain.FakePaymentService();
+    const paymentService = new domain.OrderEditPaymentService(actionDatabase.pool, provider);
+    const increased = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 3 },
+      ],
+    });
+    const prepared = await paymentService.prepare(staff, {
+      orderNumber: f.orderNumber,
+      orderRevisionId: increased.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    });
+    const providerPaymentId = (
+      await pool.query<{ provider_payment_id: string }>(
+        'SELECT provider_payment_id FROM app.order_edit_payment_attempts WHERE id=$1',
+        [prepared.paymentAttemptId],
+      )
+    ).rows[0]!.provider_payment_id;
+    await paymentService.settle({
+      provider: 'FAKE',
+      providerEventId: `fake_evt_${randomUUID()}`,
+      eventName: 'payment_intent.succeeded',
+      paymentId: providerPaymentId,
+      outcome: 'SUCCEEDED',
+      amountCents: increased.amountDueCents,
+      currency: 'USD',
+      providerFeeCents: null,
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: f.orderId,
+        order_revision_id: increased.revisionId,
+        order_edit_payment_attempt_id: prepared.paymentAttemptId,
+      },
+    });
+    const decreased = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 2 },
+      ],
+    });
+    expect(decreased.refundableAdjustmentCents).toBe(increased.amountDueCents);
+
+    const refundSubmission = vi
+      .fn<domain.PaymentService['refund']>()
+      .mockRejectedValueOnce(new domain.PaymentRefundUncertainError())
+      .mockImplementation(async (input) => ({
+        providerRefundId: `fake_re_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
+        status: 'SUCCEEDED',
+        providerStatus: 'succeeded',
+      }));
+    const findRefund = vi.fn<NonNullable<domain.PaymentService['findRefund']>>(async (input) => ({
+      providerRefundId: `fake_re_failed_${input.idempotencyKey.slice(-16)}`,
+      status: 'FAILED',
+      providerStatus: 'failed',
+    }));
+    const refunds = new domain.OrderRefundService(actionDatabase.pool, {
+      createIntent: (input) => provider.createIntent(input),
+      getIntent: (input) => provider.getIntent(input),
+      findIntent: (input) => provider.findIntent(input),
+      verifyWebhook: (input) => provider.verifyWebhook(input),
+      refund: refundSubmission,
+      getRefundStatus: (input) => provider.getRefundStatus(input),
+      findRefund,
+    });
+    const originalPaid = (await snapshot(f.orderId)).payments[0]!.amount_cents;
+    const fullRefundKey = `refund-${randomUUID()}`;
+    const fullRefundInput = {
+      orderNumber: f.orderNumber,
+      amountCents: originalPaid + increased.amountDueCents,
+      reasonCode: 'CUSTOMER_REQUEST',
+      idempotencyKey: fullRefundKey,
+    };
+    await expect(
+      refunds.refundOriginalPayment(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        fullRefundInput,
+      ),
+    ).rejects.toBeInstanceOf(domain.PaymentRefundUncertainError);
+    expect(refundSubmission).toHaveBeenCalledTimes(1);
+    const parentRefund = (
+      await pool.query<{ id: string }>(
+        'SELECT id FROM app.order_refunds WHERE idempotency_key=$1',
+        [fullRefundKey],
+      )
+    ).rows[0]!;
+    expect(
+      (
+        await pool.query(
+          `SELECT status,submission_state,provider_refund_id FROM app.order_refund_allocations
+           WHERE order_refund_id=$1 ORDER BY allocation_sequence`,
+          [parentRefund.id],
+        )
+      ).rows,
+    ).toEqual([
+      { status: 'PENDING', submission_state: 'SUBMISSION_STARTED', provider_refund_id: null },
+      { status: 'PENDING', submission_state: 'UNSUBMITTED', provider_refund_id: null },
+    ]);
+
+    const partial = await refunds.reconcileRefund(
+      { type: 'STAFF', staffMemberId: staff.staffMemberId, role: 'OPERATIONS', email: staff.email },
+      {
+        orderNumber: f.orderNumber,
+        refundId: parentRefund.id,
+        idempotencyKey: `reconcile-${randomUUID()}`,
+      },
+    );
+    expect(partial).toMatchObject({
+      status: 'PARTIAL',
+      amountCents: originalPaid + increased.amountDueCents,
+    });
+    expect(findRefund).toHaveBeenCalledTimes(1);
+    expect(refundSubmission).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        await pool.query(
+          `SELECT amount_cents,status,submission_state FROM app.order_refund_allocations
+           WHERE order_refund_id=$1 ORDER BY allocation_sequence`,
+          [parentRefund.id],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        amount_cents: increased.amountDueCents,
+        status: 'FAILED',
+        submission_state: 'IDENTIFIED',
+      },
+      { amount_cents: originalPaid, status: 'SUCCEEDED', submission_state: 'IDENTIFIED' },
+    ]);
+    const afterPartial = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(afterPartial).not.toBeNull();
+    expect(afterPartial!.financials.refundedCents).toBe(originalPaid);
+    expect(afterPartial!.refundableCents).toBe(increased.amountDueCents);
+    expect((await snapshot(f.orderId)).order).toMatchObject({
+      refundable_adjustment_cents: increased.amountDueCents,
+    });
+    await expect(
+      refunds.refundOriginalPayment(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        fullRefundInput,
+      ),
+    ).resolves.toMatchObject({
+      status: 'PARTIAL',
+      duplicate: true,
+      succeededAmountCents: originalPaid,
+      failedAmountCents: increased.amountDueCents,
+    });
+    await expect(
+      refunds.reconcileRefund(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        {
+          orderNumber: f.orderNumber,
+          refundId: parentRefund.id,
+          idempotencyKey: `reconcile-${randomUUID()}`,
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: 'PARTIAL',
+      duplicate: true,
+      succeededAmountCents: originalPaid,
+      failedAmountCents: increased.amountDueCents,
+    });
+    expect(findRefund).toHaveBeenCalledTimes(1);
+    expect(refundSubmission).toHaveBeenCalledTimes(2);
+
+    const replacementKey = `refund-${randomUUID()}`;
+    const replacement = await refunds.refundOriginalPayment(
+      { type: 'STAFF', staffMemberId: staff.staffMemberId, role: 'OPERATIONS', email: staff.email },
+      {
+        orderNumber: f.orderNumber,
+        amountCents: increased.amountDueCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: replacementKey,
+      },
+    );
+    expect(replacement.status).toBe('SUCCEEDED');
+    expect(refundSubmission).toHaveBeenCalledTimes(3);
+    expect(
+      (
+        await pool.query<{ idempotency_key: string }>(
+          'SELECT idempotency_key FROM app.order_refund_allocations WHERE order_refund_id=$1',
+          [replacement.refundId],
+        )
+      ).rows,
+    ).toEqual([{ idempotency_key: replacementKey }]);
+    const fullyRefunded = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(fullyRefunded).not.toBeNull();
+    expect(fullyRefunded!.financials.refundedCents).toBe(originalPaid + increased.amountDueCents);
+    expect(fullyRefunded!.refundableCents).toBe(0);
+  });
+
   it('blocks refund and cancellation while an additional PaymentIntent can still charge', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const { actions } = editService();

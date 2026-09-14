@@ -73,6 +73,26 @@ describe('required application tables', () => {
     expect(hardening).toContain('CREATE TABLE app.order_refund_allocations');
     expect(hardening).toContain('request_snapshot jsonb');
     expect(hardening).toContain('provider_submission_started_at');
+    expect(hardening).not.toContain(
+      "UPDATE app.order_edit_payment_attempts SET status='PENDING' WHERE status='FAILED'",
+    );
+    expect(hardening).toMatch(
+      /UPDATE app\.order_edit_payment_attempts[\s\S]+provider_submission_started_at[\s\S]+WHERE status='PREPARING'/,
+    );
+    expect(hardening).toMatch(
+      /INSERT INTO app\.order_payment_captures[\s\S]+FROM app\.order_edit_payment_attempts[\s\S]+status='SUCCEEDED'/,
+    );
+    expect(hardening).toContain("submission_state text NOT NULL DEFAULT 'UNSUBMITTED'");
+    expect(hardening).toContain("CHECK (status IN ('PENDING','SUCCEEDED','PARTIAL','FAILED'))");
+
+    const repair = await readFile(
+      `${migrationsDirectory}/0052_order_edit_payment_repair.sql`,
+      'utf8',
+    );
+    expect(repair).toContain('ADD COLUMN IF NOT EXISTS submission_state');
+    expect(repair).toContain('INSERT INTO app.order_payment_captures');
+    expect(repair).toContain("status IN ('PENDING','SUCCEEDED','PARTIAL','FAILED')");
+    expect(repair).toContain('idempotency_key=refund.idempotency_key');
   });
 
   it('enforces the order admin action migration contracts', async () => {

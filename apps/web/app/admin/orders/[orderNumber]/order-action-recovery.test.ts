@@ -93,6 +93,40 @@ describe('order action journal recovery', () => {
     expect(storage.values.size).toBe(0);
   });
 
+  it('clears a completed cancellation journal after a terminal partial refund', async () => {
+    const storage = storageFixture();
+    vi.stubGlobal('fetch', async () =>
+      Response.json({
+        result: {
+          cancellationId: 'cancel-1',
+          status: 'SUCCEEDED',
+          refund: {
+            refundId: 'refund-1',
+            status: 'PARTIAL',
+            amountCents: 1500,
+            succeededAmountCents: 900,
+            failedAmountCents: 600,
+          },
+        },
+      }),
+    );
+    const { createOrderActionSession } = await import('./order-action-client');
+    const result = await createOrderActionSession('/cancellations', { storage }).submit({
+      cancellationId: 'cancel-1',
+    });
+    expect(result).toMatchObject({
+      kind: 'incomplete',
+      result: {
+        refund: {
+          status: 'PARTIAL',
+          succeededAmountCents: 900,
+          failedAmountCents: 600,
+        },
+      },
+    });
+    expect(storage.values.size).toBe(0);
+  });
+
   it('reuses a committed lost-response refund key after modal close and a module reload', async () => {
     const storage = storageFixture();
     const executed = new Set<string>();
@@ -180,6 +214,38 @@ describe('order action journal recovery', () => {
     expect(fetcher.mock.calls[0]![1].headers['Idempotency-Key']).toBe(
       fetcher.mock.calls[1]![1].headers['Idempotency-Key'],
     );
+    expect(storage.values.size).toBe(0);
+  });
+
+  it('treats a partial refund as terminal incomplete and clears the request identity for a replacement', async () => {
+    const storage = storageFixture();
+    vi.stubGlobal('fetch', async () =>
+      Response.json(
+        {
+          error:
+            'Only part of the refund completed. The remaining amount is available to refund again.',
+          code: 'REFUND_PARTIAL',
+          result: {
+            refundId: 'refund-partial',
+            status: 'PARTIAL',
+            amountCents: 1500,
+            succeededAmountCents: 900,
+            failedAmountCents: 600,
+          },
+        },
+        { status: 409 },
+      ),
+    );
+    const { createOrderActionSession } = await import('./order-action-client');
+    const outcome = await createOrderActionSession('/api/admin/orders/%2342/refunds', {
+      storage,
+    }).submit({ destination: 'ORIGINAL_PAYMENT', amountCents: 1500 });
+    expect(outcome).toMatchObject({
+      kind: 'incomplete',
+      code: 'REFUND_PARTIAL',
+      result: { status: 'PARTIAL', succeededAmountCents: 900, failedAmountCents: 600 },
+    });
+    expect(outcome.message).toContain('remaining amount is available');
     expect(storage.values.size).toBe(0);
   });
 

@@ -152,6 +152,12 @@ export class OrderEditPaymentService {
       ).rows[0]!;
       return { order, attempt, duplicate: false };
     });
+    if (
+      prepared.attempt.status === 'FAILED' &&
+      prepared.attempt.provider_payment_id &&
+      prepared.attempt.provider_submission_started_at
+    )
+      return this.recoverIntent(prepared.order, prepared.attempt);
     if (prepared.attempt.status !== 'PREPARING') return publicResult(prepared.attempt, true);
     if (prepared.attempt.provider_submission_started_at)
       return this.recoverIntent(prepared.order, prepared.attempt);
