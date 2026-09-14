@@ -55,6 +55,7 @@ describe('parseServerEnvironment', () => {
       tasks: ['TEXT_TO_ARTWORK'],
       model: 'gpt-image-2.5-sunburst',
       priority: 1,
+      maxRetries: 0,
       fallbackEligible: false,
     });
   });

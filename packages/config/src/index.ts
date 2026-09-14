@@ -284,7 +284,7 @@ export function parseServerEnvironment(
         priority: 1,
         estimatedCostCents: 0,
         timeoutMs: 120_000,
-        maxRetries: 1,
+        maxRetries: 0,
         fallbackEligible: false,
       },
       ...JSON.parse(defaultProviderConfiguration),

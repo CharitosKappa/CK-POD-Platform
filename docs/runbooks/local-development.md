@@ -138,7 +138,8 @@ the web process and generated objects disappear when that process restarts. Redi
 required for durable production operation. A successful request progresses through `QUEUED`,
 `PROCESSING`, `VALIDATING`, and `SUCCEEDED`; the Design Credit is consumed only after validated
 output is stored. Provider failures keep the credit unconsumed and do not silently substitute
-fixture artwork.
+fixture artwork. Automatic retries are disabled for the paid adapter so an ambiguous network
+failure cannot silently create and bill a duplicate image; the customer can retry explicitly.
 
 Every real generation may incur OpenAI charges. The normal `pnpm benchmark:g1` command stays on
 the deterministic zero-cost providers even when a key exists. Set
