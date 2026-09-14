@@ -119,12 +119,27 @@ suite('order edit payment migration repair', () => {
       expect(
         (
           await database.pool.query(
-            `SELECT provider_submission_started_at IS NOT NULL AS started
-             FROM "${schema}".order_edit_payment_attempts WHERE id=$1`,
-            [attempts.preparing],
+            `SELECT id,provider_submission_started_at IS NOT NULL AS started
+             FROM "${schema}".order_edit_payment_attempts
+             WHERE id=ANY($1::uuid[]) ORDER BY id`,
+            [
+              [
+                attempts.preparing,
+                attempts.failedUnbacked,
+                attempts.failedBackedOne,
+                attempts.failedBackedTwo,
+              ],
+            ],
           )
         ).rows,
-      ).toEqual([{ started: true }]);
+      ).toEqual(
+        [
+          { id: attempts.preparing, started: true },
+          { id: attempts.failedUnbacked, started: false },
+          { id: attempts.failedBackedOne, started: true },
+          { id: attempts.failedBackedTwo, started: true },
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      );
       expect(
         (
           await database.pool.query(
@@ -140,10 +155,14 @@ suite('order edit payment migration repair', () => {
   it('0052 idempotently repairs the original 0051 shape and classifies unresolved allocations conservatively', async () => {
     const schema = schemaName();
     const orderId = randomUUID();
+    const failedOrderId = randomUUID();
     const preparingId = randomUUID();
     const succeededId = randomUUID();
+    const failedBackedId = randomUUID();
     const legacyRefundId = randomUUID();
     const pendingRefundId = randomUUID();
+    const suffixOneAllocationId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const suffixTwoAllocationId = '00000000-0000-4000-8000-000000000001';
     const parentKey = `legacy-${randomUUID()}`;
     try {
       await database.pool.query(`CREATE SCHEMA "${schema}";
@@ -177,24 +196,31 @@ suite('order edit payment migration repair', () => {
           status text NOT NULL,provider_refund_id text,idempotency_key text NOT NULL UNIQUE,
           created_at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz
         );
-        INSERT INTO "${schema}".orders VALUES ('${orderId}');
+        INSERT INTO "${schema}".orders VALUES ('${orderId}'),('${failedOrderId}');
         INSERT INTO "${schema}".order_edit_payment_attempts
           (id,order_id,order_revision_id,status,amount_cents,currency,provider,provider_payment_id,request_snapshot,completed_at)
         VALUES
           ('${preparingId}','${orderId}','${randomUUID()}','PREPARING',500,'USD',NULL,NULL,'{}',NULL),
-          ('${succeededId}','${orderId}','${randomUUID()}','SUCCEEDED',700,'USD','FAKE','pi_succeeded','{}',now());
+          ('${succeededId}','${orderId}','${randomUUID()}','SUCCEEDED',700,'USD','FAKE','pi_succeeded','{}',now()),
+          ('${failedBackedId}','${failedOrderId}','${randomUUID()}','FAILED',400,'USD','FAKE','pi_failed','{}',now());
         INSERT INTO "${schema}".order_refunds VALUES
           ('${legacyRefundId}','${orderId}','${parentKey}','SUCCEEDED'),
           ('${pendingRefundId}','${orderId}','pending-${randomUUID()}','PENDING');
         INSERT INTO "${schema}".order_refund_allocations
-          (order_refund_id,order_id,checkout_payment_id,provider,provider_payment_id,amount_cents,currency,status,
+          (id,order_refund_id,order_id,checkout_payment_id,provider,provider_payment_id,amount_cents,currency,status,
            provider_refund_id,idempotency_key,created_at)
         VALUES
-          ('${legacyRefundId}','${orderId}','${randomUUID()}','FAKE','pi_checkout',300,'USD','SUCCEEDED','re_legacy','${parentKey}:capture:1',now()-interval '3 minutes'),
-          ('${pendingRefundId}','${orderId}','${randomUUID()}','FAKE','pi_first',200,'USD','PENDING',NULL,'multi-first-${randomUUID()}',now()-interval '2 minutes'),
-          ('${pendingRefundId}','${orderId}','${randomUUID()}','FAKE','pi_second',200,'USD','PENDING',NULL,'multi-second-${randomUUID()}',now()-interval '1 minute');`);
+          ('${randomUUID()}','${legacyRefundId}','${orderId}','${randomUUID()}','FAKE','pi_checkout',300,'USD','SUCCEEDED','re_legacy','${parentKey}:capture:1',now()-interval '3 minutes'),
+          ('${suffixOneAllocationId}','${pendingRefundId}','${orderId}','${randomUUID()}','FAKE','pi_first',200,'USD','PENDING',NULL,'${pendingRefundId}:capture:1',now()),
+          ('${suffixTwoAllocationId}','${pendingRefundId}','${orderId}','${randomUUID()}','FAKE','pi_second',200,'USD','PENDING',NULL,'${pendingRefundId}:capture:2',now());`);
 
       await migration('0052_order_edit_payment_repair', schema);
+      await database.pool.query(
+        `UPDATE "${schema}".order_refund_allocations
+         SET submission_state=CASE WHEN id=$1 THEN 'IDENTIFIED' ELSE 'UNSUBMITTED' END
+         WHERE order_refund_id=$2`,
+        [suffixOneAllocationId, pendingRefundId],
+      );
       await migration('0052_order_edit_payment_repair', schema);
 
       expect(
@@ -203,6 +229,15 @@ suite('order edit payment migration repair', () => {
             `SELECT provider_submission_started_at IS NOT NULL AS started
              FROM "${schema}".order_edit_payment_attempts WHERE id=$1`,
             [preparingId],
+          )
+        ).rows,
+      ).toEqual([{ started: true }]);
+      expect(
+        (
+          await database.pool.query(
+            `SELECT provider_submission_started_at IS NOT NULL AS started
+             FROM "${schema}".order_edit_payment_attempts WHERE id=$1`,
+            [failedBackedId],
           )
         ).rows,
       ).toEqual([{ started: true }]);
@@ -234,7 +269,7 @@ suite('order edit payment migration repair', () => {
           )
         ).rows,
       ).toEqual([
-        { submission_state: 'SUBMISSION_STARTED', allocation_sequence: 1 },
+        { submission_state: 'IDENTIFIED', allocation_sequence: 1 },
         { submission_state: 'UNSUBMITTED', allocation_sequence: 2 },
       ]);
       await expect(

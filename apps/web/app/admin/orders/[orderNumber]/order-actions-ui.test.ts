@@ -594,6 +594,38 @@ describe('durable order mutation client', () => {
       }),
     });
   });
+  it('keeps a terminal failed refund check incomplete without refreshing the order', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: 'The refund was not completed. The amount is available to refund again.',
+            code: 'REFUND_FAILED',
+            result: {
+              refundId: 'refund-1',
+              status: 'FAILED',
+              amountCents: 1200,
+              succeededAmountCents: 0,
+              failedAmountCents: 1200,
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const onSaved = vi.fn();
+    const result = await createPendingRefundReconciliationCheck(
+      '/api/admin/orders/%2342/refunds/refund-1/reconcile',
+      onSaved,
+    )();
+    expect(result).toMatchObject({
+      kind: 'incomplete',
+      code: 'REFUND_FAILED',
+      result: { status: 'FAILED', failedAmountCents: 1200 },
+    });
+    expect(onSaved).not.toHaveBeenCalled();
+  });
   it('gives an explicit unresolved cancellation retry a new key only after a durable failed attempt', async () => {
     const fetcher = vi
       .fn()

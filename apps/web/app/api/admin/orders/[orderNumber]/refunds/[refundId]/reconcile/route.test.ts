@@ -40,12 +40,12 @@ describe('pending refund reconciliation', () => {
     });
   });
 
-  it.each(['SUCCEEDED', 'FAILED'] as const)('returns 200 for terminal %s state', async (status) => {
+  it('returns 200 for a terminal succeeded state', async () => {
     doubles.reconcileRefund.mockResolvedValue({
       refundId: uuid,
       destination: 'ORIGINAL_PAYMENT',
       amountCents: 1200,
-      status,
+      status: 'SUCCEEDED',
       duplicate: true,
       providerRefundId: 'provider-private',
     });
@@ -53,8 +53,37 @@ describe('pending refund reconciliation', () => {
     const response = await POST(requestFor({}), context);
     expect(response.status).toBe(200);
     const payload = await response.json();
-    expect(payload).toMatchObject({ result: { status } });
+    expect(payload).toMatchObject({ result: { status: 'SUCCEEDED' } });
     expect(JSON.stringify(payload)).not.toContain('provider-private');
+  });
+
+  it('returns an explicit 409 incomplete result for a terminal failed refund', async () => {
+    doubles.reconcileRefund.mockResolvedValue({
+      refundId: uuid,
+      destination: 'ORIGINAL_PAYMENT',
+      amountCents: 1200,
+      succeededAmountCents: 0,
+      failedAmountCents: 1200,
+      status: 'FAILED',
+      duplicate: true,
+      providerRefundId: 'provider-private',
+    });
+
+    const response = await POST(requestFor({}), context);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'The refund was not completed. The amount is available to refund again.',
+      code: 'REFUND_FAILED',
+      result: {
+        refundId: uuid,
+        destination: 'ORIGINAL_PAYMENT',
+        amountCents: 1200,
+        succeededAmountCents: 0,
+        failedAmountCents: 1200,
+        status: 'FAILED',
+        duplicate: true,
+      },
+    });
   });
 
   it('returns 409 and safe amounts when reconciliation reaches a terminal partial result', async () => {

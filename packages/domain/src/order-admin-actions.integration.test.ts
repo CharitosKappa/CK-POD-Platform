@@ -494,6 +494,72 @@ suite('order archive transaction integration', () => {
     ).toEqual([{ amount_cents: edit.amountDueCents, currency: 'USD' }]);
   });
 
+  it('reconciles a migrated provider-backed failed attempt by read and releases it when cancelled', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const edit = await editService().actions.editOrder(staff, {
+      ...f.input(),
+      shippingCents: 1000,
+    });
+    const base = new domain.FakePaymentService();
+    const paymentInput = {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    };
+    const prepared = await new domain.OrderEditPaymentService(actionDatabase.pool, base).prepare(
+      staff,
+      paymentInput,
+    );
+    const attempt = (
+      await pool.query<{ provider_payment_id: string }>(
+        `UPDATE app.order_edit_payment_attempts
+         SET status='FAILED',provider_status='payment_failed',completed_at=now()
+         WHERE id=$1 RETURNING provider_payment_id`,
+        [prepared.paymentAttemptId],
+      )
+    ).rows[0]!;
+    const createIntent = vi.fn<domain.PaymentService['createIntent']>();
+    const getIntent = vi.fn<NonNullable<domain.PaymentService['getIntent']>>(async (input) => {
+      expect(input.providerPaymentId).toBe(attempt.provider_payment_id);
+      expect(input.request.idempotencyKey).toBe(paymentInput.idempotencyKey);
+      return {
+        provider: 'FAKE',
+        providerPaymentId: attempt.provider_payment_id,
+        clientSecret: null,
+        status: 'CANCELLED',
+      };
+    });
+    const recovery = new domain.OrderEditPaymentService(actionDatabase.pool, {
+      createIntent,
+      getIntent,
+      verifyWebhook: (input) => base.verifyWebhook(input),
+      refund: (input) => base.refund(input),
+      getRefundStatus: (input) => base.getRefundStatus(input),
+    });
+
+    await expect(recovery.reconcile(staff, paymentInput)).resolves.toMatchObject({
+      paymentAttemptId: prepared.paymentAttemptId,
+      status: 'CANCELLED',
+      duplicate: true,
+    });
+    expect(createIntent).not.toHaveBeenCalled();
+    expect(getIntent).toHaveBeenCalledOnce();
+    expect(
+      (
+        await pool.query('SELECT status FROM app.order_edit_payment_attempts WHERE id=$1', [
+          prepared.paymentAttemptId,
+        ])
+      ).rows,
+    ).toEqual([{ status: 'CANCELLED' }]);
+
+    await expect(
+      new domain.OrderEditPaymentService(actionDatabase.pool, base).prepare(staff, {
+        ...paymentInput,
+        idempotencyKey: `edit-payment-${randomUUID()}`,
+      }),
+    ).resolves.toMatchObject({ status: 'PENDING', duplicate: false });
+  });
+
   it('reconciles an ambiguous provider submission by immutable metadata without a second POST', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const edit = await editService().actions.editOrder(staff, {

@@ -27,6 +27,15 @@ function reconciliationResponse(refund: RefundOrderResult) {
       },
       { status: 409 },
     );
+  if (refund.status === 'FAILED')
+    return NextResponse.json(
+      {
+        error: 'The refund was not completed. The amount is available to refund again.',
+        code: 'REFUND_FAILED',
+        result,
+      },
+      { status: 409 },
+    );
   return NextResponse.json({ result }, { status: refund.status === 'PENDING' ? 202 : 200 });
 }
 

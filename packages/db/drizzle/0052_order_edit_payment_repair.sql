@@ -2,7 +2,8 @@
 -- externally ambiguous attempts and refunds for read-only reconciliation.
 UPDATE app.order_edit_payment_attempts
 SET provider_submission_started_at=COALESCE(provider_submission_started_at,updated_at,created_at)
-WHERE status='PREPARING';
+WHERE status='PREPARING'
+   OR (status='FAILED' AND provider_payment_id IS NOT NULL);
 --> statement-breakpoint
 DROP INDEX IF EXISTS app.order_edit_payment_attempts_one_active_idx;
 --> statement-breakpoint
@@ -36,7 +37,14 @@ ALTER TABLE app.order_refund_allocations
 --> statement-breakpoint
 WITH sequenced AS (
   SELECT id,row_number() OVER (
-    PARTITION BY order_refund_id ORDER BY created_at,id
+    PARTITION BY order_refund_id
+    ORDER BY
+      CASE
+        WHEN idempotency_key ~ ':capture:[1-9][0-9]*$'
+          THEN substring(idempotency_key FROM ':capture:([1-9][0-9]*)$')::numeric
+      END NULLS LAST,
+      created_at,
+      id
   )::int AS sequence
   FROM app.order_refund_allocations
 )
@@ -65,7 +73,9 @@ WITH unresolved AS (
            ORDER BY allocation.allocation_sequence
          ) AS unresolved_position
   FROM app.order_refund_allocations allocation
-  WHERE allocation.status='PENDING' AND allocation.provider_refund_id IS NULL
+  WHERE allocation.status='PENDING'
+    AND allocation.provider_refund_id IS NULL
+    AND allocation.submission_state IS NULL
 )
 UPDATE app.order_refund_allocations allocation
 SET submission_state=CASE

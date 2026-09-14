@@ -22,11 +22,13 @@ FROM app.orders orders WHERE orders.id=attempt.order_id;
 ALTER TABLE app.order_edit_payment_attempts
   ALTER COLUMN request_snapshot SET NOT NULL;
 --> statement-breakpoint
--- Every PREPARING row predates the durable submission marker. Treat it as potentially
--- submitted so an upgrade can only recover it through provider reads.
+-- Every PREPARING row and every provider-backed FAILED row predates the durable
+-- submission marker. Treat it as potentially submitted so an upgrade can only
+-- recover it through provider reads.
 UPDATE app.order_edit_payment_attempts
 SET provider_submission_started_at=COALESCE(updated_at,created_at)
-WHERE status='PREPARING';
+WHERE status='PREPARING'
+   OR (status='FAILED' AND provider_payment_id IS NOT NULL);
 --> statement-breakpoint
 DO $$
 DECLARE backing_constraint text;
