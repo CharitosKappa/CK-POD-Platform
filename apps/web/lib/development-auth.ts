@@ -18,7 +18,6 @@ export function localDevelopmentAdminEmail(environment: LocalAdminEnvironment): 
  * convenience fallback and on-screen OTP remain restricted to local development. */
 export function adminBootstrapEmail(environment: LocalAdminEnvironment): string | undefined {
   return (
-    environment.INITIAL_ADMIN_EMAIL?.trim().toLowerCase() ||
-    localDevelopmentAdminEmail(environment)
+    environment.INITIAL_ADMIN_EMAIL?.trim().toLowerCase() || localDevelopmentAdminEmail(environment)
   );
 }
