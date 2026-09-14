@@ -23,6 +23,8 @@ const doubles = vi.hoisted(() => ({
   recoverRefundResult: vi.fn(),
   reconcileRefund: vi.fn(),
   prepareAdditionalPayment: vi.fn(),
+  readAdditionalPayment: vi.fn(),
+  simulateAdditionalPayment: vi.fn(),
   getOrder: vi.fn(),
 }));
 export { doubles };
@@ -67,7 +69,11 @@ export function routeContract(input: {
       doubles.orderAdminActionsRuntime.mockResolvedValue({
         actions: doubles,
         refunds: doubles,
-        editPayments: { prepare: doubles.prepareAdditionalPayment },
+        editPayments: {
+          prepare: doubles.prepareAdditionalPayment,
+          readOrRecover: doubles.readAdditionalPayment,
+          simulateFakeSuccess: doubles.simulateAdditionalPayment,
+        },
         detail: { getOrder: doubles.getOrder },
       });
       doubles[input.service].mockResolvedValue(input.result ?? { duplicate: false });
@@ -96,7 +102,14 @@ export function routeContract(input: {
       expect((await input.handler(requestFor(input.body, input.method), context)).status).toBe(403);
       expect(doubles.orderAdminActionsRuntime).not.toHaveBeenCalled();
     });
-    for (const body of [null, [], '{', {}, { ...input.body, unexpected: true }, ...input.invalid])
+    for (const body of [
+      null,
+      [],
+      '{',
+      ...(Object.keys(input.body).length ? [{}] : []),
+      { ...input.body, unexpected: true },
+      ...input.invalid,
+    ])
       it(`rejects malformed or unknown action data ${JSON.stringify(body)?.slice(0, 80)}`, async () => {
         expect((await input.handler(requestFor(body, input.method), context)).status).toBe(400);
         expect(doubles[input.service]).not.toHaveBeenCalled();

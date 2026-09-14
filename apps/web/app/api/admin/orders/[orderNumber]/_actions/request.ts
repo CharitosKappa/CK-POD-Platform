@@ -65,15 +65,7 @@ export function reasonAndNote(body: Record<string, unknown>) {
   return { reasonCode: text(body.reasonCode, 'reason'), ...(note === undefined ? {} : { note }) };
 }
 export async function actionRequest(request: Request, context: ActionContext) {
-  const session = await requireAdminSession();
-  if (!session.staffMemberId || (session.role !== 'OWNER' && session.role !== 'OPERATIONS'))
-    throw new OrderAdminActionAccessError('You do not have access to order actions.');
-  const actor: AdminStaffSession & { role: 'OWNER' | 'OPERATIONS' } = {
-    ...session,
-    role: session.role,
-  };
-  const orderNumber = decodeOrderNumberRouteParam((await context.params).orderNumber);
-  if (!/^#[1-9][0-9]*$/.test(orderNumber)) invalid('Enter a valid order number.');
+  const { session, orderNumber } = await readOrderActionRequest(context);
   const idempotencyKey = request.headers.get('Idempotency-Key');
   if (!idempotencyKey || idempotencyKey.trim().length < 12 || idempotencyKey.length > 120)
     invalid('Provide an idempotency key between 12 and 120 characters.');
@@ -83,7 +75,20 @@ export async function actionRequest(request: Request, context: ActionContext) {
   } catch {
     invalid('Enter a valid JSON request.');
   }
-  return { session: actor, orderNumber, idempotencyKey, body };
+  return { session, orderNumber, idempotencyKey, body };
+}
+
+export async function readOrderActionRequest(context: ActionContext) {
+  const session = await requireAdminSession();
+  if (!session.staffMemberId || (session.role !== 'OWNER' && session.role !== 'OPERATIONS'))
+    throw new OrderAdminActionAccessError('You do not have access to order actions.');
+  const actor: AdminStaffSession & { role: 'OWNER' | 'OPERATIONS' } = {
+    ...session,
+    role: session.role,
+  };
+  const orderNumber = decodeOrderNumberRouteParam((await context.params).orderNumber);
+  if (!/^#[1-9][0-9]*$/.test(orderNumber)) invalid('Enter a valid order number.');
+  return { session: actor, orderNumber };
 }
 export function actionResult(result: unknown, status = 200) {
   return NextResponse.json({ result }, { status });

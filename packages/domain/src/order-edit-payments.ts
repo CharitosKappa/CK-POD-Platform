@@ -23,8 +23,11 @@ export type OrderEditPaymentStatus = 'PREPARING' | 'PENDING' | 'SUCCEEDED' | 'FA
 
 export interface PrepareOrderEditPaymentInput {
   orderNumber: string;
-  orderRevisionId: string;
   idempotencyKey: string;
+}
+
+export interface ReadOrderEditPaymentInput {
+  orderNumber: string;
 }
 
 export interface OrderEditPaymentResult {
@@ -89,6 +92,7 @@ export class OrderEditPaymentService {
     validateInput(input);
     const prepared = await withTransaction(this.pool, async (client) => {
       const order = await lockOrder(client, input.orderNumber);
+      const orderRevisionId = currentEditBalanceRevision(order);
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
         `order-edit-payment:${input.idempotencyKey}`,
       ]);
@@ -100,35 +104,33 @@ export class OrderEditPaymentService {
       if (existing.rows[0]) {
         if (
           existing.rows[0].order_id !== order.id ||
-          existing.rows[0].order_revision_id !== input.orderRevisionId
+          existing.rows[0].order_revision_id !== orderRevisionId
         )
           throw new OrderAdminActionConflictError(
             'This payment key belongs to another order revision.',
           );
         return { order, attempt: existing.rows[0], duplicate: true };
       }
-      assertPayableRevision(order, input.orderRevisionId);
+      assertPayableRevision(order, orderRevisionId);
       const revision = await client.query(
         'SELECT 1 FROM app.order_revisions WHERE id=$1 AND order_id=$2',
-        [input.orderRevisionId, order.id],
+        [orderRevisionId, order.id],
       );
       if (!revision.rows.length)
         throw new OrderAdminActionNotFoundError('Order revision not found.');
-      const active = await client.query(
-        `SELECT 1 FROM app.order_edit_payment_attempts
+      const active = await client.query<AttemptRow>(
+        `SELECT * FROM app.order_edit_payment_attempts
          WHERE order_id=$1 AND (status IN ('PREPARING','PENDING')
-           OR (status='FAILED' AND provider_payment_id IS NOT NULL)) LIMIT 1`,
+           OR (status='FAILED' AND provider_payment_id IS NOT NULL))
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         [order.id],
       );
-      if (active.rows.length)
-        throw new OrderAdminActionConflictError(
-          'An additional payment is already active for this order.',
-        );
+      if (active.rows[0]) return { order, attempt: active.rows[0], duplicate: true };
       const id = randomUUID();
       const requestSnapshot = paymentRequest(order, {
         id,
         order_id: order.id,
-        order_revision_id: input.orderRevisionId,
+        order_revision_id: orderRevisionId,
         amount_cents: order.amount_due_cents,
         currency: 'USD',
         idempotency_key: input.idempotencyKey,
@@ -142,7 +144,7 @@ export class OrderEditPaymentService {
           [
             id,
             order.id,
-            input.orderRevisionId,
+            orderRevisionId,
             order.amount_due_cents,
             session.staffMemberId,
             input.idempotencyKey,
@@ -164,12 +166,113 @@ export class OrderEditPaymentService {
     return this.submitIntent(prepared.order, prepared.attempt, prepared.duplicate);
   }
 
+  /** Authenticated read/recovery for reloads and other staff tabs; provider calls are read-only. */
+  async readOrRecover(
+    session: AdminStaffSession,
+    input: ReadOrderEditPaymentInput,
+  ): Promise<OrderEditPaymentResult | null> {
+    validateActor(session);
+    validateOrderNumber(input.orderNumber);
+    const current = await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, input.orderNumber);
+      const revisionId = optionalEditBalanceRevision(order);
+      if (!revisionId) return { order, attempt: null };
+      const attempt = (
+        await client.query<AttemptRow>(
+          `SELECT * FROM app.order_edit_payment_attempts
+           WHERE order_id=$1 AND order_revision_id=$2
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [order.id, revisionId],
+        )
+      ).rows[0];
+      return { order, attempt: attempt ?? null };
+    });
+    if (!current.attempt) return null;
+    if (isTerminal(current.attempt.status)) return publicResult(current.attempt, true);
+    if (current.attempt.provider_submission_started_at || current.attempt.provider_payment_id)
+      return this.recoverIntent(current.order, current.attempt);
+    return publicResult(current.attempt, true);
+  }
+
+  /** Local/test-only caller gate lives at the route; adapter verification keeps this fake-only. */
+  async simulateFakeSuccess(
+    session: AdminStaffSession,
+    input: ReadOrderEditPaymentInput,
+  ): Promise<OrderEditPaymentSettlementResult> {
+    validateActor(session);
+    validateOrderNumber(input.orderNumber);
+    const current = await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, input.orderNumber);
+      const revisionId = currentEditBalanceRevision(order);
+      const attempt = (
+        await client.query<AttemptRow>(
+          `SELECT * FROM app.order_edit_payment_attempts
+           WHERE order_id=$1 AND order_revision_id=$2
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [order.id, revisionId],
+        )
+      ).rows[0];
+      if (!attempt?.provider_payment_id || attempt.provider !== 'FAKE')
+        throw new OrderAdminActionConflictError('No local payment is ready to complete.');
+      return { order, attempt };
+    });
+    const body = JSON.stringify({
+      id: `fake_order_edit_payment_${current.attempt.id}`,
+      type: 'payment_intent.succeeded',
+      data: {
+        object: {
+          id: current.attempt.provider_payment_id,
+          amount: current.attempt.amount_cents,
+          currency: 'usd',
+          metadata: {
+            payment_reference_kind: 'ORDER_EDIT',
+            order_id: current.order.id,
+            order_revision_id: current.attempt.order_revision_id,
+            order_edit_payment_attempt_id: current.attempt.id,
+          },
+        },
+      },
+    });
+    const event = await this.payments.verifyWebhook({
+      body,
+      signature: 'fake-payment-signature',
+    });
+    if (!event || event.provider !== 'FAKE')
+      throw new OrderAdminActionAccessError('Local payment simulation is unavailable.');
+    return this.settle(event);
+  }
+
   /** Reuses the original provider idempotency key after an ambiguous prepare response. */
   async reconcile(
     session: AdminStaffSession,
     input: PrepareOrderEditPaymentInput,
   ): Promise<OrderEditPaymentResult> {
-    return this.prepare(session, input);
+    validateActor(session);
+    validateInput(input);
+    const recorded = await withTransaction(this.pool, async (client) => {
+      const order = await lockOrder(client, input.orderNumber);
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `order-edit-payment:${input.idempotencyKey}`,
+      ]);
+      const attempt = (
+        await client.query<AttemptRow>(
+          'SELECT * FROM app.order_edit_payment_attempts WHERE idempotency_key=$1 FOR UPDATE',
+          [input.idempotencyKey],
+        )
+      ).rows[0];
+      if (attempt && attempt.order_id !== order.id)
+        throw new OrderAdminActionConflictError(
+          'This payment key belongs to another order revision.',
+        );
+      return { order, attempt: attempt ?? null };
+    });
+    if (!recorded.attempt) return this.prepare(session, input);
+    if (isTerminal(recorded.attempt.status)) return publicResult(recorded.attempt, true);
+    if (recorded.attempt.provider_submission_started_at || recorded.attempt.provider_payment_id)
+      return this.recoverIntent(recorded.order, recorded.attempt);
+    if (recorded.attempt.status === 'PREPARING')
+      return this.submitIntent(recorded.order, recorded.attempt, true);
+    return publicResult(recorded.attempt, true);
   }
 
   /** Settles only a cryptographically verified provider event supplied by the webhook boundary. */
@@ -430,13 +533,21 @@ function validateActor(session: AdminStaffSession): void {
 
 function validateInput(input: PrepareOrderEditPaymentInput): void {
   if (
-    !/^#[1-9][0-9]*$/.test(input.orderNumber) ||
-    !isUuid(input.orderRevisionId) ||
+    !validOrderNumber(input.orderNumber) ||
     typeof input.idempotencyKey !== 'string' ||
     input.idempotencyKey.trim().length < 12 ||
     input.idempotencyKey.length > 120
   )
     throw new OrderAdminActionValidationError('Enter a valid additional payment request.');
+}
+
+function validateOrderNumber(orderNumber: string): void {
+  if (!validOrderNumber(orderNumber))
+    throw new OrderAdminActionValidationError('Enter a valid additional payment request.');
+}
+
+function validOrderNumber(orderNumber: unknown): orderNumber is string {
+  return typeof orderNumber === 'string' && /^#[1-9][0-9]*$/.test(orderNumber);
 }
 
 async function lockOrder(client: SqlClient, orderNumber: string): Promise<OrderRow> {
@@ -473,6 +584,20 @@ function assertPayableRevision(order: OrderRow, revisionId: string, amount?: num
     throw new OrderAdminActionConflictError(
       'The order does not have a matching edited-order balance ready for payment.',
     );
+}
+
+function optionalEditBalanceRevision(order: OrderRow): string | null {
+  const revisionId = order.financial_snapshot.editBalanceRevisionId;
+  return isUuid(revisionId) ? revisionId : null;
+}
+
+function currentEditBalanceRevision(order: OrderRow): string {
+  const revisionId = optionalEditBalanceRevision(order);
+  if (!revisionId)
+    throw new OrderAdminActionConflictError(
+      'The order does not have an edited-order balance ready for payment.',
+    );
+  return revisionId;
 }
 
 function orderEditReference(metadata: Record<string, unknown>): {

@@ -357,7 +357,6 @@ suite('order archive transaction integration', () => {
     const service = new domain.OrderEditPaymentService(actionDatabase.pool, payments);
     const paymentInput = {
       orderNumber: f.orderNumber,
-      orderRevisionId: edit.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     };
     const prepared = await service.prepare(staff, paymentInput);
@@ -370,6 +369,16 @@ suite('order archive transaction integration', () => {
       clientSecret: expect.any(String),
       duplicate: false,
     });
+    await expect(service.readOrRecover(staff, { orderNumber: f.orderNumber })).resolves.toEqual({
+      ...prepared,
+      duplicate: true,
+    });
+    await expect(
+      service.prepare(staff, {
+        orderNumber: f.orderNumber,
+        idempotencyKey: `edit-payment-recovery-${randomUUID()}`,
+      }),
+    ).resolves.toMatchObject({ paymentAttemptId: prepared.paymentAttemptId, duplicate: true });
     expect(await service.reconcile(staff, paymentInput)).toEqual({
       ...prepared,
       duplicate: true,
@@ -396,10 +405,18 @@ suite('order archive transaction integration', () => {
         order_edit_payment_attempt_id: prepared.paymentAttemptId,
       },
     };
-    await expect(service.settle(event)).resolves.toMatchObject({
+    await expect(
+      service.simulateFakeSuccess(staff, { orderNumber: f.orderNumber }),
+    ).resolves.toMatchObject({
       handled: true,
       duplicate: false,
       orderNumber: f.orderNumber,
+      status: 'SUCCEEDED',
+    });
+    await expect(
+      service.readOrRecover(staff, { orderNumber: f.orderNumber }),
+    ).resolves.toMatchObject({
+      paymentAttemptId: prepared.paymentAttemptId,
       status: 'SUCCEEDED',
     });
     await expect(service.settle(event)).resolves.toMatchObject({
@@ -480,7 +497,11 @@ suite('order archive transaction integration', () => {
         ...paymentInput,
         idempotencyKey: `edit-payment-${randomUUID()}`,
       }),
-    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    ).resolves.toMatchObject({
+      paymentAttemptId: prepared.paymentAttemptId,
+      status: 'PENDING',
+      duplicate: true,
+    });
     await expect(service.settle(event('SUCCEEDED'))).resolves.toMatchObject({
       status: 'SUCCEEDED',
     });
@@ -574,7 +595,6 @@ suite('order archive transaction integration', () => {
     await expect(
       new domain.OrderEditPaymentService(actionDatabase.pool, base).prepare(staff, {
         orderNumber: f.orderNumber,
-        orderRevisionId: newerEdit.revisionId,
         idempotencyKey: `edit-payment-${randomUUID()}`,
       }),
     ).resolves.toMatchObject({ status: 'PENDING', duplicate: false });
@@ -650,7 +670,6 @@ suite('order archive transaction integration', () => {
     const service = new domain.OrderEditPaymentService(actionDatabase.pool, payments);
     const prepared = await service.prepare(staff, {
       orderNumber: f.orderNumber,
-      orderRevisionId: edit.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     });
     const providerPaymentId = (
@@ -745,7 +764,6 @@ suite('order archive transaction integration', () => {
     });
     const prepared = await paymentService.prepare(staff, {
       orderNumber: f.orderNumber,
-      orderRevisionId: increased.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     });
     const providerPaymentId = (
@@ -948,7 +966,6 @@ suite('order archive transaction integration', () => {
     const payments = new domain.FakePaymentService();
     await new domain.OrderEditPaymentService(actionDatabase.pool, payments).prepare(staff, {
       orderNumber: f.orderNumber,
-      orderRevisionId: edit.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     });
     const detail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
@@ -995,7 +1012,6 @@ suite('order archive transaction integration', () => {
     );
     const prepared = await service.prepare(staff, {
       orderNumber: f.orderNumber,
-      orderRevisionId: edit.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     });
     const base: domain.VerifiedPaymentEvent = {
@@ -1058,17 +1074,16 @@ suite('order archive transaction integration', () => {
       actionDatabase.pool,
       new domain.FakePaymentService(),
     );
-    const settled = await Promise.allSettled(
+    const settled = await Promise.all(
       [randomUUID(), randomUUID()].map((key) =>
         service.prepare(staff, {
           orderNumber: f.orderNumber,
-          orderRevisionId: edit.revisionId,
           idempotencyKey: `edit-payment-${key}`,
         }),
       ),
     );
-    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    expect(settled.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(new Set(settled.map((result) => result.paymentAttemptId)).size).toBe(1);
+    expect(settled.some((result) => result.duplicate)).toBe(true);
     expect(
       (
         await pool.query(
@@ -1096,13 +1111,11 @@ suite('order archive transaction integration', () => {
     const idempotencyKey = `edit-payment-${randomUUID()}`;
     await service.prepare(staff, {
       orderNumber: first.orderNumber,
-      orderRevisionId: firstEdit.revisionId,
       idempotencyKey,
     });
     await expect(
       service.prepare(staff, {
         orderNumber: second.orderNumber,
-        orderRevisionId: secondEdit.revisionId,
         idempotencyKey,
       }),
     ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);

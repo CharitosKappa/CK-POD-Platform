@@ -22,7 +22,6 @@ const staff = {
 };
 const input = {
   orderNumber: '#1',
-  orderRevisionId: '30000000-0000-4000-8000-000000000001',
   idempotencyKey: 'order-edit-payment-0001',
 };
 
@@ -34,19 +33,39 @@ describe('order edit additional payment preflight', () => {
       await expect(service.prepare({ ...staff, role }, input)).rejects.toBeInstanceOf(
         domain.OrderAdminActionAccessError,
       );
+    for (const role of ['READ_ONLY', 'PREPRESS'] as const)
+      await expect(service.reconcile({ ...staff, role }, input)).rejects.toBeInstanceOf(
+        domain.OrderAdminActionAccessError,
+      );
+    for (const role of ['READ_ONLY', 'PREPRESS'] as const)
+      await expect(
+        service.readOrRecover({ ...staff, role }, { orderNumber: '#1' }),
+      ).rejects.toBeInstanceOf(domain.OrderAdminActionAccessError);
     await expect(service.prepare(staff, input)).rejects.toBe(databaseReached);
+    await expect(service.reconcile(staff, input)).rejects.toBe(databaseReached);
+    await expect(service.readOrRecover(staff, { orderNumber: '#1' })).rejects.toBe(databaseReached);
   });
 
-  it('rejects malformed order, revision and idempotency references before persistence', async () => {
+  it('rejects malformed order and idempotency references before persistence', async () => {
     const service = new domain.OrderEditPaymentService(pool, payments);
     for (const invalid of [
       { orderNumber: '1' },
-      { orderRevisionId: 'revision' },
       { idempotencyKey: 'short' },
       { idempotencyKey: 'x'.repeat(121) },
     ])
       await expect(service.prepare(staff, { ...input, ...invalid })).rejects.toBeInstanceOf(
         domain.OrderAdminActionValidationError,
       );
+    for (const invalid of [
+      { orderNumber: '1' },
+      { idempotencyKey: 'short' },
+      { idempotencyKey: 'x'.repeat(121) },
+    ])
+      await expect(service.reconcile(staff, { ...input, ...invalid })).rejects.toBeInstanceOf(
+        domain.OrderAdminActionValidationError,
+      );
+    await expect(service.readOrRecover(staff, { orderNumber: '1' })).rejects.toBeInstanceOf(
+      domain.OrderAdminActionValidationError,
+    );
   });
 });

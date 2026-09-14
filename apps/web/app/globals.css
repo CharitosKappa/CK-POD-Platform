@@ -3225,6 +3225,34 @@ select:focus-visible {
   padding-top: 10px;
   border-top: 1px solid #e7e8e2;
 }
+.order-payment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.order-collect-payment {
+  display: grid;
+  gap: 16px;
+}
+.order-local-payment-control,
+.order-stripe-payment {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dfe1da;
+  border-radius: 10px;
+  background: #fafaf7;
+}
+.order-local-payment-control small {
+  color: #666960;
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+.order-local-payment-control .order-action-button,
+.order-stripe-payment .order-action-button {
+  justify-self: end;
+}
 
 .order-side-header {
   min-height: 48px;

@@ -21,6 +21,7 @@ import {
 } from './order-action-client';
 import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
 import { ManageReturnModal } from './manage-return-modal';
+import { CollectPaymentModal } from './collect-payment-modal';
 
 export function AdminOrderDetail({
   orderNumber,
@@ -41,6 +42,7 @@ export function AdminOrderDetail({
   const [pendingActions, setPendingActions] = useState<OrderActionName[]>([]);
   const [pendingRefundId, setPendingRefundId] = useState<string>();
   const [managedReturnId, setManagedReturnId] = useState<string>();
+  const [collectingPayment, setCollectingPayment] = useState(false);
   const actionTrigger = useRef<HTMLElement | null>(null);
   const pendingRefund = order?.pendingRefunds.find((refund) => refund.id === pendingRefundId);
   const managedReturn = order?.returns.find((returned) => returned.id === managedReturnId);
@@ -201,6 +203,14 @@ export function AdminOrderDetail({
               <OrderPaymentSummary
                 order={order}
                 onRefund={() => openAction('refund')}
+                {...(order.actionRecovery.canResume && order.amountDueCents > 0
+                  ? {
+                      onCollectPayment: () => {
+                        actionTrigger.current = document.activeElement as HTMLElement | null;
+                        setCollectingPayment(true);
+                      },
+                    }
+                  : {})}
                 {...(order.actionRecovery.canResume
                   ? {
                       onReconcileRefund: (refund: OrderDetail['pendingRefunds'][number]) => {
@@ -313,6 +323,19 @@ export function AdminOrderDetail({
               apiBase={apiBase}
               onClose={() => {
                 setManagedReturnId(undefined);
+                requestAnimationFrame(
+                  () => actionTrigger.current?.isConnected && actionTrigger.current.focus(),
+                );
+              }}
+              onSaved={actionSaved}
+            />
+          ) : null}
+          {collectingPayment ? (
+            <CollectPaymentModal
+              order={order}
+              apiBase={apiBase}
+              onClose={() => {
+                setCollectingPayment(false);
                 requestAnimationFrame(
                   () => actionTrigger.current?.isConnected && actionTrigger.current.focus(),
                 );

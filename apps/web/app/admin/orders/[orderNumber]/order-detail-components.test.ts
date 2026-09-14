@@ -101,4 +101,34 @@ describe('order printing controls', () => {
 
     expect(markup).toContain('<dt>Taxes</dt><dd>California Sales Tax (8.75%)</dd><dd>$3.50</dd>');
   });
+
+  it('shows Collect payment only when the server-authorized caller supplies the action', () => {
+    const order = {
+      paymentState: 'PARTIALLY_PAID',
+      amountDueCents: 700,
+      groups: [group],
+      pendingRefunds: [],
+      eligibility: { actions: { refund: false } },
+      financials: {
+        subtotalCents: 3999,
+        discountCents: 0,
+        shippingCents: 500,
+        taxCents: 0,
+        totalCents: 4499,
+        paidCents: 3799,
+        refundedCents: 0,
+        currency: 'USD',
+        taxLines: [],
+        paymentMethod: 'Credit card',
+      },
+    } as unknown as OrderDetail;
+
+    const authorized = renderToStaticMarkup(
+      createElement(OrderPaymentSummary, { order, onCollectPayment: vi.fn() }),
+    );
+    const restricted = renderToStaticMarkup(createElement(OrderPaymentSummary, { order }));
+
+    expect(authorized).toContain('Collect payment');
+    expect(restricted).not.toContain('Collect payment');
+  });
 });

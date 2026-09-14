@@ -9,10 +9,12 @@ export function OrderPaymentSummary({
   order,
   onRefund,
   onReconcileRefund,
+  onCollectPayment,
 }: Readonly<{
   order: OrderDetail;
   onRefund?: () => void;
   onReconcileRefund?: (refund: OrderDetail['pendingRefunds'][number]) => void;
+  onCollectPayment?: () => void;
 }>) {
   const status = layerStatusPresentation('payment', order.paymentState);
   const rows = [
@@ -105,12 +107,30 @@ export function OrderPaymentSummary({
           </div>
         ) : null}
       </dl>
-      {onRefund && order.eligibility?.actions.refund && order.refundableCents > 0 ? (
+      {(onCollectPayment && order.amountDueCents > 0) ||
+      (onRefund && order.eligibility?.actions.refund && order.refundableCents > 0) ? (
         <footer className="order-card-action-footer">
-          <small>{money.format(order.refundableCents / 100)} available to refund</small>
-          <button type="button" className="order-action-button" onClick={onRefund}>
-            Refund
-          </button>
+          <small>
+            {order.amountDueCents > 0
+              ? `${money.format(order.amountDueCents / 100)} due before production can resume`
+              : `${money.format(order.refundableCents / 100)} available to refund`}
+          </small>
+          <span className="order-payment-actions">
+            {onRefund && order.eligibility?.actions.refund && order.refundableCents > 0 ? (
+              <button type="button" className="order-action-button" onClick={onRefund}>
+                Refund
+              </button>
+            ) : null}
+            {onCollectPayment && order.amountDueCents > 0 ? (
+              <button
+                type="button"
+                className="order-action-button is-primary"
+                onClick={onCollectPayment}
+              >
+                Collect payment
+              </button>
+            ) : null}
+          </span>
         </footer>
       ) : null}
     </article>
