@@ -523,7 +523,9 @@ export class OrderDetailService {
       archivedByName: order.archived_by_name,
       returns: returnRows.rows.map((returned) => ({
         ...returned,
-        permittedTransitions: allowedReturnTransitions(returned.state),
+        permittedTransitions: canResume
+          ? allowedReturnTransitions(returned.state, returned.shippingRequired)
+          : [],
       })),
       returnableItems: returnableRows.rows,
       cancellation,

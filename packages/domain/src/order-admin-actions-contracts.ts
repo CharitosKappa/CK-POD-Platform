@@ -45,7 +45,11 @@ const returnTransitionMap: Record<ReturnState, readonly ReturnState[]> = {
 };
 
 /** One shared transition authority for the write service and read-model UI capabilities. */
-export function allowedReturnTransitions(state: ReturnState): readonly ReturnState[] {
+export function allowedReturnTransitions(
+  state: ReturnState,
+  shippingRequired = true,
+): readonly ReturnState[] {
+  if (state === 'APPROVED' && !shippingRequired) return ['RECEIVED', 'REJECTED'];
   return returnTransitionMap[state];
 }
 

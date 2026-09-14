@@ -23,24 +23,40 @@ const labels = {
 export function ManageReturnModal(
   props: OrderActionModalProps & { returned: OrderDetail['returns'][number] },
 ) {
-  const [target, setTarget] = useState(props.returned.permittedTransitions[0] ?? '');
-  const [carrier, setCarrier] = useState(props.returned.carrier ?? '');
-  const [trackingNumber, setTrackingNumber] = useState(props.returned.trackingNumber ?? '');
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const [outcome, setOutcome] = useState<OrderActionOutcome>();
-  const form = useId();
+  const path = `${props.apiBase}/${encodeURIComponent(props.order.orderNumber)}/returns/${encodeURIComponent(props.returned.id)}/transitions`;
   const callbacks = useRef(props);
   callbacks.current = props;
-  const path = `${props.apiBase}/${encodeURIComponent(props.order.orderNumber)}/returns/${encodeURIComponent(props.returned.id)}/transitions`;
   const session = useRef<ReturnType<typeof createOrderActionSession> | null>(null);
   session.current ??= createOrderActionSession(path, {
     onSaved: () => callbacks.current.onSaved(),
   });
+  const recovered = session.current.snapshot();
+  const recoveredTarget =
+    typeof recovered?.body.toState === 'string' ? recovered.body.toState : undefined;
+  const [target, setTarget] = useState(
+    recoveredTarget ?? props.returned.permittedTransitions[0] ?? '',
+  );
+  const [carrier, setCarrier] = useState(
+    typeof recovered?.body.carrier === 'string'
+      ? recovered.body.carrier
+      : (props.returned.carrier ?? ''),
+  );
+  const [trackingNumber, setTrackingNumber] = useState(
+    typeof recovered?.body.trackingNumber === 'string'
+      ? recovered.body.trackingNumber
+      : (props.returned.trackingNumber ?? ''),
+  );
+  const [note, setNote] = useState(
+    typeof recovered?.body.note === 'string' ? recovered.body.note : '',
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [outcome, setOutcome] = useState<OrderActionOutcome | undefined>(recovered?.outcome);
+  const form = useId();
+  const canCheck = ['pending', 'uncertain', 'incomplete'].includes(outcome?.kind ?? '');
+  const targets = recoveredTarget ? [recoveredTarget] : props.returned.permittedTransitions;
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function run(resume: boolean) {
     if (!target || busy) return;
     if (target === 'IN_TRANSIT' && (!carrier.trim() || !trackingNumber.trim())) {
       setError('Enter both the carrier and tracking number before marking this return in transit.');
@@ -48,16 +64,23 @@ export function ManageReturnModal(
     }
     setBusy(true);
     setError(undefined);
-    const result = await session.current!.submit({
-      toState: target,
-      note,
-      ...(target === 'IN_TRANSIT'
-        ? { carrier: carrier.trim(), trackingNumber: trackingNumber.trim() }
-        : {}),
-    });
+    const result = resume
+      ? await session.current!.resume()
+      : await session.current!.submit({
+          toState: target,
+          note,
+          ...(target === 'IN_TRANSIT'
+            ? { carrier: carrier.trim(), trackingNumber: trackingNumber.trim() }
+            : {}),
+        });
     setOutcome(result);
     setBusy(false);
     if (result.kind === 'success' && !result.refreshFailed) props.onClose();
+  }
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    void run(false);
   }
 
   return (
@@ -75,28 +98,43 @@ export function ManageReturnModal(
           >
             Cancel
           </button>
-          <button
-            className="order-action-button is-primary"
-            type="submit"
-            form={form}
-            disabled={busy || !target}
-          >
-            {busy ? 'Saving…' : 'Update return'}
-          </button>
+          {canCheck ? (
+            <button
+              className="order-action-button is-primary"
+              type="button"
+              disabled={busy}
+              onClick={() => void run(true)}
+            >
+              {busy ? 'Checking…' : 'Check status'}
+            </button>
+          ) : (
+            <button
+              className="order-action-button is-primary"
+              type="submit"
+              form={form}
+              disabled={busy || !target}
+            >
+              {busy ? 'Saving…' : 'Update return'}
+            </button>
+          )}
         </>
       }
     >
       <p className="order-action-hint">
         Update logistics only. Refunds and Store Credit remain separate actions.
       </p>
-      {props.returned.permittedTransitions.length ? (
+      {targets.length ? (
         <form id={form} onSubmit={submit}>
           <fieldset className="order-action-fields" disabled={busy}>
             <ActionField label="Next state" full>
-              <select value={target} onChange={(event) => setTarget(event.target.value)}>
-                {props.returned.permittedTransitions.map((state) => (
+              <select
+                value={target}
+                disabled={!!recoveredTarget}
+                onChange={(event) => setTarget(event.target.value)}
+              >
+                {targets.map((state) => (
                   <option key={state} value={state}>
-                    {labels[state]}
+                    {labels[state as keyof typeof labels]}
                   </option>
                 ))}
               </select>

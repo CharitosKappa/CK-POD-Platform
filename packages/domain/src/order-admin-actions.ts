@@ -650,13 +650,21 @@ export class OrderAdminActionsService {
         return restoreReturnSummary(existing);
       }
       const returned = (
-        await client.query<{ state: ReturnState; reason_code: string }>(
-          'SELECT state,reason_code FROM app.order_returns WHERE id=$1 AND order_id=$2 FOR UPDATE',
+        await client.query<{
+          state: ReturnState;
+          reason_code: string;
+          shipping_required: boolean;
+        }>(
+          'SELECT state,reason_code,shipping_required FROM app.order_returns WHERE id=$1 AND order_id=$2 FOR UPDATE',
           [input.returnId, order.id],
         )
       ).rows[0];
       if (!returned) throw new OrderAdminActionNotFoundError('Return not found for this order.');
-      if (!allowedReturnTransitions(returned.state).includes(input.toState))
+      if (
+        !allowedReturnTransitions(returned.state, returned.shipping_required).includes(
+          input.toState,
+        )
+      )
         throw new OrderAdminActionConflictError('This return state transition is not allowed.');
       await client.query(
         `UPDATE app.order_returns SET state=$2,carrier=COALESCE($3,carrier),tracking_number=COALESCE($4,tracking_number),updated_at=now() WHERE id=$1`,

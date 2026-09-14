@@ -28,6 +28,7 @@ describe('order admin action contracts', () => {
     expect(allowedReturnTransitions('RECEIVED')).toEqual(['CLOSED']);
     expect(allowedReturnTransitions('CLOSED')).toEqual([]);
     expect(allowedReturnTransitions('REJECTED')).toEqual([]);
+    expect(allowedReturnTransitions('APPROVED', false)).toEqual(['RECEIVED', 'REJECTED']);
   });
   it('defines the approved action and workflow state values', () => {
     expect(orderAdminActions).toEqual([

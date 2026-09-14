@@ -295,4 +295,10 @@ describe('independent return preflight', () => {
       ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
     await expect(actions.transitionReturn(staff, transition)).rejects.toBe(databaseReached);
   });
+  it('allows a no-shipment Return to skip transit while shipment Returns still require tracking', async () => {
+    const actions = service();
+    await expect(
+      actions.transitionReturn(staff, { ...transition, toState: 'RECEIVED' }),
+    ).rejects.toBe(databaseReached);
+  });
 });

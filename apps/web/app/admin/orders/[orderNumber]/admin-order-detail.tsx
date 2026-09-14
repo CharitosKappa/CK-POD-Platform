@@ -14,7 +14,11 @@ import { OrderPrintingSummary } from './order-printing-summary';
 import { OrderStatusBadges } from './order-status-badges';
 import { OrderTimeline } from './order-timeline';
 import { OrderActionsMenu, OrderActionHost } from './order-actions-menu';
-import { pendingOrderActions, type OrderActionName } from './order-action-client';
+import {
+  hasOrderActionJournal,
+  pendingOrderActions,
+  type OrderActionName,
+} from './order-action-client';
 import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
 import { ManageReturnModal } from './manage-return-modal';
 
@@ -227,7 +231,7 @@ export function AdminOrderDetail({
                           <span className="order-layer-badge">
                             {returned.state.replaceAll('_', ' ').toLowerCase()}
                           </span>
-                          {returned.permittedTransitions.length ? (
+                          {canManageReturn(apiBase, order.orderNumber, returned) ? (
                             <button
                               type="button"
                               className="order-action-button"
@@ -324,4 +328,13 @@ export function AdminOrderDetail({
       ) : null}
     </main>
   );
+}
+
+export function canManageReturn(
+  apiBase: string,
+  orderNumber: string,
+  returned: OrderDetail['returns'][number],
+): boolean {
+  const path = `${apiBase}/${encodeURIComponent(orderNumber)}/returns/${encodeURIComponent(returned.id)}/transitions`;
+  return returned.permittedTransitions.length > 0 || hasOrderActionJournal(path);
 }

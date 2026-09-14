@@ -437,6 +437,218 @@ suite('order archive transaction integration', () => {
     ).toHaveLength(1);
   });
 
+  it('keeps a failed PaymentIntent retriable and accepts a later success for the same capture', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), shippingCents: 1000 });
+    const service = new domain.OrderEditPaymentService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const paymentInput = {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    };
+    const prepared = await service.prepare(staff, paymentInput);
+    const attempt = (
+      await pool.query<{ provider_payment_id: string }>(
+        'SELECT provider_payment_id FROM app.order_edit_payment_attempts WHERE id=$1',
+        [prepared.paymentAttemptId],
+      )
+    ).rows[0]!;
+    const event = (outcome: domain.PaymentOutcome): domain.VerifiedPaymentEvent => ({
+      provider: 'FAKE',
+      providerEventId: `fake_evt_${randomUUID()}`,
+      eventName:
+        outcome === 'SUCCEEDED' ? 'payment_intent.succeeded' : 'payment_intent.payment_failed',
+      paymentId: attempt.provider_payment_id,
+      outcome,
+      amountCents: edit.amountDueCents,
+      currency: 'USD',
+      providerFeeCents: null,
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: f.orderId,
+        order_revision_id: edit.revisionId,
+        order_edit_payment_attempt_id: prepared.paymentAttemptId,
+      },
+    });
+    await expect(service.settle(event('FAILED'))).resolves.toMatchObject({ status: 'PENDING' });
+    await expect(
+      service.prepare(staff, {
+        ...paymentInput,
+        idempotencyKey: `edit-payment-${randomUUID()}`,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    await expect(service.settle(event('SUCCEEDED'))).resolves.toMatchObject({
+      status: 'SUCCEEDED',
+    });
+    expect(
+      (
+        await pool.query(
+          'SELECT amount_cents,currency FROM app.order_payment_captures WHERE order_id=$1',
+          [f.orderId],
+        )
+      ).rows,
+    ).toEqual([{ amount_cents: edit.amountDueCents, currency: 'USD' }]);
+  });
+
+  it('reconciles an ambiguous provider submission by immutable metadata without a second POST', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const edit = await editService().actions.editOrder(staff, {
+      ...f.input(),
+      shippingCents: 1000,
+    });
+    const createIntent = vi.fn(async () => {
+      throw new domain.PaymentIntentUncertainError();
+    });
+    const findIntent = vi.fn(
+      async (request: domain.PaymentIntentRequest): Promise<domain.PaymentIntentResult> => {
+        expect(request.customerEmail).toMatch(/^archive-order-/);
+        return {
+          provider: 'FAKE',
+          providerPaymentId: `fake_pi_recovered_${randomUUID()}`,
+          clientSecret: 'fake_secret_recovered',
+          status: 'PENDING',
+        };
+      },
+    );
+    const base = new domain.FakePaymentService();
+    const payments: domain.PaymentService = {
+      createIntent,
+      findIntent,
+      verifyWebhook: (input) => base.verifyWebhook(input),
+      refund: (input) => base.refund(input),
+      getRefundStatus: (input) => base.getRefundStatus(input),
+    };
+    const service = new domain.OrderEditPaymentService(actionDatabase.pool, payments);
+    const paymentInput = {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    };
+    await expect(service.prepare(staff, paymentInput)).rejects.toBeInstanceOf(
+      domain.PaymentIntentUncertainError,
+    );
+    await pool.query('UPDATE app.orders SET customer_email=$2 WHERE id=$1', [
+      f.orderId,
+      'mutated-after-submission@example.test',
+    ]);
+    await expect(service.reconcile(staff, paymentInput)).resolves.toMatchObject({
+      status: 'PENDING',
+      clientSecret: 'fake_secret_recovered',
+    });
+    expect(createIntent).toHaveBeenCalledTimes(1);
+    expect(findIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes supplemental captures in read balances and allocates a refund across captures', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const before = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    const edit = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 3 },
+      ],
+    });
+    const payments = new domain.FakePaymentService();
+    const service = new domain.OrderEditPaymentService(actionDatabase.pool, payments);
+    const prepared = await service.prepare(staff, {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    });
+    const providerPaymentId = (
+      await pool.query<{ provider_payment_id: string }>(
+        'SELECT provider_payment_id FROM app.order_edit_payment_attempts WHERE id=$1',
+        [prepared.paymentAttemptId],
+      )
+    ).rows[0]!.provider_payment_id;
+    await service.settle({
+      provider: 'FAKE',
+      providerEventId: `fake_evt_${randomUUID()}`,
+      eventName: 'payment_intent.succeeded',
+      paymentId: providerPaymentId,
+      outcome: 'SUCCEEDED',
+      amountCents: edit.amountDueCents,
+      currency: 'USD',
+      providerFeeCents: null,
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: f.orderId,
+        order_revision_id: edit.revisionId,
+        order_edit_payment_attempt_id: prepared.paymentAttemptId,
+      },
+    });
+    const after = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(after!.financials.paidCents).toBe(before!.financials.paidCents + edit.amountDueCents);
+    expect(after!.refundableCents).toBe(before!.refundableCents + edit.amountDueCents);
+    const refund = await new domain.OrderRefundService(
+      actionDatabase.pool,
+      payments,
+    ).refundOriginalPayment(
+      { type: 'STAFF', staffMemberId: staff.staffMemberId, role: 'OPERATIONS', email: staff.email },
+      {
+        orderNumber: f.orderNumber,
+        amountCents: before!.financials.paidCents + edit.amountDueCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: `refund-${randomUUID()}`,
+      },
+    );
+    expect(refund.status).toBe('SUCCEEDED');
+    expect(
+      (
+        await pool.query(
+          'SELECT amount_cents,status FROM app.order_refund_allocations WHERE order_refund_id=$1 ORDER BY amount_cents',
+          [refund.refundId],
+        )
+      ).rows,
+    ).toEqual([
+      { amount_cents: edit.amountDueCents, status: 'SUCCEEDED' },
+      { amount_cents: before!.financials.paidCents, status: 'SUCCEEDED' },
+    ]);
+  });
+
+  it('blocks refund and cancellation while an additional PaymentIntent can still charge', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), shippingCents: 1000 });
+    const payments = new domain.FakePaymentService();
+    await new domain.OrderEditPaymentService(actionDatabase.pool, payments).prepare(staff, {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    });
+    await expect(
+      new domain.OrderRefundService(actionDatabase.pool, payments).refundOriginalPayment(
+        {
+          type: 'STAFF',
+          staffMemberId: staff.staffMemberId,
+          role: 'OPERATIONS',
+          email: staff.email,
+        },
+        {
+          orderNumber: f.orderNumber,
+          amountCents: 100,
+          reasonCode: 'CUSTOMER_REQUEST',
+          idempotencyKey: `refund-${randomUUID()}`,
+        },
+      ),
+    ).rejects.toThrow(/additional payment/i);
+    await expect(
+      actions.cancel(staff, {
+        orderNumber: f.orderNumber,
+        refundDestination: 'LATER',
+        refundAmountCents: 0,
+        reasonCode: 'CUSTOMER_CANCELLATION_REQUEST',
+        notifyCustomer: false,
+        idempotencyKey: `cancel-${randomUUID()}`,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+  });
+
   it('fails closed on mismatched edit-payment evidence and preserves the initial capture and amount due', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const { actions } = editService();
@@ -1664,6 +1876,34 @@ suite('order archive transaction integration', () => {
     expect(credit).not.toHaveBeenCalled();
     expect(paymentRefund).not.toHaveBeenCalled();
     expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it('receives a no-shipment Return directly after approval without invented tracking data', async () => {
+    const f = await fixture();
+    const { actions } = cancellationService();
+    const created = await actions.createReturn(staff, {
+      ...returnInput(f),
+      shippingRequired: false,
+    });
+    await actions.transitionReturn(staff, {
+      orderNumber: f.orderNumber,
+      returnId: created.id,
+      toState: 'APPROVED',
+      idempotencyKey: randomUUID(),
+    });
+    const received = await actions.transitionReturn(staff, {
+      orderNumber: f.orderNumber,
+      returnId: created.id,
+      toState: 'RECEIVED',
+      idempotencyKey: randomUUID(),
+      note: 'Received in person',
+    });
+    expect(received).toMatchObject({
+      state: 'RECEIVED',
+      shippingRequired: false,
+      carrier: null,
+      trackingNumber: null,
+    });
   });
 
   it.each(['UNFULFILLED', 'PARTIALLY_FULFILLED', 'CANCELLED'])(

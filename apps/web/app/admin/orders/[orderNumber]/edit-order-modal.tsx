@@ -60,9 +60,8 @@ export function addItemWithDesign(
   draft: EditDraft,
   source: OrderDetail['groups'][number]['items'][number],
 ): EditDraft {
-  const ordinal = draft.items.filter((item) => item.sourceOrderItemId === source.id).length + 1;
   const added: EditDraftItem = {
-    draftKey: `new:${source.id}:${ordinal}`,
+    draftKey: `new:${source.id}:${globalThis.crypto.randomUUID()}`,
     sourceOrderItemId: source.id,
     productVariantId: source.productVariantId,
     quantity: '1',
@@ -238,6 +237,7 @@ export function EditOrderModal(props: OrderActionModalProps) {
                 return (
                   <div className="order-edit-item" key={row.draftKey}>
                     <strong>{item?.productName ?? 'Order item'}</strong>
+                    {item ? <small>{designLabel(item)}</small> : null}
                     <small>Server price: {formatOrderMoney(selectedPrice)}</small>
                     <div className="customer-modal-grid">
                       <ActionField label="Variant">
@@ -330,7 +330,7 @@ export function EditOrderModal(props: OrderActionModalProps) {
                   key={`add-${item.id}`}
                   onClick={() => setDraft((current) => addItemWithDesign(current, item))}
                 >
-                  Add another item with this design
+                  Add another item with this design · {designLabel(item)}
                 </button>
               ))}
             </fieldset>
@@ -465,4 +465,8 @@ export function EditOrderModal(props: OrderActionModalProps) {
       <ActionFeedback outcome={action.outcome} error={action.error} />
     </OrderActionModal>
   );
+}
+
+function designLabel(item: OrderDetail['groups'][number]['items'][number]): string {
+  return `Design ${item.projectVersionId.slice(0, 12)}`;
 }

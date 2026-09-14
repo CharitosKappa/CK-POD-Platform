@@ -236,6 +236,12 @@ suite('order detail persistence integration', () => {
       order.orderNumber,
     );
     expect(Object.values(readOnly!.eligibility.actions)).toEqual(Array(6).fill(false));
+    expect(readOnly!.returns[0]!.permittedTransitions).toEqual([]);
+    const prepress = await new OrderDetailService(pool).getOrder(
+      { ...staff, role: 'PREPRESS' },
+      order.orderNumber,
+    );
+    expect(prepress!.returns[0]!.permittedTransitions).toEqual([]);
     await actions.transitionReturn(staff, {
       orderNumber: order.orderNumber,
       returnId: returned.id,

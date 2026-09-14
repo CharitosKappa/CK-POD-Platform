@@ -17,6 +17,7 @@ import {
 import { ArchiveOrderModal } from './archive-order-modal';
 import { OrderPaymentSummary } from './order-payment-summary';
 import { ManageReturnModal } from './manage-return-modal';
+import { canManageReturn } from './admin-order-detail';
 import {
   createPendingRefundReconciliationCheck,
   PendingRefundReconciliationModal,
@@ -379,6 +380,39 @@ describe('order action surfaces', () => {
     const html = markup(EditOrderModal, props);
     expect(html).toContain('Add another item with this design');
     expect(html).toContain('$39.99');
+    expect(html).toContain('Design version-1');
+  });
+  it('never reuses a draft identity after an added line is removed', () => {
+    const draft = editDraftFrom(order);
+    const first = addItemWithDesign(draft, order.groups[0]!.items[0]!);
+    const firstId = first.items.at(-1)!.draftKey;
+    const removed = { ...first, items: first.items.filter((item) => item.draftKey !== firstId) };
+    const second = addItemWithDesign(removed, order.groups[0]!.items[0]!);
+    expect(second.items.at(-1)!.draftKey).not.toBe(firstId);
+  });
+  it('restores a lost Return transition from its durable nested journal even after state refresh', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Lost response')));
+    const returned = {
+      id: 'return-1',
+      state: 'CLOSED' as const,
+      permittedTransitions: [] as const,
+      reasonCode: 'CUSTOMER_REQUEST',
+      shippingRequired: false,
+      note: null,
+      carrier: null,
+      trackingNumber: null,
+      createdByName: 'ops@example.test',
+      createdAt: '2026-09-14T12:00:00Z',
+      updatedAt: '2026-09-14T12:00:00Z',
+      items: [{ orderItemId: 'item-1', quantity: 1 }],
+    };
+    const path = '/api/admin/orders/%2342/returns/return-1/transitions';
+    await createOrderActionSession(path).submit({ toState: 'CLOSED', note: 'Inspected' });
+    expect(canManageReturn('/api/admin/orders', '#42', returned)).toBe(true);
+    const html = markup(ManageReturnModal, { ...props, returned });
+    expect(html).toContain('Check status');
+    expect(html).toContain('Closed');
+    expect(html).toContain('Inspected');
   });
   it('renders durable pending refunds in Payment and offers an explicit read-only reconciliation', () => {
     const pendingRefund = {
