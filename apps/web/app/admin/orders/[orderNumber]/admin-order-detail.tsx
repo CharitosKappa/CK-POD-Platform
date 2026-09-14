@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { adminApiFetch } from '../../../../lib/admin-api';
 
@@ -13,6 +13,8 @@ import { OrderPrintingModal } from './order-printing-modal';
 import { OrderPrintingSummary } from './order-printing-summary';
 import { OrderStatusBadges } from './order-status-badges';
 import { OrderTimeline } from './order-timeline';
+import { OrderActionsMenu, OrderActionHost } from './order-actions-menu';
+import type { OrderActionName } from './order-action-client';
 
 export function AdminOrderDetail({
   orderNumber,
@@ -29,6 +31,8 @@ export function AdminOrderDetail({
   const [busy, setBusy] = useState<string>();
   const [printingGroupId, setPrintingGroupId] = useState<string>();
   const [timelineRefresh, setTimelineRefresh] = useState(0);
+  const [activeAction, setActiveAction] = useState<OrderActionName>();
+  const actionTrigger = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     const response = await adminApiFetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
@@ -44,6 +48,25 @@ export function AdminOrderDetail({
       setError(reason instanceof Error ? reason.message : 'Could not load this order.'),
     );
   }, [load]);
+
+  const openAction = (action: OrderActionName) => {
+    actionTrigger.current = document.activeElement as HTMLElement | null;
+    setActiveAction(action);
+  };
+  const closeAction = () => {
+    setActiveAction(undefined);
+    requestAnimationFrame(
+      () => actionTrigger.current?.isConnected && actionTrigger.current.focus(),
+    );
+    void load()
+      .then(() => setTimelineRefresh((value) => value + 1))
+      .catch(() => setError('Could not refresh this order. Reload the page for its latest state.'));
+  };
+  const actionSaved = async () => {
+    await load();
+    setTimelineRefresh((value) => value + 1);
+    setNotice('Order updated.');
+  };
 
   const mutate = async (key: string, url: string, init: RequestInit): Promise<boolean> => {
     setBusy(key);
@@ -123,15 +146,27 @@ export function AdminOrderDetail({
                   printing={order.printingState}
                   fulfillment={order.fulfillmentState}
                 />
+                {order.archived ? <span className="order-layer-badge">Archived</span> : null}
               </div>
             </div>
+            <OrderActionsMenu eligibility={order.eligibility} onSelect={openAction} />
           </header>
 
           <div className="order-detail-grid">
             <div className="order-detail-main">
               {order.groups.map((group) => (
                 <section className="order-provider-group" key={group.id}>
-                  <OrderFulfillmentGroup group={group} />
+                  <OrderFulfillmentGroup
+                    group={group}
+                    {...(order.eligibility.actions.return &&
+                    order.returnableItems.some(
+                      (item) =>
+                        item.returnableQuantity > 0 &&
+                        group.items.some((groupItem) => groupItem.id === item.orderItemId),
+                    )
+                      ? { onReturn: () => openAction('return') }
+                      : {})}
+                  />
                   <OrderPrintingSummary group={group} onOpen={() => setPrintingGroupId(group.id)} />
                 </section>
               ))}
@@ -140,7 +175,51 @@ export function AdminOrderDetail({
                   <p className="order-empty-copy">No fulfillment groups have been created.</p>
                 </article>
               ) : null}
-              <OrderPaymentSummary order={order} />
+              <OrderPaymentSummary order={order} onRefund={() => openAction('refund')} />
+              {order.returns.length ? (
+                <article className="order-detail-card">
+                  <header className="order-card-header">
+                    <h2>Returns</h2>
+                  </header>
+                  <div className="order-return-history">
+                    {order.returns.map((returned) => (
+                      <div key={returned.id}>
+                        <span>
+                          <strong>
+                            {returned.items.reduce((sum, item) => sum + item.quantity, 0)} item(s)
+                          </strong>
+                          <small>
+                            {returned.reasonCode.replaceAll('_', ' ').toLowerCase()} ·{' '}
+                            {new Date(returned.createdAt).toLocaleDateString('en-US')}
+                          </small>
+                        </span>
+                        <span className="order-layer-badge">
+                          {returned.state.replaceAll('_', ' ').toLowerCase()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
+              {order.cancellation && !['SUCCEEDED'].includes(order.cancellation.status) ? (
+                <article className="order-detail-card">
+                  <div className="order-cancellation-notice">
+                    <div>
+                      <strong>Cancellation {order.cancellation.status.toLowerCase()}</strong>
+                      <p>Review the timeline for provider outcomes and unresolved work.</p>
+                    </div>
+                    {order.eligibility.actions.cancel ? (
+                      <button
+                        className="order-action-button"
+                        type="button"
+                        onClick={() => openAction('cancel')}
+                      >
+                        Review cancellation
+                      </button>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
               <OrderTimeline
                 orderNumber={orderNumber}
                 apiBase={apiBase}
@@ -154,6 +233,16 @@ export function AdminOrderDetail({
               onSaveTags={saveTags}
             />
           </div>
+          {activeAction ? (
+            <OrderActionHost
+              key={`${order.orderNumber}-${activeAction}`}
+              order={order}
+              action={activeAction}
+              apiBase={apiBase}
+              onClose={closeAction}
+              onSaved={actionSaved}
+            />
+          ) : null}
         </>
       ) : null}
       {printingGroupId ? (

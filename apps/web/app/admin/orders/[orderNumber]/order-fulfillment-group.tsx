@@ -5,7 +5,10 @@ import type { OrderGroup } from './order-detail-types';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
-export function OrderFulfillmentGroup({ group }: Readonly<{ group: OrderGroup }>) {
+export function OrderFulfillmentGroup({
+  group,
+  onReturn,
+}: Readonly<{ group: OrderGroup; onReturn?: () => void }>) {
   const fulfillment = layerStatusPresentation('fulfillment', group.fulfillmentState);
 
   return (
@@ -101,6 +104,14 @@ export function OrderFulfillmentGroup({ group }: Readonly<{ group: OrderGroup }>
           </div>
         ))}
       </div>
+      {onReturn ? (
+        <footer className="order-card-action-footer">
+          <small>Manage returned items separately from refunds.</small>
+          <button type="button" className="order-action-button" onClick={onReturn}>
+            Create return
+          </button>
+        </footer>
+      ) : null}
     </article>
   );
 }

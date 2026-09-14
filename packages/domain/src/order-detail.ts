@@ -77,6 +77,8 @@ export interface ProductionEconomics {
 
 export interface AdminOrderItem {
   id: string;
+  productVariantId: string;
+  variantOptions: Array<{ id: string; color: string; size: string }>;
   productName: string;
   color: string;
   size: string;
@@ -305,6 +307,7 @@ interface ItemRow {
   quantity: number;
   unit_price_cents: number;
   product_variant_id: string;
+  variant_options: AdminOrderItem['variantOptions'];
   project_id: string;
   project_version_id: string;
   mockup_id: string;
@@ -1044,7 +1047,11 @@ export class OrderDetailService {
                 coalesce(item.item_snapshot->>'size', variant.size) AS size,
                 item.quantity,
                 coalesce((item.item_snapshot->>'unitRetailCents')::int, variant.price_cents) AS unit_price_cents,
-                item.product_variant_id, item.project_id, item.project_version_id, item.mockup_id
+                item.product_variant_id, item.project_id, item.project_version_id, item.mockup_id,
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('id',option.id,'color',option.color_name,'size',option.size)
+                  ORDER BY option.color_name,option.size,option.id)
+                  FROM app.product_variants option
+                  WHERE option.product_model_id=item.product_model_id AND option.status='ACTIVE' AND model.status='ACTIVE'), '[]'::jsonb) AS variant_options
          FROM app.order_items item
          JOIN app.order_fulfillment_group_items group_item ON group_item.order_item_id = item.id
          JOIN app.product_models model ON model.id = item.product_model_id
@@ -1301,6 +1308,8 @@ export function calculateProductionEconomics(input: {
 function toAdminOrderItem(item: ItemRow): AdminOrderItem {
   return {
     id: item.id,
+    productVariantId: item.product_variant_id,
+    variantOptions: item.variant_options,
     productName: item.product_name,
     color: item.color_name,
     size: item.size,

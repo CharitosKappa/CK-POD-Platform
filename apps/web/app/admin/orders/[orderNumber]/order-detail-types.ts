@@ -14,6 +14,8 @@ export interface OrderAddress {
 
 export interface OrderItem {
   id: string;
+  productVariantId: string;
+  variantOptions: Array<{ id: string; color: string; size: string }>;
   productName: string;
   color: string;
   size: string;

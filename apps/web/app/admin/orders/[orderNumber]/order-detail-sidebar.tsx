@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 import { formatOrderAddress } from './order-detail-format';
 import type { OrderDetail } from './order-detail-types';
@@ -39,23 +39,25 @@ export function OrderDetailSidebar({
         <header className="order-side-header">
           <h2>Notes</h2>
         </header>
-        <div className="order-note-composer">
-          <label htmlFor="order-note">Add an internal note</label>
-          <textarea
-            id="order-note"
-            value={note}
-            maxLength={5000}
-            onChange={(event) => setNote(event.target.value)}
-            placeholder="Only staff can see this note"
-          />
-          <button
-            type="button"
-            disabled={!note.trim() || Boolean(busy)}
-            onClick={() => void submitNote()}
-          >
-            {busy === 'note' ? 'Adding…' : 'Add note'}
-          </button>
-        </div>
+        {order.eligibility.editFields.notesAndTags ? (
+          <div className="order-note-composer">
+            <label htmlFor="order-note">Add an internal note</label>
+            <textarea
+              id="order-note"
+              value={note}
+              maxLength={5000}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Only staff can see this note"
+            />
+            <button
+              type="button"
+              disabled={!note.trim() || Boolean(busy)}
+              onClick={() => void submitNote()}
+            >
+              {busy === 'note' ? 'Adding…' : 'Add note'}
+            </button>
+          </div>
+        ) : null}
         {order.notes.length ? (
           <div className="order-latest-note">
             <p>{order.notes[0]!.body}</p>
@@ -99,15 +101,17 @@ export function OrderDetailSidebar({
       <article className="order-detail-card order-tags-card">
         <header className="order-side-header">
           <h2>Tags</h2>
-          <button
-            type="button"
-            onClick={() => setEditingTags((value) => !value)}
-            aria-label="Edit order tags"
-          >
-            {editingTags ? 'Close' : 'Edit'}
-          </button>
+          {order.eligibility.editFields.notesAndTags ? (
+            <button
+              type="button"
+              onClick={() => setEditingTags((value) => !value)}
+              aria-label="Edit order tags"
+            >
+              {editingTags ? 'Close' : 'Edit'}
+            </button>
+          ) : null}
         </header>
-        {editingTags ? (
+        {editingTags && order.eligibility.editFields.notesAndTags ? (
           <div className="order-tag-editor">
             <label htmlFor="order-tags">Comma-separated tags</label>
             <textarea

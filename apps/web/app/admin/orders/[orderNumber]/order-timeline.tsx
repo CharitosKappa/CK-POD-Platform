@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 import { adminApiFetch } from '../../../../lib/admin-api';
 
 import { groupTimelineByDate } from './order-detail-format';
 import type { OrderTimelineEvent, OrderTimelinePage } from './order-detail-types';
+import { formatOrderMoney } from './order-action-client';
 
 export function OrderTimeline({
   orderNumber,
@@ -66,12 +67,13 @@ export function OrderTimeline({
             {group.events.map((event) => (
               <div key={event.id} className="order-timeline-event">
                 <span aria-hidden="true" />
-                <p>
+                <div className="order-timeline-description">
                   <strong>{event.description}</strong>
                   <small>
                     {event.actorName ?? event.source.replaceAll('_', ' ').toLowerCase()}
                   </small>
-                </p>
+                  <OrderTimelineDetails details={event.details} />
+                </div>
                 <time dateTime={event.occurredAt}>
                   {new Date(event.occurredAt).toLocaleTimeString('en-US', {
                     hour: 'numeric',
@@ -113,6 +115,112 @@ export function OrderTimeline({
       </article>
     </section>
   );
+}
+
+export function OrderTimelineDetails({
+  details,
+}: Readonly<{ details: OrderTimelineEvent['details'] }>) {
+  const fields: Array<[string, string]> = [];
+  if (typeof details.beforeSnapshot === 'string' && typeof details.afterSnapshot === 'string') {
+    try {
+      const before = JSON.parse(details.beforeSnapshot) as unknown;
+      const after = JSON.parse(details.afterSnapshot) as unknown;
+      const changed: string[] = [];
+      const paths = [
+        ['Customer email', 'order.customer_email'],
+        ['Shipping address / contact', 'order.shipping_address_snapshot'],
+        ['Shipping charge', 'order.pricing_snapshot.customerShippingCents'],
+        ['Discount', 'order.pricing_snapshot.discountCents'],
+        ['Tags', 'tags'],
+        ['Notes', 'notes'],
+      ];
+      for (const [label, path] of paths)
+        if (
+          JSON.stringify(snapshotValue(before, path!)) !==
+          JSON.stringify(snapshotValue(after, path!))
+        )
+          changed.push(label!);
+      const itemChanges = (snapshot: unknown) => {
+        const items = snapshotValue(snapshot, 'items');
+        return Array.isArray(items)
+          ? items.map((item) => [
+              snapshotValue(item, 'id'),
+              snapshotValue(item, 'product_variant_id'),
+              snapshotValue(item, 'quantity'),
+            ])
+          : items;
+      };
+      if (JSON.stringify(itemChanges(before)) !== JSON.stringify(itemChanges(after)))
+        changed.push('Items / quantities / variants');
+      if (changed.length) fields.push(['Changed fields', changed.join(', ')]);
+    } catch {
+      /* A malformed historical snapshot must not hide the rest of the audit. */
+    }
+  }
+  const labels: Record<string, string> = {
+    reasonCode: 'Reason',
+    note: 'Staff note',
+    destination: 'Destination',
+    refundDestination: 'Refund destination',
+    fromState: 'Previous state',
+    toState: 'New state',
+    carrier: 'Carrier',
+    trackingNumber: 'Tracking',
+    quantity: 'Quantity',
+    failureReason: 'Outcome',
+    status: 'Status',
+    result: 'Result',
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const value = details[key];
+    if (value === undefined || value === null || value === '') continue;
+    fields.push([
+      label,
+      value === 'STORE_CREDIT'
+        ? 'Store Credit'
+        : value === 'ORIGINAL_PAYMENT'
+          ? 'Original payment method'
+          : key === 'note' || key === 'failureReason' || key === 'trackingNumber'
+            ? String(value)
+            : String(value).replaceAll('_', ' ').toLowerCase(),
+    ]);
+  }
+  for (const [key, label] of [
+    ['amountCents', 'Amount'],
+    ['refundAmountCents', 'Refund amount'],
+    ['priceDifferenceCents', 'Price difference'],
+  ] as const)
+    if (typeof details[key] === 'number') fields.push([label, formatOrderMoney(details[key])]);
+  if (typeof details.notifyCustomer === 'boolean')
+    fields.push(['Notify customer', details.notifyCustomer ? 'Yes' : 'No']);
+  if (typeof details.shippingRequired === 'boolean')
+    fields.push(['Return shipping required', details.shippingRequired ? 'Yes' : 'No']);
+  if (!fields.length) return null;
+  return (
+    <details className="order-timeline-details">
+      <summary>View details</summary>
+      <dl>
+        {fields.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+function snapshotValue(value: unknown, path: string): unknown {
+  return path
+    .split('.')
+    .reduce<unknown>(
+      (current, key) =>
+        current && typeof current === 'object'
+          ? (current as Record<string, unknown>)[key]
+          : undefined,
+      value,
+    );
 }
 
 function formatTimelineDate(dateKey: string): string {

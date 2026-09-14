@@ -5,7 +5,10 @@ import type { OrderDetail } from './order-detail-types';
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 
-export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>) {
+export function OrderPaymentSummary({
+  order,
+  onRefund,
+}: Readonly<{ order: OrderDetail; onRefund?: () => void }>) {
   const status = layerStatusPresentation('payment', order.paymentState);
   const rows = [
     [
@@ -64,7 +67,29 @@ export function OrderPaymentSummary({ order }: Readonly<{ order: OrderDetail }>)
             <dd>−{money.format(order.financials.refundedCents / 100)}</dd>
           </div>
         ) : null}
+        {order.amountDueCents > 0 ? (
+          <div className="order-payment-due">
+            <dt>Amount due</dt>
+            <dd>Production on hold until paid</dd>
+            <dd>{money.format(order.amountDueCents / 100)}</dd>
+          </div>
+        ) : null}
+        {order.refundableAdjustmentCents > 0 ? (
+          <div>
+            <dt>Edit difference</dt>
+            <dd>Refund available; not issued automatically</dd>
+            <dd>{money.format(order.refundableAdjustmentCents / 100)}</dd>
+          </div>
+        ) : null}
       </dl>
+      {onRefund && order.eligibility?.actions.refund && order.refundableCents > 0 ? (
+        <footer className="order-card-action-footer">
+          <small>{money.format(order.refundableCents / 100)} available to refund</small>
+          <button type="button" className="order-action-button" onClick={onRefund}>
+            Refund
+          </button>
+        </footer>
+      ) : null}
     </article>
   );
 }

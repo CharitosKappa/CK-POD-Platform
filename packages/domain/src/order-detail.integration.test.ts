@@ -102,6 +102,26 @@ suite('order detail persistence integration', () => {
     return { ...order, orderNumber: paid.orderNumber!, itemId: item.id };
   }
 
+  it('provides persisted variant identifiers and only active same-product options for safe editing', async () => {
+    const order = await fixture();
+    const detail = await new OrderDetailService(pool).getOrder(staff, order.orderNumber);
+    const item = detail!.groups
+      .flatMap((group) => group.items)
+      .find((row) => row.id === order.itemId)!;
+    expect(item.productVariantId).toBe('essential-dtg-tee-black-M');
+    expect(item.variantOptions).toContainEqual({
+      id: 'essential-dtg-tee-black-M',
+      color: 'Black',
+      size: 'M',
+    });
+    const available = await pool.query<{ id: string }>(
+      "SELECT id FROM app.product_variants WHERE product_model_id='essential-dtg-tee' AND status='ACTIVE'",
+    );
+    expect(item.variantOptions.map((variant) => variant.id).sort()).toEqual(
+      available.rows.map((variant) => variant.id).sort(),
+    );
+  });
+
   it('projects persisted action balances, archive actor, returns and current revision tax', async () => {
     const order = await fixture();
     await pool.query(
