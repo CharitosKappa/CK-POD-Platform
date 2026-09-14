@@ -82,6 +82,7 @@ describe('order printing controls', () => {
     const order = {
       paymentState: 'PAID',
       groups: [group],
+      pendingRefunds: [],
       financials: {
         subtotalCents: 3999,
         discountCents: 0,
@@ -94,7 +95,7 @@ describe('order printing controls', () => {
         taxLines: [{ label: 'California Sales Tax', rateBasisPoints: 875, amountCents: 350 }],
         paymentMethod: 'Credit card',
       },
-    } as OrderDetail;
+    } as unknown as OrderDetail;
 
     const markup = renderToStaticMarkup(createElement(OrderPaymentSummary, { order }));
 

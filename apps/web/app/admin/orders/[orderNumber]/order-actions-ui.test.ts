@@ -15,7 +15,10 @@ import {
 } from './edit-order-modal';
 import { ArchiveOrderModal } from './archive-order-modal';
 import { OrderPaymentSummary } from './order-payment-summary';
-import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
+import {
+  createPendingRefundReconciliationCheck,
+  PendingRefundReconciliationModal,
+} from './pending-refund-reconciliation-modal';
 import { OrderDetailSidebar } from './order-detail-sidebar';
 import { OrderTimelineDetails } from './order-timeline';
 import type { OrderDetail } from './order-detail-types';
@@ -452,28 +455,45 @@ describe('order action surfaces', () => {
 });
 
 describe('durable order mutation client', () => {
-  it('uses a dedicated recovery key and session journal only to resume the read-only refund check', async () => {
-    const fetcher = vi
-      .fn()
-      .mockImplementation(async () =>
-        Response.json(
-          { result: { refundId: 'refund-1', status: 'PENDING', amountCents: 1200 } },
-          { status: 202 },
-        ),
-      );
+  it('dispatches one storage-independent refund check for duplicate taps', async () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => {
+        throw new Error('Storage unavailable');
+      },
+      setItem: () => {
+        throw new Error('Storage unavailable');
+      },
+      removeItem: () => {
+        throw new Error('Storage unavailable');
+      },
+    });
+    let complete!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          complete = resolve;
+        }),
+    );
     vi.stubGlobal('fetch', fetcher);
     const path = '/api/admin/orders/%2342/refunds/refund-1/reconcile';
-    const first = createOrderActionSession(path);
-    expect((await first.submit({})).kind).toBe('pending');
-    const firstRequest = fetcher.mock.calls[0]![1];
-    expect(firstRequest.body).toBe('{}');
-    expect(firstRequest.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/i);
-
-    const resumed = createOrderActionSession(path);
-    expect((await resumed.resume()).kind).toBe('pending');
-    expect(fetcher.mock.calls[1]![1].headers['Idempotency-Key']).toBe(
-      firstRequest.headers['Idempotency-Key'],
+    const check = createPendingRefundReconciliationCheck(path);
+    const first = check();
+    const duplicateTap = check();
+    complete(
+      Response.json(
+        { result: { refundId: 'refund-1', status: 'PENDING', amountCents: 1200 } },
+        { status: 202 },
+      ),
     );
+    expect((await first).kind).toBe('pending');
+    expect((await duplicateTap).kind).toBe('pending');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![1]).toMatchObject({
+      body: '{}',
+      headers: expect.objectContaining({
+        'Idempotency-Key': expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      }),
+    });
   });
   it('gives an explicit unresolved cancellation retry a new key only after a durable failed attempt', async () => {
     const fetcher = vi

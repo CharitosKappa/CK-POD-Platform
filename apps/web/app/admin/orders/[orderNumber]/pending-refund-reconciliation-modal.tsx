@@ -1,13 +1,41 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 
 import {
-  createOrderActionSession,
   formatOrderMoney,
+  submitOrderAction,
   type OrderActionOutcome,
 } from './order-action-client';
 import { ActionFeedback, OrderActionModal, type OrderActionModalProps } from './order-action-modal';
+
+export function createPendingRefundReconciliationCheck(
+  path: string,
+  onSaved?: () => Promise<void> | void,
+) {
+  let inFlight: Promise<OrderActionOutcome> | undefined;
+  return function check(): Promise<OrderActionOutcome> {
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      let result = await submitOrderAction(path, {}, { idempotencyKey: crypto.randomUUID() });
+      if (result.kind === 'success') {
+        try {
+          await onSaved?.();
+        } catch {
+          result = {
+            ...result,
+            refreshFailed: true,
+            message: 'The refund status was reconciled. Refresh the page to see the latest order.',
+          };
+        }
+      }
+      return result;
+    })().finally(() => {
+      inFlight = undefined;
+    });
+    return inFlight;
+  };
+}
 
 export function PendingRefundReconciliationModal(
   props: OrderActionModalProps & {
@@ -17,20 +45,18 @@ export function PendingRefundReconciliationModal(
   const [busy, setBusy] = useState(false);
   const callbacks = useRef(props);
   callbacks.current = props;
-  const session = useRef<ReturnType<typeof createOrderActionSession> | null>(null);
   const path = `${props.apiBase}/${encodeURIComponent(props.order.orderNumber)}/refunds/${encodeURIComponent(props.refund.id)}/reconcile`;
-  session.current ??= createOrderActionSession(path, {
-    onSaved: () => callbacks.current.onSaved(),
-  });
-  const [outcome, setOutcome] = useState<OrderActionOutcome | undefined>(
-    () => session.current?.snapshot()?.outcome,
+  const check = useMemo(
+    () => createPendingRefundReconciliationCheck(path, () => callbacks.current.onSaved()),
+    [path],
   );
+  const [outcome, setOutcome] = useState<OrderActionOutcome>();
 
   async function reconcile() {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await session.current!.submit({});
+      const result = await check();
       setOutcome(result);
       if (result.kind === 'success' && !result.refreshFailed) callbacks.current.onClose();
     } finally {
