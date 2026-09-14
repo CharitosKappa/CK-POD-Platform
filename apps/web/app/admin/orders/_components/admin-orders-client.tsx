@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AdminFeedback, type AdminFeedbackTone } from '../../_components/admin-feedback';
 import { canManageOrders, useAdminRole } from '../../admin-role';
 import { readAdminPreferences, writeAdminPreferences } from '../../../../lib/admin-preferences';
 import {
@@ -70,7 +71,7 @@ export function AdminOrdersClient() {
   const [selection, setSelection] = useState(clearOrderSelection);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [feedback, setFeedback] = useState<string>();
+  const [feedback, setFeedback] = useState<{ message: string; tone: AdminFeedbackTone }>();
   const [busy, setBusy] = useState(false);
   const [exportJobs, setExportJobs] = useState<OrderExportSummary[]>([]);
   const exportInFlight = useRef(false);
@@ -192,9 +193,10 @@ export function AdminOrdersClient() {
           payload.export!,
           ...current.filter((job) => job.id !== payload.export!.id),
         ]);
-        setFeedback(
-          `Export started for ${payload.export.totalCount.toLocaleString('en-US')} orders. You can safely leave this page.`,
-        );
+        setFeedback({
+          message: `Export started for ${payload.export.totalCount.toLocaleString('en-US')} orders. You can safely leave this page.`,
+          tone: 'info',
+        });
         return;
       }
       if (!response.ok) {
@@ -208,9 +210,15 @@ export function AdminOrdersClient() {
       anchor.download = `orders-${new Date().toISOString().slice(0, 10)}.csv`;
       anchor.click();
       URL.revokeObjectURL(href);
-      setFeedback(`${requestedCount.toLocaleString('en-US')} orders exported.`);
+      setFeedback({
+        message: `${requestedCount.toLocaleString('en-US')} orders exported.`,
+        tone: 'success',
+      });
     } catch (reason) {
-      setFeedback(reason instanceof Error ? reason.message : 'Could not export orders.');
+      setFeedback({
+        message: reason instanceof Error ? reason.message : 'Could not export orders.',
+        tone: 'error',
+      });
     } finally {
       exportInFlight.current = false;
       setBusy(false);
@@ -403,17 +411,17 @@ export function AdminOrdersClient() {
           </div>
         ) : null}
         {feedback ? (
-          <p className="customer-feedback" role="status">
-            {feedback}
-          </p>
+          <AdminFeedback tone={feedback.tone} onDismiss={() => setFeedback(undefined)}>
+            {feedback.message}
+          </AdminFeedback>
         ) : null}
         {error ? (
-          <p className="customer-feedback error" role="alert">
+          <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
             {error}{' '}
             <button type="button" onClick={() => void load()}>
               Try again
             </button>
-          </p>
+          </AdminFeedback>
         ) : null}
         <div className="commerce-admin-table-scroll" aria-busy={loading}>
           <table>

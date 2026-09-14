@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { AdminFeedback, type AdminFeedbackTone } from '../../_components/admin-feedback';
 import {
   customerColumns as allCustomerColumns,
   readAdminPreferences,
@@ -92,7 +93,7 @@ export function AdminCustomersClient() {
   const [exportJobs, setExportJobs] = useState<CustomerExportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [feedback, setFeedback] = useState<string>();
+  const [feedback, setFeedback] = useState<{ message: string; tone: AdminFeedbackTone }>();
   const [bulkOpen, setBulkOpen] = useState<'ADD' | 'REMOVE'>();
   const [bulkTags, setBulkTags] = useState('');
   const [busy, setBusy] = useState(false);
@@ -331,9 +332,10 @@ export function AdminCustomersClient() {
           payload.export!,
           ...current.filter((job) => job.id !== payload.export!.id),
         ]);
-        setFeedback(
-          `Export started for ${payload.export.totalCount.toLocaleString('en-US')} customers. You can safely leave this page.`,
-        );
+        setFeedback({
+          message: `Export started for ${payload.export.totalCount.toLocaleString('en-US')} customers. You can safely leave this page.`,
+          tone: 'info',
+        });
         return;
       }
       if (!response.ok) {
@@ -347,9 +349,15 @@ export function AdminCustomersClient() {
       anchor.download = `customers-${new Date().toISOString().slice(0, 10)}.csv`;
       anchor.click();
       URL.revokeObjectURL(href);
-      setFeedback(`${requestedCount.toLocaleString('en-US')} customers exported.`);
+      setFeedback({
+        message: `${requestedCount.toLocaleString('en-US')} customers exported.`,
+        tone: 'success',
+      });
     } catch (reason) {
-      setFeedback(reason instanceof Error ? reason.message : 'Could not export customers.');
+      setFeedback({
+        message: reason instanceof Error ? reason.message : 'Could not export customers.',
+        tone: 'error',
+      });
     } finally {
       exportInFlight.current = false;
       setBusy(false);
@@ -371,13 +379,19 @@ export function AdminCustomersClient() {
       });
       const payload = (await response.json()) as { updated?: number; error?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Could not update tags.');
-      setFeedback(`Tags updated for ${payload.updated ?? selectedCount} customers.`);
+      setFeedback({
+        message: `Tags updated for ${payload.updated ?? selectedCount} customers.`,
+        tone: 'success',
+      });
       setBulkOpen(undefined);
       setBulkTags('');
       clearSelection();
       await load();
     } catch (reason) {
-      setFeedback(reason instanceof Error ? reason.message : 'Could not update tags.');
+      setFeedback({
+        message: reason instanceof Error ? reason.message : 'Could not update tags.',
+        tone: 'error',
+      });
     } finally {
       setBusy(false);
     }
@@ -591,17 +605,17 @@ export function AdminCustomersClient() {
           </div>
         ) : null}
         {feedback ? (
-          <p className="customer-feedback" role="status">
-            {feedback}
-          </p>
+          <AdminFeedback tone={feedback.tone} onDismiss={() => setFeedback(undefined)}>
+            {feedback.message}
+          </AdminFeedback>
         ) : null}
         {error ? (
-          <p className="customer-feedback error" role="alert">
+          <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
             {error}{' '}
             <button type="button" onClick={() => void load()}>
               Try again
             </button>
-          </p>
+          </AdminFeedback>
         ) : null}
 
         <div className="customer-table-scroll" aria-busy={loading}>

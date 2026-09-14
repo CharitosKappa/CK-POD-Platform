@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AdminFeedback } from '../../_components/admin-feedback';
 import { customerDisplayName, customerDuration } from './customer-detail-format';
 import { CustomerAddressManagerModal } from './customer-address-manager';
 import { loadCustomerDetail, refreshCustomerAfterSave } from './customer-detail-loading';
@@ -144,14 +145,14 @@ export function CustomerDetailClient({ customerId }: Readonly<{ customerId: stri
         ) : null}
       </header>
       {feedback ? (
-        <p className="customer-feedback" role="status">
+        <AdminFeedback tone="success" onDismiss={() => setFeedback(undefined)}>
           {feedback}
-        </p>
+        </AdminFeedback>
       ) : null}
       {error ? (
-        <p className="customer-feedback error" role="alert">
+        <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
           {error}
-        </p>
+        </AdminFeedback>
       ) : null}
       <div className="customer-detail-grid">
         <div className="customer-detail-main">

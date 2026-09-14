@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { adminApiFetch } from '../../../../lib/admin-api';
+import { AdminFeedback } from '../../_components/admin-feedback';
 
 import { OrderDetailSidebar } from './order-detail-sidebar';
 import type { OrderDetail } from './order-detail-types';
@@ -143,14 +144,14 @@ export function AdminOrderDetail({
         ← Orders
       </Link>
       {error ? (
-        <p className="ops-admin-feedback is-error" role="alert">
+        <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
           {error}
-        </p>
+        </AdminFeedback>
       ) : null}
       {notice ? (
-        <p className="ops-admin-feedback is-success" role="status">
+        <AdminFeedback tone="success" onDismiss={() => setNotice(undefined)}>
           {notice}
-        </p>
+        </AdminFeedback>
       ) : null}
       {order ? (
         <>

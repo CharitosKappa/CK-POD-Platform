@@ -26,7 +26,7 @@ export function AdminFeedback({
   tone,
   onDismiss,
 }: Readonly<{
-  children: ReactNode;
+  children?: ReactNode;
   tone: AdminFeedbackTone;
   onDismiss: () => void;
 }>) {
