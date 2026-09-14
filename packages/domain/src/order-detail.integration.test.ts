@@ -160,14 +160,26 @@ suite('order detail persistence integration', () => {
       "UPDATE app.order_fulfillment_groups SET printing_status='PRINTED',fulfillment_status='DELIVERED' WHERE order_id=$1",
       [order.id],
     );
-    for (const [status, amount] of [
-      ['SUCCEEDED', 1000],
-      ['PENDING', 500],
-      ['FAILED', 700],
+    for (const [status, amount, destination, reasonCode, completedAt, provider] of [
+      ['SUCCEEDED', 1000, 'ORIGINAL_PAYMENT', 'ORDER_CANCELLED', '2026-09-14T11:00:00Z', 'FAKE'],
+      ['PENDING', 500, 'ORIGINAL_PAYMENT', 'TEST', null, 'FAKE'],
+      ['FAILED', 700, 'ORIGINAL_PAYMENT', 'TEST', null, 'FAKE'],
     ] as const)
       await pool.query(
-        `INSERT INTO app.order_refunds (order_id,payment_id,provider,idempotency_key,amount_cents,status,reason_code,initiated_by_staff_member_id) VALUES ($1,$2,'FAKE',$3,$4,$5,'TEST',$6)`,
-        [order.id, order.payment_id, randomUUID(), amount, status, staff.staffMemberId],
+        `INSERT INTO app.order_refunds (order_id,payment_id,provider,idempotency_key,amount_cents,status,reason_code,initiated_by_staff_member_id,destination,completed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          order.id,
+          order.payment_id,
+          provider,
+          randomUUID(),
+          amount,
+          status,
+          reasonCode,
+          staff.staffMemberId,
+          destination,
+          completedAt,
+        ],
       );
     const providerRefundId = `provider-secret-${randomUUID()}`;
     const pendingRefundId = (
@@ -194,6 +206,14 @@ suite('order detail persistence integration', () => {
       amountDueCents: 0,
       refundableAdjustmentCents: 200,
       refundableCents: order.total - 1500,
+      completedRefunds: [
+        {
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 1000,
+          reasonCode: 'ORDER_CANCELLED',
+          completedAt: new Date('2026-09-14T11:00:00Z'),
+        },
+      ],
       pendingRefunds: [
         {
           id: pendingRefundId,
@@ -223,7 +243,7 @@ suite('order detail persistence integration', () => {
         editFields: { items: false },
       },
     });
-    expect(JSON.stringify(detail?.pendingRefunds)).not.toMatch(
+    expect(JSON.stringify([detail?.pendingRefunds, detail?.completedRefunds])).not.toMatch(
       new RegExp(`${providerRefundId}|providerRefundId|paymentId|idempotency`, 'i'),
     );
     expect(detail?.financials.taxLines).toEqual([

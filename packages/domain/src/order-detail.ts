@@ -141,6 +141,7 @@ export interface AdminOrderDetail {
   amountDueCents: number;
   refundableAdjustmentCents: number;
   refundableCents: number;
+  completedRefunds: AdminOrderCompletedRefund[];
   pendingRefunds: AdminOrderPendingRefund[];
   returnableItems: AdminOrderReturnableItem[];
   returns: AdminOrderReturn[];
@@ -173,6 +174,14 @@ export interface AdminOrderPendingRefund {
   amountCents: number;
   status: 'PENDING';
   createdAt: Date;
+}
+
+export interface AdminOrderCompletedRefund {
+  id: string;
+  destination: Exclude<RefundDestination, 'LATER'>;
+  amountCents: number;
+  reasonCode: string;
+  completedAt: Date;
 }
 
 export interface AdminOrderReturnableItem {
@@ -365,6 +374,7 @@ export class OrderDetailService {
       returnableRows,
       cancellationRows,
       pendingRefundRows,
+      completedRefundRows,
     ] = await Promise.all([
       this.groups(order.id),
       this.items(order.id),
@@ -432,6 +442,15 @@ export class OrderDetailService {
          FROM app.order_refunds
          WHERE order_id=$1 AND destination='ORIGINAL_PAYMENT' AND status='PENDING'
          ORDER BY created_at DESC,id DESC`,
+        [order.id],
+      ),
+      this.pool.query<AdminOrderCompletedRefund>(
+        `SELECT id,destination,amount_cents AS "amountCents",reason_code AS "reasonCode",
+                completed_at AS "completedAt"
+         FROM app.order_refunds
+         WHERE order_id=$1 AND status='SUCCEEDED'
+           AND destination IN ('ORIGINAL_PAYMENT','STORE_CREDIT')
+         ORDER BY completed_at DESC NULLS LAST,id DESC`,
         [order.id],
       ),
     ]);
@@ -536,6 +555,7 @@ export class OrderDetailService {
       })),
       returnableItems: returnableRows.rows,
       cancellation,
+      completedRefunds: completedRefundRows.rows,
       pendingRefunds: pendingRefundRows.rows,
       orderNumber: order.order_number,
       createdAt: order.created_at,
