@@ -9,6 +9,7 @@ import {
   integer,
   uuid,
   invalid,
+  refreshActionConflict,
   type ActionContext,
 } from '../_actions/request';
 export const dynamic = 'force-dynamic';
@@ -36,9 +37,12 @@ export async function POST(request: Request, context: ActionContext) {
       shippingRequired: boolean(body.shippingRequired),
       items,
     };
-    return actionResult(
-      await (await orderAdminActionsRuntime()).actions.createReturn(session, input),
-    );
+    const runtime = await orderAdminActionsRuntime();
+    try {
+      return actionResult(await runtime.actions.createReturn(session, input));
+    } catch (error) {
+      return refreshActionConflict(error, session, orderNumber, runtime.detail);
+    }
   } catch (error) {
     return handleRouteError(error);
   }

@@ -14,6 +14,12 @@ import {
   type ActionContext,
 } from '../_actions/request';
 export const dynamic = 'force-dynamic';
+function catalogVariantId(value: unknown): string {
+  // Catalog primary keys are text identifiers such as essential-dtg-tee-black-M.
+  const result = text(value, 'product variant', 200);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(result)) invalid('Enter a valid product variant.');
+  return result;
+}
 function email(value: unknown): string {
   const result = text(value, 'email', 254);
   if (!/^\S+@\S+\.\S+$/.test(result.trim())) invalid('Enter a valid email.');
@@ -80,7 +86,7 @@ export async function POST(request: Request, context: ActionContext) {
         const item = object(rawItem, ['orderItemId', 'productVariantId', 'quantity']);
         return {
           ...(item.orderItemId === undefined ? {} : { orderItemId: uuid(item.orderItemId) }),
-          productVariantId: uuid(item.productVariantId),
+          productVariantId: catalogVariantId(item.productVariantId),
           quantity: integer(item.quantity, 1, 99),
         };
       });

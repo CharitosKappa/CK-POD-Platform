@@ -58,7 +58,11 @@ describe('shared refund preflight', () => {
   // A role guard regression would allow prepress/read-only staff to issue money.
   it.each(['PREPRESS', 'READ_ONLY'] as const)('rejects %s actors', async (role) => {
     const refunds = service();
-    for (const method of ['refundOriginalPayment', 'refundToStoreCredit'] as const) {
+    for (const method of [
+      'refundOriginalPayment',
+      'refundToStoreCredit',
+      'recoverRefundResult',
+    ] as const) {
       await expect(refunds[method]({ ...staff, role } as never, input)).rejects.toThrow(
         'Operations access is restricted.',
       );

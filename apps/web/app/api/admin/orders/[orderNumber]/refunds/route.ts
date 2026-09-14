@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { OrderAdminActionNotFoundError } from '@let-it-be/domain';
+import { OrderAdminActionNotFoundError, type RefundOrderResult } from '@let-it-be/domain';
 import {
   handleOrderActionRouteError as handleRouteError,
   handleOrderRefundRouteError,
@@ -15,6 +15,25 @@ import {
   type ActionContext,
 } from '../_actions/request';
 export const dynamic = 'force-dynamic';
+function refundResponse(refund: RefundOrderResult) {
+  const result = {
+    refundId: refund.refundId,
+    destination: refund.destination,
+    amountCents: refund.amountCents,
+    status: refund.status,
+    duplicate: refund.duplicate,
+  };
+  if (result.status === 'FAILED')
+    return NextResponse.json(
+      {
+        error: 'The refund was not completed. Review its status before retrying.',
+        code: 'REFUND_FAILED',
+        result,
+      },
+      { status: 409 },
+    );
+  return actionResult(result, result.status === 'PENDING' ? 202 : 200);
+}
 export async function POST(request: Request, context: ActionContext) {
   try {
     const {
@@ -41,36 +60,24 @@ export async function POST(request: Request, context: ActionContext) {
     const { refunds, detail } = await orderAdminActionsRuntime();
     if (!(await detail.getOrder(session, orderNumber)))
       throw new OrderAdminActionNotFoundError('Order not found.');
+    const refundActor = {
+      type: 'STAFF' as const,
+      staffMemberId: session.staffMemberId,
+      role: session.role,
+      email: session.email,
+    };
     try {
       const refund = await refunds[
         destination === 'ORIGINAL_PAYMENT' ? 'refundOriginalPayment' : 'refundToStoreCredit'
-      ](
-        {
-          type: 'STAFF',
-          staffMemberId: session.staffMemberId,
-          role: session.role,
-          email: session.email,
-        },
-        input,
-      );
-      const result = {
-        refundId: refund.refundId,
-        destination: refund.destination,
-        amountCents: refund.amountCents,
-        status: refund.status,
-        duplicate: refund.duplicate,
-      };
-      if (result.status === 'FAILED')
-        return NextResponse.json(
-          {
-            error: 'The refund was not completed. Review its status before retrying.',
-            code: 'REFUND_FAILED',
-            result,
-          },
-          { status: 409 },
-        );
-      return actionResult(result, result.status === 'PENDING' ? 202 : 200);
+      ](refundActor, input);
+      return refundResponse(refund);
     } catch (error) {
+      try {
+        const recovered = await refunds.recoverRefundResult(refundActor, input);
+        if (recovered) return refundResponse(recovered);
+      } catch {
+        // Do not repeat the mutation if recovery storage is temporarily unavailable.
+      }
       const response = handleOrderRefundRouteError(error);
       if (response.status === 409) {
         const payload = (await response.clone().json()) as {

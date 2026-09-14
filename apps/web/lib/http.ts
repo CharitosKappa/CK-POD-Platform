@@ -205,6 +205,16 @@ export function handleRouteError(error: unknown): NextResponse {
 
 /** Provider errors are normalized only for the staff action API surface. */
 export function handleOrderActionRouteError(error: unknown): NextResponse {
+  if (error instanceof CommerceAccessError) {
+    return NextResponse.json(
+      {
+        error:
+          'The selected items cannot currently be supplied to this destination. Refresh the order and review its items and shipping address.',
+        code: 'ORDER_ACTION_CONFLICT',
+      },
+      { status: 409 },
+    );
+  }
   if (error instanceof FulfillmentIntegrationError) {
     return NextResponse.json(
       {

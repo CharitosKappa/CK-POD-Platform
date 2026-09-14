@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
 import {
   OrderAdminActionAccessError,
+  OrderAdminActionConflictError,
   OrderAdminActionValidationError,
   type AdminStaffSession,
+  type OrderDetailService,
 } from '@let-it-be/domain';
+import { handleOrderActionRouteError } from '../../../../../../lib/http';
 import { decodeOrderNumberRouteParam } from '../../../../../../lib/order-number-route';
 import { requireAdminSession } from '../../../../../../lib/platform';
 
@@ -84,4 +87,35 @@ export async function actionRequest(request: Request, context: ActionContext) {
 }
 export function actionResult(result: unknown, status = 200) {
   return NextResponse.json({ result }, { status });
+}
+
+/** Reload only public action state after the write-side lock detects a stale modal. */
+export async function refreshActionConflict(
+  error: unknown,
+  session: AdminStaffSession,
+  orderNumber: string,
+  detail: Pick<OrderDetailService, 'getOrder'>,
+) {
+  const response = handleOrderActionRouteError(error);
+  if (!(error instanceof OrderAdminActionConflictError)) return response;
+  try {
+    const refreshed = await detail.getOrder(session, orderNumber);
+    if (refreshed?.eligibility) {
+      const payload = (await response.json()) as Record<string, unknown>;
+      return NextResponse.json(
+        {
+          ...payload,
+          eligibility: refreshed.eligibility,
+          returnableItems: refreshed.returnableItems,
+          returns: refreshed.returns,
+          refundableCents: refreshed.refundableCents,
+          amountDueCents: refreshed.amountDueCents,
+        },
+        { status: 409 },
+      );
+    }
+  } catch {
+    // Keep the authoritative conflict if the independent refresh cannot be loaded.
+  }
+  return response;
 }

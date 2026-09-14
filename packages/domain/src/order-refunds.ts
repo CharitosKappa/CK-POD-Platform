@@ -249,6 +249,22 @@ export class OrderRefundService {
     private readonly analytics?: RefundAnalytics,
   ) {}
 
+  /** Read an already-reserved staff refund after a transport/finalization error; never retry payment. */
+  async recoverRefundResult(
+    actor: Extract<RefundActor, { type: 'STAFF' }>,
+    input: RefundOrderInput,
+  ): Promise<RefundOrderResult | null> {
+    this.validate(actor, input);
+    if (actor.type !== 'STAFF') throw new Error('Operations access is restricted.');
+    const found = await this.pool.query<RefundRow>(
+      `SELECT refund.* FROM app.order_refunds refund
+       JOIN app.orders orders ON orders.id=refund.order_id
+       WHERE orders.order_number=$1 AND refund.idempotency_key=$2`,
+      [input.orderNumber, input.idempotencyKey],
+    );
+    return found.rows[0] ? result(found.rows[0], true) : null;
+  }
+
   async refundOriginalPayment(
     actor: RefundActor,
     input: RefundOrderInput,

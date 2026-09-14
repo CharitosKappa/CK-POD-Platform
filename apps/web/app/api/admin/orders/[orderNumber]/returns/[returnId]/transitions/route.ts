@@ -8,6 +8,7 @@ import {
   optionalText,
   choice,
   uuid,
+  refreshActionConflict,
 } from '../../../_actions/request';
 export const dynamic = 'force-dynamic';
 export async function POST(
@@ -26,19 +27,22 @@ export async function POST(
     const carrier = optionalText(body.carrier, 'carrier', 120);
     const trackingNumber = optionalText(body.trackingNumber, 'tracking number', 200);
     const note = optionalText(body.note, 'internal note');
-    return actionResult(
-      await (
-        await orderAdminActionsRuntime()
-      ).actions.transitionReturn(session, {
-        orderNumber,
-        idempotencyKey,
-        returnId,
-        toState: choice(body.toState, returnStates),
-        ...(carrier === undefined ? {} : { carrier }),
-        ...(trackingNumber === undefined ? {} : { trackingNumber }),
-        ...(note === undefined ? {} : { note }),
-      }),
-    );
+    const runtime = await orderAdminActionsRuntime();
+    try {
+      return actionResult(
+        await runtime.actions.transitionReturn(session, {
+          orderNumber,
+          idempotencyKey,
+          returnId,
+          toState: choice(body.toState, returnStates),
+          ...(carrier === undefined ? {} : { carrier }),
+          ...(trackingNumber === undefined ? {} : { trackingNumber }),
+          ...(note === undefined ? {} : { note }),
+        }),
+      );
+    } catch (error) {
+      return refreshActionConflict(error, session, orderNumber, runtime.detail);
+    }
   } catch (error) {
     return handleRouteError(error);
   }

@@ -20,6 +20,7 @@ const doubles = vi.hoisted(() => ({
   transitionReturn: vi.fn(),
   refundOriginalPayment: vi.fn(),
   refundToStoreCredit: vi.fn(),
+  recoverRefundResult: vi.fn(),
   getOrder: vi.fn(),
 }));
 export { doubles };
