@@ -3681,6 +3681,11 @@ select:focus-visible {
 }
 
 .order-printing-modal {
+  --printing-modal-title-size: 1.125rem;
+  --printing-modal-heading-size: 0.9375rem;
+  --printing-modal-body-size: 0.875rem;
+  --printing-modal-meta-size: 0.75rem;
+  --printing-modal-control-size: 0.8125rem;
   display: flex;
   width: min(760px, 100%);
   max-height: min(820px, calc(100vh - 48px));
@@ -3708,14 +3713,14 @@ select:focus-visible {
 .order-printing-modal > header p {
   margin: 0 0 3px;
   color: #878a82;
-  font-size: 0.56rem;
+  font-size: var(--printing-modal-meta-size);
   font-weight: 750;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 .order-printing-modal > header h2 {
   margin: 0;
-  font-size: 0.94rem;
+  font-size: var(--printing-modal-title-size);
 }
 .order-printing-modal > header button {
   display: grid;
@@ -3759,17 +3764,17 @@ select:focus-visible {
 }
 .order-modal-status-panel small {
   color: #777a72;
-  font-size: 0.58rem;
+  font-size: var(--printing-modal-meta-size);
 }
 .order-modal-status-panel strong {
-  font-size: 0.67rem;
+  font-size: var(--printing-modal-body-size);
 }
 .order-modal-status-panel em {
   border-radius: 999px;
   padding: 2px 6px;
   background: #f5dfd9;
   color: #7e382c;
-  font-size: 0.54rem;
+  font-size: var(--printing-modal-meta-size);
   font-style: normal;
   font-weight: 700;
 }
@@ -3782,7 +3787,7 @@ select:focus-visible {
 }
 .order-modal-section h3 {
   margin: 0 0 12px;
-  font-size: 0.72rem;
+  font-size: var(--printing-modal-heading-size);
 }
 .order-modal-section-title {
   display: flex;
@@ -3795,7 +3800,7 @@ select:focus-visible {
   padding: 4px 8px;
   background: #f4e4df;
   color: #803e31;
-  font-size: 0.57rem;
+  font-size: var(--printing-modal-meta-size);
   font-weight: 720;
 }
 .order-readiness.is-ready {
@@ -3806,12 +3811,12 @@ select:focus-visible {
   margin: 0 0 12px;
   padding-left: 18px;
   color: #7e382c;
-  font-size: 0.64rem;
+  font-size: var(--printing-modal-body-size);
 }
-.order-muted {
+.order-printing-modal .order-muted {
   margin: 0;
   color: #7a7d75;
-  font-size: 0.64rem;
+  font-size: var(--printing-modal-body-size);
 }
 .order-modal-items {
   overflow: hidden;
@@ -3835,18 +3840,21 @@ select:focus-visible {
 .order-modal-items strong,
 .order-modal-items small {
   display: block;
-  font-size: 0.62rem;
+}
+.order-modal-items strong {
+  font-size: var(--printing-modal-body-size);
 }
 .order-modal-items small {
   margin-top: 3px;
   color: #7d8078;
+  font-size: var(--printing-modal-meta-size);
 }
 .order-modal-items > div > span {
   border-radius: 999px;
   padding: 3px 6px;
   background: #edece7;
   color: #60635b;
-  font-size: 0.54rem;
+  font-size: var(--printing-modal-meta-size);
   white-space: nowrap;
 }
 .order-economics {
@@ -3865,11 +3873,11 @@ select:focus-visible {
 }
 .order-economics dt {
   color: #7c7f77;
-  font-size: 0.56rem;
+  font-size: var(--printing-modal-meta-size);
 }
 .order-economics dd {
   margin: 5px 0 0;
-  font-size: 0.67rem;
+  font-size: var(--printing-modal-body-size);
   font-variant-numeric: tabular-nums;
 }
 .order-provider-events > div {
@@ -3891,15 +3899,18 @@ select:focus-visible {
 .order-provider-events strong,
 .order-provider-events small {
   display: block;
-  font-size: 0.6rem;
+}
+.order-provider-events strong {
+  font-size: var(--printing-modal-body-size);
 }
 .order-provider-events small {
   margin-top: 3px;
   color: #82857d;
+  font-size: var(--printing-modal-meta-size);
 }
 .order-provider-events time {
   color: #858880;
-  font-size: 0.55rem;
+  font-size: var(--printing-modal-meta-size);
   white-space: nowrap;
 }
 .order-printing-modal > footer {
@@ -3908,14 +3919,14 @@ select:focus-visible {
 }
 .order-printing-modal > footer > span {
   color: #80837b;
-  font-size: 0.56rem;
+  font-size: var(--printing-modal-meta-size);
 }
 .order-printing-modal > footer > div {
   display: flex;
   gap: 7px;
 }
 .order-printing-modal > footer button,
-.order-modal-error button {
+.order-printing-modal .order-modal-error button {
   min-height: 31px;
   border: 1px solid #36573c;
   border-radius: 7px;
@@ -3924,7 +3935,7 @@ select:focus-visible {
   color: #fff;
   cursor: pointer;
   font: inherit;
-  font-size: 0.63rem;
+  font-size: var(--printing-modal-control-size);
   font-weight: 720;
 }
 .order-printing-modal > footer button.is-secondary {
@@ -3957,16 +3968,19 @@ select:focus-visible {
 .order-modal-error p {
   margin: 0;
   color: #72756d;
-  font-size: 0.67rem;
+  font-size: var(--printing-modal-body-size);
 }
-.order-modal-action-error {
+.order-printing-modal .order-modal-action-error {
   margin: 12px 18px 0;
   border: 1px solid #e9c4bb;
   border-radius: 8px;
   padding: 9px 11px;
   background: #fbefeb;
   color: #813e31;
-  font-size: 0.62rem;
+  font-size: var(--printing-modal-meta-size);
+}
+.order-printing-modal .order-layer-badge {
+  font-size: var(--printing-modal-meta-size);
 }
 @keyframes order-spin {
   to {
