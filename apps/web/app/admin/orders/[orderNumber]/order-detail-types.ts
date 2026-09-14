@@ -65,6 +65,7 @@ export interface OrderNote {
 
 export interface OrderDetail {
   eligibility: AdminOrderDetail['eligibility'];
+  actionRecovery: AdminOrderDetail['actionRecovery'];
   archived: boolean;
   archivedAt: string | null;
   archivedByStaffMemberId: string | null;

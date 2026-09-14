@@ -169,7 +169,6 @@ export function OrderTimelineDetails({
     quantity: 'Quantity',
     failureReason: 'Outcome',
     status: 'Status',
-    result: 'Result',
   };
   for (const [key, label] of Object.entries(labels)) {
     const value = details[key];

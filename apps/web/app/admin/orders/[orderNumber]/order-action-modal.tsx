@@ -24,7 +24,6 @@ export function useOrderAction(
 ) {
   const [order, setOrder] = useState(props.order);
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<OrderActionOutcome>();
   const [error, setError] = useState<string>();
   const callbacks = useRef(props);
   callbacks.current = props;
@@ -34,16 +33,17 @@ export function useOrderAction(
     method,
     onSaved: () => callbacks.current.onSaved(),
   });
-  const submitted = useRef<unknown>(undefined);
+  const [outcome, setOutcome] = useState<OrderActionOutcome | undefined>(
+    () => session.current?.snapshot()?.outcome,
+  );
   const locked = !!outcome && outcome.kind !== 'error';
 
-  async function submit(body: unknown) {
+  async function submit(body: unknown, resume = false) {
     if (busy) return;
     setError(undefined);
     setBusy(true);
-    submitted.current = body;
     try {
-      const result = await session.current!.submit(body);
+      const result = await (resume ? session.current!.resume() : session.current!.submit(body));
       setOutcome(result);
       if (result.current) setOrder((current) => ({ ...current, ...result.current }));
       if (result.kind === 'success' && !result.refreshFailed) callbacks.current.onClose();
@@ -70,10 +70,85 @@ export function useOrderAction(
     error,
     setError,
     locked,
-    allowed: order.eligibility.actions[action],
+    allowed:
+      action === 'recoverCancellation'
+        ? !!order.actionRecovery?.cancellation
+        : order.eligibility.actions[action],
     submit,
-    checkStatus: () => submit(submitted.current),
+    recordedBody: session.current.snapshot()?.body,
+    checkStatus: () => submit(undefined, true),
   };
+}
+
+export function RecordedOrderActionModal(
+  props: OrderActionModalProps & {
+    actionName: OrderActionName;
+    resource: string;
+    method?: 'POST' | 'DELETE';
+  },
+) {
+  const action = useOrderAction(props, props.actionName, props.resource, props.method);
+  const recovery = action.order.actionRecovery?.cancellation;
+  const canRetry =
+    recovery &&
+    action.outcome?.kind === 'incomplete' &&
+    ['PARTIAL', 'FAILED'].includes(recovery.status);
+  return (
+    <OrderActionModal
+      title="Review recorded request"
+      onClose={props.onClose}
+      busy={action.busy}
+      footer={
+        <>
+          <button
+            className="order-action-button"
+            type="button"
+            onClick={props.onClose}
+            disabled={action.busy}
+          >
+            Close
+          </button>
+          {action.order.actionRecovery?.canResume && action.outcome?.kind !== 'success' ? (
+            <button
+              className="order-action-button is-primary"
+              type="button"
+              disabled={action.busy}
+              onClick={() => void action.checkStatus()}
+            >
+              {action.busy ? 'Checking…' : 'Check recorded request'}
+            </button>
+          ) : null}
+        </>
+      }
+    >
+      <p className="order-action-hint">
+        A request from this tab has not been fully confirmed. Its original details and request
+        identity were saved, so checking it cannot create a second copy of the action.
+      </p>
+      {typeof action.recordedBody?.amountCents === 'number' ? (
+        <p>
+          Requested refund:{' '}
+          <strong>
+            {new Intl.NumberFormat('en-US', {
+              style: 'currency',
+              currency: props.order.financials.currency,
+            }).format(action.recordedBody.amountCents / 100)}
+          </strong>
+        </p>
+      ) : null}
+      <ActionFeedback outcome={action.outcome} error={action.error} />
+      {canRetry && (props.actionName === 'cancel' || props.actionName === 'recoverCancellation') ? (
+        <button
+          type="button"
+          className="order-action-button"
+          disabled={action.busy}
+          onClick={() => void action.submit({ cancellationId: recovery.cancellationId })}
+        >
+          Retry unresolved cancellation groups
+        </button>
+      ) : null}
+    </OrderActionModal>
+  );
 }
 
 export function OrderActionModal({

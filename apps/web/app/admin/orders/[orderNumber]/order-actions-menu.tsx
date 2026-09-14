@@ -3,9 +3,17 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { adminApiFetch } from '../../../../lib/admin-api';
 import type { OrderDetail } from './order-detail-types';
-import type { OrderActionName } from './order-action-client';
-import { OrderActionModal, type OrderActionModalProps } from './order-action-modal';
-import { CancelOrderModal } from './cancel-order-modal';
+import {
+  hasOrderActionJournal,
+  orderActionPath,
+  type OrderActionName,
+} from './order-action-client';
+import {
+  OrderActionModal,
+  RecordedOrderActionModal,
+  type OrderActionModalProps,
+} from './order-action-modal';
+import { CancelOrderModal, CancellationRecoveryModal } from './cancel-order-modal';
 import { RefundOrderModal } from './refund-order-modal';
 import { ReturnOrderModal } from './return-order-modal';
 import { EditOrderModal } from './edit-order-modal';
@@ -18,25 +26,46 @@ const labels: Record<OrderActionName, string> = {
   return: 'Create return',
   archive: 'Archive order',
   unarchive: 'Unarchive order',
+  recoverCancellation: 'Review cancellation',
 };
-export function orderActionOptions(eligibility: OrderDetail['eligibility']) {
-  return (Object.keys(labels) as OrderActionName[])
-    .filter((action) => eligibility.actions[action])
-    .map((action) => ({ action, label: labels[action] }));
+export function orderActionOptions(
+  eligibility: OrderDetail['eligibility'],
+  recovery?: OrderDetail['actionRecovery'],
+  pending: OrderActionName[] = [],
+) {
+  const options = (['edit', 'cancel', 'refund', 'return', 'archive', 'unarchive'] as const)
+    .filter(
+      (action) => eligibility.actions[action] || (recovery?.canResume && pending.includes(action)),
+    )
+    .filter((action) => action !== 'cancel' || !recovery?.cancellation)
+    .map((action): { action: OrderActionName; label: string } => ({
+      action,
+      label:
+        recovery?.canResume && pending.includes(action)
+          ? `Check ${action === 'cancel' ? 'cancellation' : action} request`
+          : labels[action],
+    }));
+  if (recovery?.cancellation)
+    options.push({ action: 'recoverCancellation', label: labels.recoverCancellation });
+  return options;
 }
 
 export function OrderActionsMenu({
   eligibility,
   onSelect,
+  recovery,
+  pending,
 }: Readonly<{
   eligibility: OrderDetail['eligibility'];
   onSelect: (action: OrderActionName) => void;
+  recovery?: OrderDetail['actionRecovery'];
+  pending?: OrderActionName[];
 }>) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menuId = useId();
-  const options = orderActionOptions(eligibility);
+  const options = orderActionOptions(eligibility, recovery, pending);
   useEffect(() => {
     if (!open) return;
     root.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
@@ -150,9 +179,33 @@ export function OrderActionHost(props: OrderActionModalProps & { action: OrderAc
     return: ReturnOrderModal,
     archive: ArchiveOrderModal,
     unarchive: ArchiveOrderModal,
+    recoverCancellation: CancellationRecoveryModal,
   };
   const Component = components[props.action];
-  if (fresh && fresh.eligibility.actions[props.action])
+  const resource = orderActionPath(props.apiBase, props.order.orderNumber, props.action)
+    .split('/')
+    .at(-1)!;
+  const method = props.action === 'unarchive' ? 'DELETE' : 'POST';
+  if (
+    fresh?.actionRecovery?.canResume &&
+    hasOrderActionJournal(orderActionPath(props.apiBase, fresh.orderNumber, props.action), method)
+  ) {
+    return (
+      <RecordedOrderActionModal
+        {...props}
+        order={fresh}
+        actionName={props.action}
+        resource={resource}
+        method={method}
+      />
+    );
+  }
+  if (
+    fresh &&
+    (props.action === 'recoverCancellation'
+      ? fresh.actionRecovery?.cancellation
+      : fresh.eligibility.actions[props.action])
+  )
     return <Component {...props} order={fresh} />;
   return (
     <OrderActionModal

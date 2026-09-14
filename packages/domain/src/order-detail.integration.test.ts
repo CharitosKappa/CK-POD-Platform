@@ -284,6 +284,32 @@ suite('order detail persistence integration', () => {
     });
   });
 
+  it.each(['REQUESTED', 'PROCESSING', 'PARTIAL', 'FAILED'])(
+    'offers persisted %s cancellation recovery after production evidence blocks a new cancellation',
+    async (status) => {
+      const order = await fixture();
+      const cancellation = (
+        await pool.query<{ id: string }>(
+          `INSERT INTO app.order_cancellations (order_id,status,refund_destination,reason_code,initiated_by_staff_member_id,idempotency_key) VALUES ($1,$4,'LATER','CUSTOMER_REQUEST',$2,$3) RETURNING id`,
+          [order.id, staff.staffMemberId, randomUUID(), status],
+        )
+      ).rows[0]!;
+      await pool.query(
+        "UPDATE app.order_fulfillment_groups SET printing_status='IN_PRODUCTION' WHERE order_id=$1",
+        [order.id],
+      );
+      const service = new OrderDetailService(pool);
+      const detail = await service.getOrder(staff, order.orderNumber);
+      expect(detail!.eligibility.actions.cancel).toBe(false);
+      expect(detail!.actionRecovery).toEqual({
+        canResume: true,
+        cancellation: { cancellationId: cancellation.id, status },
+      });
+      const readonly = await service.getOrder({ ...staff, role: 'READ_ONLY' }, order.orderNumber);
+      expect(readonly!.actionRecovery).toEqual({ canResume: false, cancellation: null });
+    },
+  );
+
   it('includes action history with actors/details, stable ten-entry pagination and totals beyond the last page', async () => {
     const order = await fixture();
     const returned = (

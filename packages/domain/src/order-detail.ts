@@ -128,6 +128,10 @@ export interface AdminOrderNote {
 
 export interface AdminOrderDetail {
   eligibility: OrderActionEligibility;
+  actionRecovery: {
+    canResume: boolean;
+    cancellation: { cancellationId: string; status: CancellationStatus } | null;
+  };
   archived: boolean;
   archivedAt: Date | null;
   archivedByStaffMemberId: string | null;
@@ -477,16 +481,30 @@ export class OrderDetailService {
       eligibility.editFields.pricing = false;
       eligibility.editFields.shippingAddress = false;
     }
+    const cancellation = cancellationRows.rows[0] ?? null;
+    const canResume = session.role === 'OWNER' || session.role === 'OPERATIONS';
+    // A recorded cancellation can be recovered even when new production evidence
+    // forbids initiating cancellation. The write-side retry still rechecks each group.
+    if (cancellation) eligibility.actions.cancel = false;
     return {
       ...balances,
       eligibility,
+      actionRecovery: {
+        canResume,
+        cancellation:
+          canResume &&
+          cancellation &&
+          ['REQUESTED', 'PROCESSING', 'PARTIAL', 'FAILED'].includes(cancellation.status)
+            ? { cancellationId: cancellation.id, status: cancellation.status }
+            : null,
+      },
       archived: order.archived_at !== null,
       archivedAt: order.archived_at,
       archivedByStaffMemberId: order.archived_by_staff_member_id,
       archivedByName: order.archived_by_name,
       returns: returnRows.rows,
       returnableItems: returnableRows.rows,
-      cancellation: cancellationRows.rows[0] ?? null,
+      cancellation,
       orderNumber: order.order_number,
       createdAt: order.created_at,
       salesChannel:

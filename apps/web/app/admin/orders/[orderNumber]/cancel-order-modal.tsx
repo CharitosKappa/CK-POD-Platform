@@ -21,13 +21,8 @@ export function CancelOrderModal(props: OrderActionModalProps) {
   const [notify, setNotify] = useState(true);
   const [recover, setRecover] = useState(false);
   const form = useId();
-  const resultId = action.outcome?.result?.cancellationId;
-  const cancellationId = typeof resultId === 'string' ? resultId : action.order.cancellation?.id;
-  if (recover && cancellationId)
-    return <CancellationRecovery {...props} cancellationId={cancellationId} />;
-  const existing = props.order.cancellation;
-  if (existing && existing.status !== 'SUCCEEDED')
-    return <CancellationRecovery {...props} cancellationId={existing.id} />;
+  if (recover && action.order.actionRecovery?.cancellation)
+    return <CancellationRecoveryModal {...props} order={action.order} />;
   return (
     <OrderActionModal
       title={`Cancel order ${props.order.orderNumber}?`}
@@ -124,8 +119,13 @@ export function CancelOrderModal(props: OrderActionModalProps) {
         </p>
       ) : null}
       <ActionFeedback outcome={action.outcome} error={action.error} />
-      {action.outcome?.kind === 'incomplete' && cancellationId ? (
-        <button type="button" className="order-action-button" onClick={() => setRecover(true)}>
+      {action.outcome?.kind === 'incomplete' && action.order.actionRecovery?.cancellation ? (
+        <button
+          type="button"
+          className="order-action-button"
+          disabled={action.busy}
+          onClick={() => setRecover(true)}
+        >
           Review cancellation recovery
         </button>
       ) : null}
@@ -133,8 +133,8 @@ export function CancelOrderModal(props: OrderActionModalProps) {
   );
 }
 
-function CancellationRecovery(props: OrderActionModalProps & { cancellationId: string }) {
-  const action = useOrderAction(props, 'cancel', 'cancellations');
+export function CancellationRecoveryModal(props: OrderActionModalProps) {
+  const action = useOrderAction(props, 'recoverCancellation', 'cancellations');
   const form = useId();
   const cancellation = action.order.cancellation;
   return (
@@ -152,7 +152,7 @@ function CancellationRecovery(props: OrderActionModalProps & { cancellationId: s
           >
             Close
           </button>
-          {action.order.eligibility.actions.edit && action.outcome?.kind !== 'success' ? (
+          {action.allowed && action.outcome?.kind !== 'success' ? (
             <button
               className="order-action-button is-primary"
               form={form}
@@ -169,7 +169,10 @@ function CancellationRecovery(props: OrderActionModalProps & { cancellationId: s
         id={form}
         onSubmit={(event) => {
           event.preventDefault();
-          void action.submit({ cancellationId: props.cancellationId });
+          if (action.order.actionRecovery?.cancellation)
+            void action.submit({
+              cancellationId: action.order.actionRecovery.cancellation.cancellationId,
+            });
         }}
       />
       <p className="order-action-hint">

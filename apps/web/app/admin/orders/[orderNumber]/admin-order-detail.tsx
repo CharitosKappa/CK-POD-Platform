@@ -14,7 +14,7 @@ import { OrderPrintingSummary } from './order-printing-summary';
 import { OrderStatusBadges } from './order-status-badges';
 import { OrderTimeline } from './order-timeline';
 import { OrderActionsMenu, OrderActionHost } from './order-actions-menu';
-import type { OrderActionName } from './order-action-client';
+import { pendingOrderActions, type OrderActionName } from './order-action-client';
 
 export function AdminOrderDetail({
   orderNumber,
@@ -32,6 +32,7 @@ export function AdminOrderDetail({
   const [printingGroupId, setPrintingGroupId] = useState<string>();
   const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [activeAction, setActiveAction] = useState<OrderActionName>();
+  const [pendingActions, setPendingActions] = useState<OrderActionName[]>([]);
   const actionTrigger = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
@@ -40,6 +41,7 @@ export function AdminOrderDetail({
     if (!response.ok || !payload.order)
       throw new Error(payload.error ?? 'Could not load this order.');
     setOrder(payload.order);
+    setPendingActions(pendingOrderActions(apiBase, orderNumber));
   }, [apiBase, orderNumber]);
 
   useEffect(() => {
@@ -149,7 +151,12 @@ export function AdminOrderDetail({
                 {order.archived ? <span className="order-layer-badge">Archived</span> : null}
               </div>
             </div>
-            <OrderActionsMenu eligibility={order.eligibility} onSelect={openAction} />
+            <OrderActionsMenu
+              eligibility={order.eligibility}
+              recovery={order.actionRecovery}
+              pending={pendingActions}
+              onSelect={openAction}
+            />
           </header>
 
           <div className="order-detail-grid">
@@ -208,11 +215,11 @@ export function AdminOrderDetail({
                       <strong>Cancellation {order.cancellation.status.toLowerCase()}</strong>
                       <p>Review the timeline for provider outcomes and unresolved work.</p>
                     </div>
-                    {order.eligibility.actions.cancel ? (
+                    {order.actionRecovery?.cancellation ? (
                       <button
                         className="order-action-button"
                         type="button"
-                        onClick={() => openAction('cancel')}
+                        onClick={() => openAction('recoverCancellation')}
                       >
                         Review cancellation
                       </button>

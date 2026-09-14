@@ -1,13 +1,18 @@
 import React, { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OrderActionsMenu, orderActionOptions } from './order-actions-menu';
 import { createOrderActionSession, centsFromInput } from './order-action-client';
-import { CancelOrderModal } from './cancel-order-modal';
+import { CancelOrderModal, CancellationRecoveryModal } from './cancel-order-modal';
 import { RefundOrderModal } from './refund-order-modal';
 import { ReturnOrderModal } from './return-order-modal';
-import { EditOrderModal, buildEditPayload, editDraftFrom } from './edit-order-modal';
+import {
+  EditOrderModal,
+  buildEditPayload,
+  editDraftFrom,
+  rebaseEditDraft,
+} from './edit-order-modal';
 import { ArchiveOrderModal } from './archive-order-modal';
 import { OrderPaymentSummary } from './order-payment-summary';
 import { OrderDetailSidebar } from './order-detail-sidebar';
@@ -15,6 +20,7 @@ import { OrderTimelineDetails } from './order-timeline';
 import type { OrderDetail } from './order-detail-types';
 
 const order: OrderDetail = {
+  actionRecovery: { canResume: true, cancellation: null },
   orderNumber: '#42',
   createdAt: '2026-09-14T12:00:00Z',
   salesChannel: 'Online Store',
@@ -135,9 +141,85 @@ const props = {
 };
 const markup = <P extends object>(component: React.ComponentType<P>, values: P) =>
   renderToStaticMarkup(createElement(component, values));
+beforeEach(() => {
+  const values = new Map<string, string>();
+  vi.stubGlobal('sessionStorage', {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  });
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe('order action surfaces', () => {
+  it('keeps another admin email change out of a local phone/quantity retry', () => {
+    const local = editDraftFrom(order);
+    local.phone = '+1 415 555 1000';
+    local.items[0]!.quantity = '2';
+    const fresh = { ...order, customer: { ...order.customer, email: 'other-admin@example.test' } };
+    const rebased = rebaseEditDraft(order, local, fresh);
+    expect(rebased.email).toBe('other-admin@example.test');
+    expect(rebased.phone).toBe('+1 415 555 1000');
+    expect(buildEditPayload(fresh, local, order)).toEqual({
+      reasonCode: 'STAFF_EDIT',
+      note: '',
+      customerPhone: '+1 415 555 1000',
+      items: [{ orderItemId: 'item-1', productVariantId: 'variant-black-M', quantity: 2 }],
+    });
+  });
+  it('exposes server-authorized recovery without exposing a new cancellation', () => {
+    const eligibility = {
+      ...order.eligibility,
+      actions: { ...order.eligibility.actions, cancel: false },
+    };
+    const recovery = {
+      canResume: true,
+      cancellation: { cancellationId: 'cancel-1', status: 'PARTIAL' as const },
+    };
+    const options = orderActionOptions(eligibility, recovery);
+    expect(options.some((option) => option.action === 'cancel')).toBe(false);
+    expect(options).toContainEqual({ action: 'recoverCancellation', label: 'Review cancellation' });
+    const html = markup(CancellationRecoveryModal, {
+      ...props,
+      order: { ...order, eligibility, actionRecovery: recovery },
+    });
+    expect(html).toContain('Check / retry unresolved groups');
+    expect(html).not.toContain('Refund payments');
+    expect(html).not.toContain('Reason for cancellation');
+  });
+  it('allows only recorded request recovery at zero refundable balance and none for read-only staff', () => {
+    const eligibility = {
+      ...order.eligibility,
+      actions: {
+        edit: false,
+        cancel: false,
+        refund: false,
+        return: false,
+        archive: false,
+        unarchive: false,
+      },
+    };
+    expect(
+      orderActionOptions(eligibility, { canResume: true, cancellation: null }, ['refund']),
+    ).toEqual([{ action: 'refund', label: 'Check refund request' }]);
+    expect(
+      orderActionOptions(eligibility, { canResume: false, cancellation: null }, ['refund']),
+    ).toEqual([]);
+  });
+  it('omits generic structured timeline results containing internal action payloads', () => {
+    const html = markup(OrderTimelineDetails, {
+      details: {
+        reasonCode: 'CUSTOMER_REQUEST',
+        result: JSON.stringify({
+          refundId: 'internal-refund-id',
+          eligibility: { actions: { cancel: true } },
+        }),
+      },
+    });
+    expect(html).not.toContain('internal-refund-id');
+    expect(html).not.toContain('eligibility');
+    expect(html).toContain('customer request');
+  });
   it('uses only server permissions even when status labels suggest another action', () => {
     expect(orderActionOptions(order.eligibility).map((item) => item.action)).toEqual([
       'edit',
