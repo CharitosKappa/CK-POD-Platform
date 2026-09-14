@@ -2313,9 +2313,11 @@ select:focus-visible {
 
 /* Shared readability scale for admin content. The fixed sidebar intentionally keeps its own type. */
 .commerce-admin-main {
-  --admin-body-size: 0.875rem;
-  --admin-helper-size: 0.75rem;
-  --admin-control-size: 0.875rem;
+  --admin-body-size: 0.9375rem;
+  --admin-helper-size: 0.8125rem;
+  --admin-control-size: 0.9375rem;
+  --admin-compact-size: 0.75rem;
+  --admin-section-heading-size: 1rem;
   font-size: var(--admin-body-size);
   line-height: 1.45;
 }

@@ -7,7 +7,7 @@ const styles = readFileSync(new URL('../globals.css', import.meta.url), 'utf8');
 describe('admin main-body typography and feedback styling', () => {
   it('defines a larger readable type scale only inside the admin main panel', () => {
     expect(styles).toMatch(
-      /\.commerce-admin-main\s*{[^}]*--admin-body-size:\s*0\.875rem;[^}]*--admin-helper-size:\s*0\.75rem;/s,
+      /\.commerce-admin-main\s*{[^}]*--admin-body-size:\s*0\.9375rem;[^}]*--admin-helper-size:\s*0\.8125rem;[^}]*--admin-control-size:\s*0\.9375rem;[^}]*--admin-compact-size:\s*0\.75rem;[^}]*--admin-section-heading-size:\s*1rem;/s,
     );
     expect(styles).toMatch(
       /\.commerce-admin-main \.commerce-admin-table-scroll table,[\s\S]*?\.commerce-admin-main \.customer-directory-table\s*{[^}]*font-size:\s*var\(--admin-body-size\);/,
@@ -16,7 +16,7 @@ describe('admin main-body typography and feedback styling', () => {
       /\.commerce-admin-main :where\(button, input, select, textarea\)\s*{[^}]*font-size:\s*var\(--admin-control-size\);/s,
     );
     expect(styles).not.toMatch(
-      /\.commerce-admin-sidebar[^}]*var\(--admin-(?:body|helper|control)-size\)/s,
+      /\.commerce-admin-sidebar[^}]*var\(--admin-(?:body|helper|control|compact|section-heading)-size\)/s,
     );
   });
 
