@@ -1040,9 +1040,12 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       async (failure) => {
         const f = await fixture();
         const refunds = service();
-        const accepted: string[] = [];
+        const writes: string[] = [];
+        let recoveryReads = 0;
         vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
-          accepted.push(new Headers(init.headers).get('Idempotency-Key')!);
+          if (init.method === 'POST')
+            writes.push(new Headers(init.headers).get('Idempotency-Key')!);
+          else recoveryReads += 1;
           if (failure === 'lost-response') throw new Error('secret provider response lost');
           return new Response(
             JSON.stringify({ error: { type: 'api_error', message: 'secret upstream failure' } }),
@@ -1063,7 +1066,8 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         expect((await state(f.id)).refunds).toMatchObject([
           { status: 'PENDING', completed_at: null, amount_cents: f.amount_cents },
         ]);
-        expect(accepted).toEqual([input.idempotencyKey]);
+        expect(writes).toEqual([input.idempotencyKey]);
+        expect(recoveryReads).toBe(1);
       },
     );
 
