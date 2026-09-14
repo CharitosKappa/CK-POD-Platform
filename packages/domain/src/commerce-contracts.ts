@@ -14,8 +14,17 @@ export interface BillingAddress {
   countryCode: string;
 }
 
+export type PaymentIntentReference =
+  | { kind: 'CHECKOUT'; checkoutAttemptId: string }
+  | {
+      kind: 'ORDER_EDIT';
+      orderId: string;
+      orderRevisionId: string;
+      orderEditPaymentAttemptId: string;
+    };
+
 export interface PaymentIntentRequest {
-  checkoutAttemptId: string;
+  reference: PaymentIntentReference;
   amountCents: number;
   currency: 'USD';
   idempotencyKey: string;

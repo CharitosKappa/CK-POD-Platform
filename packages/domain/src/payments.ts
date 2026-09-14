@@ -17,10 +17,14 @@ import type {
 /** Deterministic local/CI adapter. Its webhook envelope deliberately mirrors the production boundary. */
 export class FakePaymentService implements PaymentService {
   async createIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult> {
+    const referenceId =
+      input.reference.kind === 'CHECKOUT'
+        ? input.reference.checkoutAttemptId
+        : input.reference.orderEditPaymentAttemptId;
     return {
       provider: 'FAKE',
       providerPaymentId: `fake_pi_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
-      clientSecret: `fake_secret_${input.checkoutAttemptId}`,
+      clientSecret: `fake_secret_${referenceId}`,
       status: 'PENDING',
     };
   }
@@ -41,7 +45,8 @@ export class FakePaymentService implements PaymentService {
       !parsed.id ||
       !outcome ||
       typeof object.id !== 'string' ||
-      typeof object.amount !== 'number'
+      typeof object.amount !== 'number' ||
+      object.currency !== 'usd'
     ) {
       return null;
     }
@@ -52,7 +57,7 @@ export class FakePaymentService implements PaymentService {
       paymentId: object.id,
       outcome,
       amountCents: object.amount,
-      currency: object.currency === 'usd' ? 'USD' : 'USD',
+      currency: 'USD',
       providerFeeCents:
         typeof object.application_fee_amount === 'number' ? object.application_fee_amount : null,
       metadata: paymentMetadata(object, 'card'),
@@ -94,7 +99,7 @@ export class StripePaymentService implements PaymentService {
       currency: 'usd',
       'automatic_payment_methods[enabled]': 'true',
       receipt_email: input.customerEmail,
-      'metadata[checkout_attempt_id]': input.checkoutAttemptId,
+      ...paymentIntentMetadata(input),
     });
     const response = await fetch(`${this.baseUrl}/payment_intents`, {
       method: 'POST',
@@ -133,7 +138,8 @@ export class StripePaymentService implements PaymentService {
       !parsed.type ||
       !outcome ||
       typeof object.id !== 'string' ||
-      typeof object.amount !== 'number'
+      typeof object.amount !== 'number' ||
+      object.currency !== 'usd'
     )
       return null;
     return {
@@ -143,7 +149,7 @@ export class StripePaymentService implements PaymentService {
       paymentId: object.id,
       outcome,
       amountCents: object.amount,
-      currency: object.currency === 'usd' ? 'USD' : 'USD',
+      currency: 'USD',
       providerFeeCents: null,
       metadata: paymentMetadata(object),
     };
@@ -257,6 +263,20 @@ export class StripePaymentService implements PaymentService {
       startingAfter = last.id;
     }
   }
+}
+
+function paymentIntentMetadata(input: PaymentIntentRequest): Record<string, string> {
+  if (input.reference.kind === 'CHECKOUT')
+    return {
+      'metadata[payment_reference_kind]': 'CHECKOUT',
+      'metadata[checkout_attempt_id]': input.reference.checkoutAttemptId,
+    };
+  return {
+    'metadata[payment_reference_kind]': 'ORDER_EDIT',
+    'metadata[order_id]': input.reference.orderId,
+    'metadata[order_revision_id]': input.reference.orderRevisionId,
+    'metadata[order_edit_payment_attempt_id]': input.reference.orderEditPaymentAttemptId,
+  };
 }
 
 function stripeRefundResult(

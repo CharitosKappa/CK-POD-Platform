@@ -71,6 +71,7 @@ export * from './order-detail-contracts';
 export * from './order-admin-actions-contracts';
 export * from './order-admin-actions';
 export * from './order-refunds';
+export * from './order-edit-payments';
 export * from './order-detail';
 export * from './customer-operations';
 export * from './customer-exports';

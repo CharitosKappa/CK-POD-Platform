@@ -56,6 +56,15 @@ describe('required application tables', () => {
     }
   });
 
+  it('includes the separate additional-payment aggregate for upward order edits', async () => {
+    expect(requiredApplicationTables).toContain('order_edit_payment_attempts');
+    const sql = await readFile(`${migrationsDirectory}/0050_order_edit_payments.sql`, 'utf8');
+    expect(sql).toContain('CREATE TABLE app.order_edit_payment_attempts');
+    expect(sql).toContain('idempotency_key text NOT NULL UNIQUE');
+    expect(sql).toContain("WHERE status IN ('PREPARING','PENDING')");
+    expect(sql).toContain('order_revision_id uuid NOT NULL');
+  });
+
   it('enforces the order admin action migration contracts', async () => {
     const sql = await readFile(`${migrationsDirectory}/0049_order_admin_actions.sql`, 'utf8');
 

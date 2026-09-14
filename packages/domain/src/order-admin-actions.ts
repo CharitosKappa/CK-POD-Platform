@@ -274,6 +274,7 @@ export class OrderAdminActionsService {
           `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN')))
           UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
           UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
+          UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND status IN ('PREPARING','PENDING')
           UNION ALL SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED') LIMIT 1`,
           [locked.id],
         );
@@ -1521,6 +1522,7 @@ export class OrderAdminActionsService {
     const blocked = await client.query(
       `SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
       UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
+      UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND status IN ('PREPARING','PENDING')
       UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
        UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN'))) LIMIT 1`,
       [order.id],

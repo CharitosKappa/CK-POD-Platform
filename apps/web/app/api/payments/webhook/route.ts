@@ -1,20 +1,26 @@
 import { NextResponse } from 'next/server';
 
 import { createLogger, parseLogLevel } from '@let-it-be/observability';
-import { commerceRuntime } from '../../../../lib/platform';
+import { commerceRuntime, paymentWebhookRuntime } from '../../../../lib/platform';
 
 export const dynamic = 'force-dynamic';
 
 /** The authoritative payment boundary. It cannot create or submit a fulfillment order. */
 export async function POST(request: Request): Promise<NextResponse> {
   try {
-    const result = await (
-      await commerceRuntime()
-    ).ingestPaymentWebhook({
+    const input = {
       body: await request.text(),
       signature:
         request.headers.get('stripe-signature') ?? request.headers.get('x-fake-payment-signature'),
-    });
+    };
+    const paymentRuntime = paymentWebhookRuntime();
+    const verified = await paymentRuntime.payments.verifyWebhook(input);
+    const result =
+      verified?.metadata.payment_reference_kind === 'ORDER_EDIT'
+        ? await paymentRuntime.editPayments.settle(verified)
+        : await (await commerceRuntime()).ingestPaymentWebhook(input);
+    if ('handled' in result && !result.handled)
+      throw new Error('The additional payment event was not handled.');
     createLogger({ service: 'web', minimumLevel: parseLogLevel(process.env.LOG_LEVEL) }).info(
       'payment.webhook_processed',
       {

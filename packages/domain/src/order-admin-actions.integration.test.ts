@@ -343,6 +343,232 @@ suite('order archive transaction integration', () => {
     ).rejects.toThrow(/amount due/i);
   });
 
+  it('collects an upward edit through a separate payment aggregate and leaves explicit resume on hold', async () => {
+    const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+    const before = await snapshot(f.orderId);
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, {
+      ...f.input(),
+      items: [
+        { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-M', quantity: 3 },
+      ],
+    });
+    const payments = new domain.FakePaymentService();
+    const service = new domain.OrderEditPaymentService(actionDatabase.pool, payments);
+    const paymentInput = {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    };
+    const prepared = await service.prepare(staff, paymentInput);
+    expect(prepared).toMatchObject({
+      paymentAttemptId: expect.any(String),
+      orderRevisionId: edit.revisionId,
+      status: 'PENDING',
+      amountCents: edit.amountDueCents,
+      currency: 'USD',
+      clientSecret: expect.any(String),
+      duplicate: false,
+    });
+    expect(await service.reconcile(staff, paymentInput)).toEqual({
+      ...prepared,
+      duplicate: true,
+    });
+    await expect(
+      actions.editOrder(staff, { ...f.input(), shippingCents: 700 }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    const during = await snapshot(f.orderId);
+    const initialPayment = during.payments;
+    const groups = during.groups;
+    const event: domain.VerifiedPaymentEvent = {
+      provider: 'FAKE',
+      providerEventId: `fake_evt_${randomUUID()}`,
+      eventName: 'payment_intent.succeeded',
+      paymentId: `fake_pi_${paymentInput.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
+      outcome: 'SUCCEEDED',
+      amountCents: edit.amountDueCents,
+      currency: 'USD',
+      providerFeeCents: null,
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: f.orderId,
+        order_revision_id: edit.revisionId,
+        order_edit_payment_attempt_id: prepared.paymentAttemptId,
+      },
+    };
+    await expect(service.settle(event)).resolves.toMatchObject({
+      handled: true,
+      duplicate: false,
+      orderNumber: f.orderNumber,
+      status: 'SUCCEEDED',
+    });
+    await expect(service.settle(event)).resolves.toMatchObject({
+      handled: true,
+      duplicate: true,
+      status: 'SUCCEEDED',
+    });
+    const after = await snapshot(f.orderId);
+    expect(after.order).toMatchObject({ status: 'ON_HOLD', amount_due_cents: 0 });
+    expect(after.payments).toEqual(initialPayment);
+    expect(after.payments).toEqual(before.payments);
+    expect(after.groups).toEqual(groups);
+    expect(
+      (
+        await pool.query(
+          'SELECT status,amount_cents,currency,completed_at FROM app.order_edit_payment_attempts WHERE id=$1',
+          [prepared.paymentAttemptId],
+        )
+      ).rows,
+    ).toMatchObject([
+      {
+        status: 'SUCCEEDED',
+        amount_cents: edit.amountDueCents,
+        currency: 'USD',
+        completed_at: expect.any(Date),
+      },
+    ]);
+    expect(
+      (
+        await pool.query(
+          "SELECT action FROM app.order_operational_audits WHERE order_id=$1 AND action='order_additional_payment_succeeded'",
+          [f.orderId],
+        )
+      ).rows,
+    ).toHaveLength(1);
+  });
+
+  it('fails closed on mismatched edit-payment evidence and preserves the initial capture and amount due', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), shippingCents: 900 });
+    const before = await snapshot(f.orderId);
+    const service = new domain.OrderEditPaymentService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const prepared = await service.prepare(staff, {
+      orderNumber: f.orderNumber,
+      orderRevisionId: edit.revisionId,
+      idempotencyKey: `edit-payment-${randomUUID()}`,
+    });
+    const base: domain.VerifiedPaymentEvent = {
+      provider: 'FAKE',
+      providerEventId: `fake_evt_${randomUUID()}`,
+      eventName: 'payment_intent.succeeded',
+      paymentId: (
+        await pool.query<{ provider_payment_id: string }>(
+          'SELECT provider_payment_id FROM app.order_edit_payment_attempts WHERE id=$1',
+          [prepared.paymentAttemptId],
+        )
+      ).rows[0]!.provider_payment_id,
+      outcome: 'SUCCEEDED',
+      amountCents: edit.amountDueCents + 1,
+      currency: 'USD',
+      providerFeeCents: null,
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: f.orderId,
+        order_revision_id: edit.revisionId,
+        order_edit_payment_attempt_id: prepared.paymentAttemptId,
+      },
+    };
+    await expect(service.settle(base)).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    const afterMismatch = await snapshot(f.orderId);
+    expect(afterMismatch.order).toMatchObject({
+      status: 'ON_HOLD',
+      amount_due_cents: edit.amountDueCents,
+    });
+    expect(afterMismatch.payments).toEqual(before.payments);
+    expect(
+      (
+        await pool.query('SELECT status FROM app.order_edit_payment_attempts WHERE id=$1', [
+          prepared.paymentAttemptId,
+        ])
+      ).rows,
+    ).toEqual([{ status: 'PENDING' }]);
+    await expect(
+      service.settle({
+        ...base,
+        providerEventId: `fake_evt_${randomUUID()}`,
+        eventName: 'payment_intent.payment_failed',
+        outcome: 'FAILED',
+        amountCents: edit.amountDueCents,
+      }),
+    ).resolves.toMatchObject({ status: 'FAILED' });
+    expect((await snapshot(f.orderId)).order).toMatchObject({
+      status: 'ON_HOLD',
+      amount_due_cents: edit.amountDueCents,
+    });
+  });
+
+  it('allows only one active additional-payment attempt per edited order', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const edit = await editService().actions.editOrder(staff, {
+      ...f.input(),
+      shippingCents: 1000,
+    });
+    const service = new domain.OrderEditPaymentService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const settled = await Promise.allSettled(
+      [randomUUID(), randomUUID()].map((key) =>
+        service.prepare(staff, {
+          orderNumber: f.orderNumber,
+          orderRevisionId: edit.revisionId,
+          idempotencyKey: `edit-payment-${key}`,
+        }),
+      ),
+    );
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(settled.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(
+      (
+        await pool.query(
+          "SELECT id FROM app.order_edit_payment_attempts WHERE order_id=$1 AND status IN ('PREPARING','PENDING')",
+          [f.orderId],
+        )
+      ).rows,
+    ).toHaveLength(1);
+  });
+
+  it('binds an additional-payment idempotency key to exactly one order', async () => {
+    const [first, second] = await Promise.all([
+      fixture('UNFULFILLED', 'PAID', 'NOT_STARTED'),
+      fixture('UNFULFILLED', 'PAID', 'NOT_STARTED'),
+    ]);
+    const { actions } = editService();
+    const [firstEdit, secondEdit] = await Promise.all([
+      actions.editOrder(staff, { ...first.input(), shippingCents: 1000 }),
+      actions.editOrder(staff, { ...second.input(), shippingCents: 1000 }),
+    ]);
+    const service = new domain.OrderEditPaymentService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const idempotencyKey = `edit-payment-${randomUUID()}`;
+    await service.prepare(staff, {
+      orderNumber: first.orderNumber,
+      orderRevisionId: firstEdit.revisionId,
+      idempotencyKey,
+    });
+    await expect(
+      service.prepare(staff, {
+        orderNumber: second.orderNumber,
+        orderRevisionId: secondEdit.revisionId,
+        idempotencyKey,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    expect(
+      (
+        await pool.query(
+          'SELECT order_id FROM app.order_edit_payment_attempts WHERE idempotency_key=$1',
+          [idempotencyKey],
+        )
+      ).rows,
+    ).toEqual([{ order_id: first.orderId }]);
+  });
+
   it('makes a decrease refundable without moving money and recalculates tax from shipping, not billing', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const before = await snapshot(f.orderId);

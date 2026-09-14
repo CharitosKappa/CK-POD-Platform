@@ -917,7 +917,7 @@ export class CommerceService {
     let intent: PaymentIntentResult;
     try {
       intent = await this.payments.createIntent({
-        checkoutAttemptId: attemptId,
+        reference: { kind: 'CHECKOUT', checkoutAttemptId: attemptId },
         amountCents: pricingWithTax.totalCents,
         currency,
         idempotencyKey: input.idempotencyKey,

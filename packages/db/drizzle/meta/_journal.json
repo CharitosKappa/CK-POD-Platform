@@ -344,6 +344,13 @@
       "when": 1789326000000,
       "tag": "0049_order_admin_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1789327000000,
+      "tag": "0050_order_edit_payments",
+      "breakpoints": true
     }
   ]
 }

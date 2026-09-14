@@ -106,7 +106,7 @@ describe('platform payment and tax adapters', () => {
   it('supports deterministic success, failure, cancellation, pending, and duplicate-safe fake event identifiers', async () => {
     const payments = new FakePaymentService();
     const intent = await payments.createIntent({
-      checkoutAttemptId: 'checkout-1',
+      reference: { kind: 'CHECKOUT', checkoutAttemptId: 'checkout-1' },
       amountCents: 3211,
       currency: 'USD',
       idempotencyKey: 'checkout-idempotency-1',
@@ -140,6 +140,51 @@ describe('platform payment and tax adapters', () => {
       ).resolves.toMatchObject({ outcome, metadata: { paymentMethodType: 'card' } });
     }
     await expect(payments.verifyWebhook({ signature: 'wrong', body: '{}' })).resolves.toBeNull();
+  });
+
+  it('creates provider intents with an explicit server-owned order-edit payment reference', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'pi_order_edit_1',
+          client_secret: 'pi_order_edit_1_secret',
+          status: 'requires_payment_method',
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const payments = new StripePaymentService('fixture', 'fixture');
+    await expect(
+      payments.createIntent({
+        reference: {
+          kind: 'ORDER_EDIT',
+          orderId: '10000000-0000-4000-8000-000000000001',
+          orderRevisionId: '10000000-0000-4000-8000-000000000002',
+          orderEditPaymentAttemptId: '10000000-0000-4000-8000-000000000003',
+        },
+        amountCents: 725,
+        currency: 'USD',
+        idempotencyKey: 'order-edit-payment-001',
+        customerEmail: 'person@example.test',
+        billingAddress: {
+          recipientName: 'Person Example',
+          line1: '1 Example Street',
+          line2: null,
+          city: 'San Francisco',
+          stateCode: 'CA',
+          postalCode: '94107',
+          countryCode: 'US',
+        },
+      }),
+    ).resolves.toMatchObject({ providerPaymentId: 'pi_order_edit_1', status: 'PENDING' });
+    const form = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(Object.fromEntries(form)).toMatchObject({
+      'metadata[payment_reference_kind]': 'ORDER_EDIT',
+      'metadata[order_id]': '10000000-0000-4000-8000-000000000001',
+      'metadata[order_revision_id]': '10000000-0000-4000-8000-000000000002',
+      'metadata[order_edit_payment_attempt_id]': '10000000-0000-4000-8000-000000000003',
+    });
+    expect(Object.fromEntries(form)).not.toHaveProperty('metadata[checkout_attempt_id]');
   });
 
   it('uses integer minor-unit rounding for development tax', async () => {
@@ -187,6 +232,20 @@ describe('platform payment and tax adapters', () => {
       .digest('hex');
     await expect(
       service.verifyWebhook({ body, signature: `t=${staleTimestamp},v1=${staleSignature}` }),
+    ).resolves.toBeNull();
+  });
+
+  it('rejects a signed provider event whose currency is not the platform USD currency', async () => {
+    const payments = new FakePaymentService();
+    await expect(
+      payments.verifyWebhook({
+        signature: 'fake-payment-signature',
+        body: JSON.stringify({
+          id: 'evt_wrong_currency',
+          type: 'payment_intent.succeeded',
+          data: { object: { id: 'pi_1', amount: 700, currency: 'eur' } },
+        }),
+      }),
     ).resolves.toBeNull();
   });
 });

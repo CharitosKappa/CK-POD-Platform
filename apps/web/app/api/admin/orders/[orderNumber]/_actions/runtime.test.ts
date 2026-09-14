@@ -29,6 +29,12 @@ vi.mock('@let-it-be/domain', async (importOriginal) => {
         public payments: unknown,
       ) {}
     },
+    OrderEditPaymentService: class {
+      constructor(
+        public pool: unknown,
+        public payments: unknown,
+      ) {}
+    },
     OrderOperationsService: class {
       constructor(
         public pool: unknown,
@@ -107,6 +113,7 @@ describe('Order action runtime dependencies', () => {
                 };
               };
               refunds: { pool: unknown; payments: unknown };
+              editPayments: { pool: unknown; payments: unknown };
             }>;
           }
         ).orderAdminActionsRuntime();
@@ -115,6 +122,10 @@ describe('Order action runtime dependencies', () => {
         expect(runtime.refunds.payments).toBeInstanceOf(
           live ? StripePaymentService : FakePaymentService,
         );
+        expect(runtime.editPayments).toMatchObject({
+          pool,
+          payments: runtime.refunds.payments,
+        });
         const dependencies = runtime.actions.dependencies;
         expect(dependencies.refunds).toBe(runtime.refunds);
         expect(dependencies.fulfillment).toBe(fulfillment);
@@ -136,6 +147,16 @@ describe('Order action runtime dependencies', () => {
             shopId: 'shop',
           }),
         );
+        const webhook = (
+          platform as unknown as {
+            paymentWebhookRuntime: () => {
+              payments: unknown;
+              editPayments: { pool: unknown; payments: unknown };
+            };
+          }
+        ).paymentWebhookRuntime();
+        expect(webhook.payments).toBeInstanceOf(live ? StripePaymentService : FakePaymentService);
+        expect(webhook.editPayments).toMatchObject({ pool, payments: webhook.payments });
       },
     );
 });

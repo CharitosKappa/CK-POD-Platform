@@ -18,6 +18,7 @@ import {
   OrderOperationsService,
   OrderDetailService,
   OrderAdminActionsService,
+  OrderEditPaymentService,
   OrderRefundService,
   OrderRepricingService,
   CxOperationsService,
@@ -230,7 +231,25 @@ export async function orderAdminActionsRuntime() {
       repricing: new OrderRepricingService(pool, taxes, configuration),
     }),
     refunds,
+    editPayments: new OrderEditPaymentService(pool, payments),
     detail: new OrderDetailService(pool),
+  };
+}
+
+/** Lightweight verified-webhook graph for post-edit payments. */
+export function paymentWebhookRuntime() {
+  const environment = serverEnvironment();
+  const payments =
+    environment.PAYMENT_ADAPTER === 'stripe'
+      ? new StripePaymentService(
+          environment.STRIPE_SECRET_KEY!,
+          environment.STRIPE_WEBHOOK_SECRET!,
+          environment.STRIPE_API_BASE_URL,
+        )
+      : new FakePaymentService();
+  return {
+    payments,
+    editPayments: new OrderEditPaymentService(databasePool(), payments),
   };
 }
 
