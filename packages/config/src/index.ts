@@ -67,6 +67,9 @@ export const serverEnvironmentSchema = z
     S3_ACCESS_KEY_ID: optionalNonEmptyString,
     S3_SECRET_ACCESS_KEY: optionalNonEmptyString,
     QUEUE_DRIVER: queueDriver.default('memory'),
+    OPENAI_API_KEY: optionalNonEmptyString,
+    OPENAI_IMAGE_MODEL: z.literal('gpt-image-2.5-sunburst').default('gpt-image-2.5-sunburst'),
+    OPENAI_API_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
     AI_PROVIDER_CONFIG: z.string().min(2).default(defaultProviderConfiguration),
     AI_GUEST_FREE_CREDITS: positiveInteger.default(5),
     AI_REGISTERED_FREE_CREDITS: positiveInteger.default(5),
@@ -269,7 +272,25 @@ export function operationalCapability(
 export function parseServerEnvironment(
   input: Record<string, string | undefined>,
 ): ServerEnvironment {
-  return serverEnvironmentSchema.parse(input);
+  const environment = serverEnvironmentSchema.parse(input);
+  if (environment.OPENAI_API_KEY && input.AI_PROVIDER_CONFIG === undefined) {
+    environment.AI_PROVIDER_CONFIG = JSON.stringify([
+      {
+        id: 'openai-sunburst',
+        adapter: 'openai-images',
+        enabled: true,
+        tasks: ['TEXT_TO_ARTWORK'],
+        model: environment.OPENAI_IMAGE_MODEL,
+        priority: 1,
+        estimatedCostCents: 0,
+        timeoutMs: 120_000,
+        maxRetries: 1,
+        fallbackEligible: false,
+      },
+      ...JSON.parse(defaultProviderConfiguration),
+    ]);
+  }
+  return environment;
 }
 
 export const defaultAiProviderConfiguration = defaultProviderConfiguration;

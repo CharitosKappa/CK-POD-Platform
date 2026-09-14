@@ -23,6 +23,7 @@ describe('parseServerEnvironment', () => {
     expect(
       parseServerEnvironment({
         ...baseEnvironment,
+        OPENAI_API_KEY: '',
         OTEL_EXPORTER_OTLP_ENDPOINT: '',
         S3_BUCKET: '',
         S3_ENDPOINT: '',
@@ -31,9 +32,77 @@ describe('parseServerEnvironment', () => {
       }),
     ).toMatchObject({
       OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+      OPENAI_API_KEY: undefined,
       S3_BUCKET: undefined,
       S3_ENDPOINT: undefined,
     });
+  });
+
+  it('activates the Sunburst image provider only when a server-side OpenAI key is present', () => {
+    const environment = parseServerEnvironment({
+      ...baseEnvironment,
+      OPENAI_API_KEY: 'server-only-key',
+      OPENAI_IMAGE_MODEL: 'gpt-image-2.5-sunburst',
+    });
+
+    expect(environment.OPENAI_API_KEY).toBe('server-only-key');
+    expect(environment.OPENAI_IMAGE_MODEL).toBe('gpt-image-2.5-sunburst');
+    expect(environment.OPENAI_API_BASE_URL).toBe('https://api.openai.com/v1');
+    expect(JSON.parse(environment.AI_PROVIDER_CONFIG)[0]).toMatchObject({
+      id: 'openai-sunburst',
+      adapter: 'openai-images',
+      enabled: true,
+      tasks: ['TEXT_TO_ARTWORK'],
+      model: 'gpt-image-2.5-sunburst',
+      priority: 1,
+      fallbackEligible: false,
+    });
+  });
+
+  it('preserves an explicit AI provider routing configuration when an OpenAI key is present', () => {
+    const explicit = JSON.stringify([
+      {
+        id: 'explicit-primary',
+        adapter: 'deterministic-svg',
+        enabled: true,
+        tasks: ['TEXT_TO_ARTWORK'],
+        model: 'explicit-v1',
+        priority: 1,
+        estimatedCostCents: 0,
+        timeoutMs: 1000,
+        maxRetries: 0,
+        fallbackEligible: false,
+      },
+      {
+        id: 'explicit-secondary',
+        adapter: 'deterministic-pattern',
+        enabled: true,
+        tasks: ['TEXT_TO_ARTWORK'],
+        model: 'explicit-v2',
+        priority: 2,
+        estimatedCostCents: 0,
+        timeoutMs: 1000,
+        maxRetries: 0,
+        fallbackEligible: false,
+      },
+    ]);
+    const environment = parseServerEnvironment({
+      ...baseEnvironment,
+      OPENAI_API_KEY: 'server-only-key',
+      AI_PROVIDER_CONFIG: explicit,
+    });
+
+    expect(environment.AI_PROVIDER_CONFIG).toBe(explicit);
+  });
+
+  it('rejects a different OpenAI image model for the locked Sunburst integration', () => {
+    expect(() =>
+      parseServerEnvironment({
+        ...baseEnvironment,
+        OPENAI_API_KEY: 'server-only-key',
+        OPENAI_IMAGE_MODEL: 'gpt-image-2.5-flare',
+      }),
+    ).toThrow();
   });
 
   it('requires S3 credentials only when S3 is selected', () => {
