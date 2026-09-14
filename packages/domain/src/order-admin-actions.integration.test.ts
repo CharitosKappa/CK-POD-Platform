@@ -494,7 +494,7 @@ suite('order archive transaction integration', () => {
     ).toEqual([{ amount_cents: edit.amountDueCents, currency: 'USD' }]);
   });
 
-  it('reconciles a migrated provider-backed failed attempt by read and releases it when cancelled', async () => {
+  it('reconciles a migrated provider-backed failed attempt from an older revision and releases it when cancelled', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const edit = await editService().actions.editOrder(staff, {
       ...f.input(),
@@ -510,6 +510,16 @@ suite('order archive transaction integration', () => {
       staff,
       paymentInput,
     );
+    await pool.query(
+      `UPDATE app.order_edit_payment_attempts
+       SET status='CANCELLED',provider_status='cancelled',completed_at=now()
+       WHERE id=$1`,
+      [prepared.paymentAttemptId],
+    );
+    const newerEdit = await editService().actions.editOrder(staff, {
+      ...f.input(),
+      shippingCents: 1200,
+    });
     const attempt = (
       await pool.query<{ provider_payment_id: string }>(
         `UPDATE app.order_edit_payment_attempts
@@ -518,6 +528,7 @@ suite('order archive transaction integration', () => {
         [prepared.paymentAttemptId],
       )
     ).rows[0]!;
+    let providerStatus: domain.PaymentIntentResult['status'] = 'PENDING';
     const createIntent = vi.fn<domain.PaymentService['createIntent']>();
     const getIntent = vi.fn<NonNullable<domain.PaymentService['getIntent']>>(async (input) => {
       expect(input.providerPaymentId).toBe(attempt.provider_payment_id);
@@ -526,7 +537,7 @@ suite('order archive transaction integration', () => {
         provider: 'FAKE',
         providerPaymentId: attempt.provider_payment_id,
         clientSecret: null,
-        status: 'CANCELLED',
+        status: providerStatus,
       };
     });
     const recovery = new domain.OrderEditPaymentService(actionDatabase.pool, {
@@ -537,13 +548,21 @@ suite('order archive transaction integration', () => {
       getRefundStatus: (input) => base.getRefundStatus(input),
     });
 
+    await expect(recovery.reconcile(staff, paymentInput)).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+    providerStatus = 'SUCCEEDED';
+    await expect(recovery.reconcile(staff, paymentInput)).rejects.toBeInstanceOf(
+      domain.OrderAdminActionConflictError,
+    );
+    providerStatus = 'CANCELLED';
     await expect(recovery.reconcile(staff, paymentInput)).resolves.toMatchObject({
       paymentAttemptId: prepared.paymentAttemptId,
       status: 'CANCELLED',
       duplicate: true,
     });
     expect(createIntent).not.toHaveBeenCalled();
-    expect(getIntent).toHaveBeenCalledOnce();
+    expect(getIntent).toHaveBeenCalledTimes(3);
     expect(
       (
         await pool.query('SELECT status FROM app.order_edit_payment_attempts WHERE id=$1', [
@@ -554,7 +573,8 @@ suite('order archive transaction integration', () => {
 
     await expect(
       new domain.OrderEditPaymentService(actionDatabase.pool, base).prepare(staff, {
-        ...paymentInput,
+        orderNumber: f.orderNumber,
+        orderRevisionId: newerEdit.revisionId,
         idempotencyKey: `edit-payment-${randomUUID()}`,
       }),
     ).resolves.toMatchObject({ status: 'PENDING', duplicate: false });

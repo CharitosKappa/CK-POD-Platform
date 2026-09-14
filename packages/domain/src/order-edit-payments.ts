@@ -395,8 +395,9 @@ export class OrderEditPaymentService {
       if (!current)
         throw new OrderAdminActionNotFoundError('Additional payment attempt not found.');
       if (isTerminal(current.status)) return current;
-      assertPayableRevision(currentOrder, current.order_revision_id, current.amount_cents);
       const status = intent.status === 'CANCELLED' ? 'CANCELLED' : 'PENDING';
+      if (status !== 'CANCELLED')
+        assertPayableRevision(currentOrder, current.order_revision_id, current.amount_cents);
       return (
         await client.query<AttemptRow>(
           `UPDATE app.order_edit_payment_attempts SET status=$2,provider=$3,provider_payment_id=$4,
