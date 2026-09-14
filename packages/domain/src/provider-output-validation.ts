@@ -1,3 +1,5 @@
+import { inspectArtworkTransparency } from '@let-it-be/mockups';
+
 import type { GenerationValidationService, ModerationResult } from './ai-contracts.js';
 
 const maxBytes = 15 * 1024 * 1024;
@@ -31,6 +33,36 @@ export class DefaultProviderOutputValidation implements GenerationValidationServ
     if (!hasMatchingSignature(input.body, input.contentType))
       return { accepted: false, reason: 'Image bytes do not match the declared content type.' };
     return { accepted: true };
+  }
+}
+
+/** Production generation boundary: format-safe artwork must also have a real transparent canvas. */
+export class DefaultGeneratedArtworkValidation implements GenerationValidationService {
+  private readonly base = new DefaultProviderOutputValidation();
+
+  async validate(
+    input: Parameters<GenerationValidationService['validate']>[0],
+  ): Promise<ModerationResult> {
+    const baseResult = await this.base.validate(input);
+    if (!baseResult.accepted || input.contentType !== 'image/png') return baseResult;
+
+    try {
+      const transparency = await inspectArtworkTransparency(input.body);
+      if (
+        !transparency.hasAlpha ||
+        transparency.transparentRatio < 0.1 ||
+        transparency.edgeTransparentRatio < 0.85 ||
+        transparency.visibleRatio < 0.005
+      ) {
+        return {
+          accepted: false,
+          reason: 'Generated artwork must have a transparent canvas around the design.',
+        };
+      }
+      return { accepted: true };
+    } catch {
+      return { accepted: false, reason: 'Generated artwork could not be decoded safely.' };
+    }
   }
 }
 

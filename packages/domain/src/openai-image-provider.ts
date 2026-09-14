@@ -8,6 +8,7 @@ import {
 } from './ai-contracts';
 
 const imageSize = '1024x1024';
+const imageQuality = 'medium';
 const imageWidth = 1024;
 const imageHeight = 1024;
 const maximumEncodedImageLength = 24 * 1024 * 1024;
@@ -104,7 +105,7 @@ export class OpenAiImageProvider implements ImageGenerationService {
         model: this.model,
         prompt: request.enhancedPrompt,
         size: imageSize,
-        quality: 'high',
+        quality: imageQuality,
         background: 'transparent',
         output_format: 'png',
         moderation: 'auto',
@@ -123,7 +124,7 @@ export class OpenAiImageProvider implements ImageGenerationService {
     form.set('model', this.model);
     form.set('prompt', request.enhancedPrompt);
     form.set('size', imageSize);
-    form.set('quality', 'high');
+    form.set('quality', imageQuality);
     form.set('background', 'transparent');
     form.set('output_format', 'png');
     form.set('moderation', 'auto');

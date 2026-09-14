@@ -20,7 +20,7 @@ import {
   AllowAllGenerationRateLimiter,
   DefaultPromptPipeline,
 } from './prompt-pipeline';
-import { DefaultProviderOutputValidation } from './provider-output-validation';
+import { DefaultGeneratedArtworkValidation } from './provider-output-validation';
 
 export interface GenerationRuntimeOptions {
   pool: SqlPool;
@@ -68,7 +68,7 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
     providers,
     options.storage,
     options.moderation ?? new AllowAllDevelopmentModeration(),
-    options.validation ?? new DefaultProviderOutputValidation(),
+    options.validation ?? new DefaultGeneratedArtworkValidation(),
     options.logger,
     policy,
   );

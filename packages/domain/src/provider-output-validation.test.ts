@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DefaultProviderOutputValidation } from './provider-output-validation.js';
+import {
+  DefaultGeneratedArtworkValidation,
+  DefaultProviderOutputValidation,
+} from './provider-output-validation.js';
 
 const validator = new DefaultProviderOutputValidation();
+const artworkValidator = new DefaultGeneratedArtworkValidation();
 const context = {
   productModelId: 'test',
   productDisplayName: 'Test',
@@ -52,5 +56,48 @@ describe('provider output validation', () => {
         'image/svg+xml',
       ),
     ).resolves.toEqual({ accepted: true });
+  });
+});
+
+describe('generated artwork transparency validation', () => {
+  it('accepts visible artwork surrounded by transparent canvas', async () => {
+    const transparentArtwork = Uint8Array.from(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAFElEQVQYlWNgGDTgPxpmGIQK6QgArZYP8VqFzvAAAAAASUVORK5CYII=',
+        'base64',
+      ),
+    );
+
+    await expect(
+      artworkValidator.validate({
+        body: transparentArtwork,
+        contentType: 'image/png',
+        width: 10,
+        height: 10,
+        productContext: context,
+      }),
+    ).resolves.toEqual({ accepted: true });
+  });
+
+  it('rejects an opaque PNG canvas even when the format is otherwise valid', async () => {
+    const opaqueArtwork = Uint8Array.from(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVQImWNISUn5j4wZSBcAAI1YIrEpsRqxAAAAAElFTkSuQmCC',
+        'base64',
+      ),
+    );
+
+    await expect(
+      artworkValidator.validate({
+        body: opaqueArtwork,
+        contentType: 'image/png',
+        width: 4,
+        height: 4,
+        productContext: context,
+      }),
+    ).resolves.toEqual({
+      accepted: false,
+      reason: 'Generated artwork must have a transparent canvas around the design.',
+    });
   });
 });

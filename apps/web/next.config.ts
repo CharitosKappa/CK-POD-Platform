@@ -1,11 +1,14 @@
+import { networkInterfaces } from 'node:os';
 import type { NextConfig } from 'next';
+
+import { getAllowedDevelopmentOrigins } from './lib/dev-origins';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   agentRules: false,
-  // Explicitly allow the current local-network host to load Next dev assets on a phone.
-  // This is used only by `next dev`; deployed production hosts are unaffected.
-  allowedDevOrigins: ['127.0.0.1', 'localhost', '192.168.1.122'],
+  // Next uses this only in development. Deriving the active LAN addresses keeps
+  // physical-device previews working when the machine receives a new DHCP address.
+  allowedDevOrigins: getAllowedDevelopmentOrigins(networkInterfaces()),
   transpilePackages: ['@let-it-be/observability', '@let-it-be/editor-schema'],
   async headers() {
     return [

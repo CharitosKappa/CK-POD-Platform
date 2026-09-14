@@ -57,6 +57,8 @@ describe('structured preset conditioning', () => {
     expect(darkPrompt.metadata.requestedExactText).toEqual(['MAKE NOISE']);
     expect(vintagePrompt.enhancedPrompt).toContain('Vintage / Vintage Engraving');
     expect(darkPrompt.enhancedPrompt).toContain('Dark / Blackwork');
+    expect(vintagePrompt.enhancedPrompt).toContain('fully transparent');
+    expect(vintagePrompt.enhancedPrompt).toContain('no square or rectangular background');
 
     const provider = new DeterministicSvgProvider('development', 'v1');
     const [vintageOutput, darkOutput] = await Promise.all([

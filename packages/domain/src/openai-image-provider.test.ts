@@ -6,7 +6,7 @@ import { OpenAiImageProvider } from './openai-image-provider.js';
 const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
 
 describe('OpenAiImageProvider', () => {
-  it('creates transparent high-quality Sunburst artwork through the generations endpoint', async () => {
+  it('creates transparent medium-quality Sunburst artwork through the generations endpoint', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const provider = createProvider(async (input, init) => {
       calls.push({ url: String(input), init: init ?? {} });
@@ -28,7 +28,7 @@ describe('OpenAiImageProvider', () => {
       model: 'gpt-image-2.5-sunburst',
       prompt: 'Create original print artwork.',
       size: '1024x1024',
-      quality: 'high',
+      quality: 'medium',
       background: 'transparent',
       output_format: 'png',
       moderation: 'auto',
@@ -72,6 +72,7 @@ describe('OpenAiImageProvider', () => {
     expect(submitted.get('model')).toBe('gpt-image-2.5-sunburst');
     expect(submitted.get('prompt')).toBe('Create original print artwork.');
     expect(submitted.get('background')).toBe('transparent');
+    expect(submitted.get('quality')).toBe('medium');
     expect(submitted.get('output_format')).toBe('png');
     expect(submitted.getAll('image[]')).toHaveLength(2);
     expect((submitted.getAll('image[]')[0] as File).name).toBe('reference-1.png');

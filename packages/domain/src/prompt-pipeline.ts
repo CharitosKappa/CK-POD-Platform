@@ -33,13 +33,13 @@ export class DefaultPromptPipeline implements PromptPipeline {
           ? `Respect visibility on the ${input.productContext.colorName} shirt.`
           : '',
         conditioning.printGuidance.transparentBackgroundPreferred
-          ? 'Prefer a transparent artwork background.'
+          ? 'Return only the isolated artwork on a fully transparent canvas with clear transparent space around it. Use no square or rectangular background, card, poster, backdrop, garment-colored fill, scene, mockup, or bounding box.'
           : '',
         typographyInstruction,
       ]
         .filter(Boolean)
         .join(' '),
-      metadata: { requestedExactText, pipelineVersion: 'm4.5-v1' },
+      metadata: { requestedExactText, pipelineVersion: 'm4.5-v2' },
     };
   }
 }

@@ -165,6 +165,56 @@ export class SharpGarmentMockupRenderer {
   }
 }
 
+export interface ArtworkTransparencyInspection {
+  hasAlpha: boolean;
+  transparentRatio: number;
+  edgeTransparentRatio: number;
+  visibleRatio: number;
+}
+
+/**
+ * Samples artwork alpha at a bounded resolution so generation validation can
+ * reject a baked-in rectangular canvas without allocating against source size.
+ */
+export async function inspectArtworkTransparency(
+  body: Uint8Array,
+): Promise<ArtworkTransparencyInspection> {
+  const image = sharp(body, { animated: false });
+  const metadata = await image.metadata();
+  const sample = await image
+    .resize({ width: 256, height: 256, fit: 'inside', withoutEnlargement: true })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const width = sample.info.width;
+  const height = sample.info.height;
+  const edgeBand = Math.max(1, Math.floor(Math.min(width, height) * 0.03));
+  let transparent = 0;
+  let visible = 0;
+  let edgeTransparent = 0;
+  let edgePixels = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = sample.data[(y * width + x) * 4 + 3] ?? 255;
+      if (alpha <= 8) transparent += 1;
+      if (alpha >= 16) visible += 1;
+      if (x < edgeBand || x >= width - edgeBand || y < edgeBand || y >= height - edgeBand) {
+        edgePixels += 1;
+        if (alpha <= 8) edgeTransparent += 1;
+      }
+    }
+  }
+
+  const pixels = width * height;
+  return {
+    hasAlpha: metadata.hasAlpha === true,
+    transparentRatio: pixels ? transparent / pixels : 0,
+    edgeTransparentRatio: edgePixels ? edgeTransparent / edgePixels : 0,
+    visibleRatio: pixels ? visible / pixels : 0,
+  };
+}
+
 function profile(
   colorCode: (typeof developmentColorSwatches)[number]['code'],
 ): GarmentMockupProfile {

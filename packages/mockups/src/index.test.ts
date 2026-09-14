@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import sharp from 'sharp';
 
 import {
+  inspectArtworkTransparency,
   developmentProfileFor,
   mockupPixelPlacement,
   SharpGarmentMockupRenderer,
@@ -11,6 +13,36 @@ const artwork = new TextEncoder().encode(
 );
 
 describe('profiled Sharp garment mockup renderer', () => {
+  it('measures visible artwork and transparent canvas independently', async () => {
+    const transparentCanvas = await sharp({
+      create: { width: 20, height: 20, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: {
+              width: 8,
+              height: 8,
+              channels: 4,
+              background: { r: 10, g: 20, b: 30, alpha: 1 },
+            },
+          })
+            .png()
+            .toBuffer(),
+          left: 6,
+          top: 6,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    await expect(inspectArtworkTransparency(transparentCanvas)).resolves.toMatchObject({
+      hasAlpha: true,
+      edgeTransparentRatio: 1,
+      transparentRatio: 0.84,
+      visibleRatio: 0.16,
+    });
+  });
   it('resolves explicit product/color profiles and maps artwork into the garment chest', () => {
     const black = developmentProfileFor({
       productModelId: 'essential-dtg-tee',
