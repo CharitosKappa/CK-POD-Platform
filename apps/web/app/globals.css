@@ -2313,29 +2313,38 @@ select:focus-visible {
 
 @media (min-width: 901px) {
   /* Final readable scale for commerce admin content, excluding the fixed sidebar and Printing modal. */
-  .commerce-admin-main
-    :where(p, address, li, td, dd):not(.order-printing-modal *) {
+  .commerce-admin-main :where(p, address, li, td, dd):not(.order-printing-modal *) {
     font-size: var(--admin-body-size);
   }
 
-  .commerce-admin-main
-    :where(small, time, label):not(.order-printing-modal *) {
+  .commerce-admin-main :where(small, time, label):not(.order-printing-modal *) {
     font-size: var(--admin-helper-size);
   }
 
-  .commerce-admin-main
-    :where(h2, h3):not(.order-printing-modal *) {
+  .commerce-admin-main :where(h2, h3):not(.order-printing-modal *) {
     font-size: var(--admin-section-heading-size);
   }
 
-  .commerce-admin-main
-    :where(button, input, select, textarea):not(.order-printing-modal *) {
+  .commerce-admin-main :where(button, input, select, textarea):not(.order-printing-modal *) {
     font-size: var(--admin-control-size);
   }
 
   .commerce-admin-main
     :where(th, .commerce-status, .order-layer-badge):not(.order-printing-modal *) {
     font-size: var(--admin-compact-size);
+  }
+
+  .commerce-admin-main :where(th):not(.order-printing-modal *) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .commerce-admin-main
+    :where(.customer-sort-button, .order-sort-button):not(.order-printing-modal *) {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .commerce-admin-main

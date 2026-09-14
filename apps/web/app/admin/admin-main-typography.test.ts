@@ -44,6 +44,15 @@ describe('admin main-body typography and feedback styling', () => {
     );
   });
 
+  it('contains larger sortable table headings inside their existing columns', () => {
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(th\):not\(\.order-printing-modal \*\)\s*{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s,
+    );
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(\.customer-sort-button, \.order-sort-button\):not\(\.order-printing-modal \*\)\s*{[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s,
+    );
+  });
+
   it('styles a distinct accessible dismiss control without changing layout width', () => {
     expect(styles).toMatch(
       /\.admin-feedback\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s,
