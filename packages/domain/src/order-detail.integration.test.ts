@@ -176,6 +176,67 @@ suite('order detail persistence integration', () => {
     expect(rejected?.returns[0]?.state).toBe('REJECTED');
   });
 
+  it.each(['PARTIALLY_FULFILLED', 'CANCELLED_HISTORY_WITH_DELIVERED_REPLACEMENT'])(
+    'matches mutation eligibility for authoritative groups: %s',
+    async (scenario) => {
+      const order = await fixture();
+      await pool.query(
+        `UPDATE app.order_fulfillment_groups SET printing_status='READY_FOR_PRODUCTION',fulfillment_status=$2 WHERE order_id=$1`,
+        [order.id, scenario === 'PARTIALLY_FULFILLED' ? 'PARTIALLY_FULFILLED' : 'DELIVERED'],
+      );
+      if (scenario === 'CANCELLED_HISTORY_WITH_DELIVERED_REPLACEMENT') {
+        await pool.query(
+          `INSERT INTO app.order_fulfillment_groups (order_id,group_key,adapter_type,provider_id,qualification_id,shipping_snapshot,status,printing_status,fulfillment_status)
+          SELECT order_id,'historical-cancelled',adapter_type,provider_id,qualification_id,shipping_snapshot,'CANCELLED','CANCELLED','CANCELLED'
+          FROM app.order_fulfillment_groups WHERE order_id=$1`,
+          [order.id],
+        );
+      }
+      const detail = await new OrderDetailService(pool).getOrder(staff, order.orderNumber);
+      let mutationEligibility: unknown;
+      try {
+        await new domain.OrderAdminActionsService(pool).archive(staff, {
+          orderNumber: order.orderNumber,
+          reasonCode: 'COMPLETE',
+          idempotencyKey: randomUUID(),
+        });
+        expect.fail('Archive must reject these persisted fulfillment states.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(domain.OrderAdminActionConflictError);
+        mutationEligibility = (error as domain.OrderAdminActionConflictError).eligibility;
+      }
+      expect(detail?.eligibility).toEqual(mutationEligibility);
+      expect(detail?.fulfillmentState).toBe('PARTIALLY_FULFILLED');
+      expect(detail?.eligibility.actions).toMatchObject({ cancel: false, archive: false });
+      // The historical empty group stays omitted from item presentation only.
+      expect(detail?.groups).toHaveLength(1);
+    },
+  );
+
+  it('paginates more than ten equal-timestamp events by stable ID without gaps or duplicates', async () => {
+    const order = await fixture();
+    const ids = Array.from({ length: 23 }, () => randomUUID()).sort();
+    await pool.query(
+      `INSERT INTO app.order_operational_audits (id,order_id,action,actor_type,actor_staff_member_id,created_at)
+      SELECT id,$1,'order_archived','OPS',$2,'2090-01-01T12:00:00Z' FROM unnest($3::uuid[]) id`,
+      [order.id, staff.staffMemberId, ids],
+    );
+    const service = new OrderDetailService(pool);
+    const first = await service.listTimeline(staff, order.orderNumber);
+    const second = await service.listTimeline(staff, order.orderNumber, { page: 2 });
+    const third = await service.listTimeline(staff, order.orderNumber, { page: 3 });
+    const observed = [...first.events, ...second.events, ...third.events].filter(
+      (event) => event.occurredAt.toISOString() === '2090-01-01T12:00:00.000Z',
+    );
+    expect(first.events).toHaveLength(10);
+    expect(second.events).toHaveLength(10);
+    expect(observed.map((event) => event.id)).toEqual(ids.reverse().map((id) => `audit:${id}`));
+    expect(new Set(observed.map((event) => event.id)).size).toBe(23);
+    expect((await service.listTimeline(staff, order.orderNumber, { page: 2 })).events).toEqual(
+      second.events,
+    );
+  });
+
   it('projects cancellation uncertainty and edit interlocks without declaring partial cancellation terminal', async () => {
     const order = await fixture();
     const cancellation = (

@@ -1,6 +1,7 @@
 import { withTransaction, type SqlPool } from '@let-it-be/db';
 
 import type { StaffSession } from './staff-identity';
+import { adminOrderLayerSql } from './admin-commerce';
 import {
   resolveOrderActionEligibility,
   type OrderActionEligibility,
@@ -10,7 +11,6 @@ import {
 } from './order-admin-actions-contracts';
 import {
   aggregatePrintingState,
-  projectFulfillmentState,
   projectPaymentState,
   type FulfillmentState,
   type OrderPrintingState,
@@ -253,6 +253,7 @@ export interface AdminOrderTimelinePage {
 }
 
 interface BaseOrderRow {
+  fulfillment_status: FulfillmentState;
   status: string;
   archived_at: Date | null;
   archived_by_staff_member_id: string | null;
@@ -427,7 +428,9 @@ export class OrderDetailService {
       amountDueCents: order.amount_due_cents,
       refundableAdjustmentCents: order.refundable_adjustment_cents,
     });
-    const fulfillment = aggregateFulfillmentGroups(groups);
+    // Use the same persisted group projection as mutation eligibility. Empty historical
+    // groups may be hidden from presentation, but must not disappear from action gates.
+    const fulfillment = order.fulfillment_status;
     const fulfillmentState =
       order.status === 'CANCELLED'
         ? 'CANCELLED'
@@ -978,6 +981,7 @@ export class OrderDetailService {
   private async baseOrder(orderNumber: string): Promise<BaseOrderRow | null> {
     const result = await this.pool.query<BaseOrderRow>(
       `SELECT orders.id, orders.order_number, orders.customer_profile_id, orders.customer_email,
+              layers.fulfillment_status,
               orders.status,orders.archived_at,orders.archived_by_staff_member_id,
               archive_staff.normalized_email AS archived_by_name,orders.amount_due_cents,orders.refundable_adjustment_cents,
               EXISTS (SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=orders.id AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
@@ -1002,6 +1006,7 @@ export class OrderDetailService {
        FROM app.orders orders
        LEFT JOIN app.customer_profiles customer ON customer.id = orders.customer_profile_id
        LEFT JOIN app.staff_members archive_staff ON archive_staff.id=orders.archived_by_staff_member_id
+       LEFT JOIN LATERAL (${adminOrderLayerSql()}) layers ON true
        LEFT JOIN app.payments payment ON payment.checkout_attempt_id = orders.checkout_attempt_id
        LEFT JOIN app.checkout_attempts checkout ON checkout.id = orders.checkout_attempt_id
        WHERE orders.order_number = $1`,
@@ -1316,23 +1321,6 @@ function toAdminShipment(shipment: ShipmentRow): AdminOrderShipment {
     shippedAt: shipment.shipped_at,
     deliveredAt: shipment.delivered_at,
   };
-}
-
-function aggregateFulfillmentGroups(groups: AdminOrderGroupSummary[]): FulfillmentState {
-  if (!groups.length) return 'UNFULFILLED';
-  if (groups.every((group) => group.fulfillmentState === 'CANCELLED')) return 'CANCELLED';
-  return projectFulfillmentState({
-    totalQuantity: groups.reduce((total, group) => total + group.itemCount, 0),
-    fulfilledQuantity: groups
-      .filter((group) => ['FULFILLED', 'DELIVERED'].includes(group.fulfillmentState))
-      .reduce((total, group) => total + group.itemCount, 0),
-    deliveredQuantity: groups
-      .filter((group) => group.fulfillmentState === 'DELIVERED')
-      .reduce((total, group) => total + group.itemCount, 0),
-    cancelledQuantity: groups
-      .filter((group) => group.fulfillmentState === 'CANCELLED')
-      .reduce((total, group) => total + group.itemCount, 0),
-  });
 }
 
 export function permittedPrintingActions(
