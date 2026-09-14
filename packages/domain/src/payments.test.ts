@@ -24,31 +24,45 @@ describe('platform payment and tax adapters', () => {
   });
 
   it('preserves accepted nonterminal Stripe refunds for later reconciliation', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({
-              id: 're_pending',
-              status: 'pending',
-              payment_intent: 'pi_expected',
-              amount: 100,
-            }),
-          ),
-        )
-        .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({
-              id: 're_pending',
-              status: 'succeeded',
-              payment_intent: 'pi_expected',
-              amount: 100,
-            }),
-          ),
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 're_pending',
+            status: 'pending',
+            payment_intent: 'pi_expected',
+            amount: 100,
+          }),
         ),
-    );
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 're_pending',
+            status: 'succeeded',
+            payment_intent: 'pi_expected',
+            amount: 100,
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            has_more: false,
+            data: [
+              {
+                id: 're_pending',
+                status: 'succeeded',
+                payment_intent: 'pi_expected',
+                amount: 100,
+                metadata: { platform_refund_key: 'fixture-key-0001' },
+              },
+            ],
+          }),
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
     const payments = new StripePaymentService('fixture', 'fixture');
     await expect(
       payments.refund({
@@ -72,6 +86,22 @@ describe('platform payment and tax adapters', () => {
       status: 'SUCCEEDED',
       providerStatus: 'succeeded',
     });
+    await expect(
+      payments.findRefund!({
+        providerPaymentId: 'pi_expected',
+        amountCents: 100,
+        idempotencyKey: 'fixture-key-0001',
+      }),
+    ).resolves.toEqual({
+      providerRefundId: 're_pending',
+      status: 'SUCCEEDED',
+      providerStatus: 'succeeded',
+    });
+    expect(
+      new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body)).get(
+        'metadata[platform_refund_key]',
+      ),
+    ).toBe('fixture-key-0001');
   });
   it('supports deterministic success, failure, cancellation, pending, and duplicate-safe fake event identifiers', async () => {
     const payments = new FakePaymentService();

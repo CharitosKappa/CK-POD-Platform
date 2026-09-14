@@ -66,6 +66,14 @@ export interface PaymentRefundResult {
   providerStatus: 'pending' | 'requires_action' | 'succeeded' | 'failed' | 'canceled';
 }
 
+export type PaymentRefundSubmissionResult = Omit<
+  PaymentRefundResult,
+  'status' | 'providerStatus'
+> & {
+  status: 'PENDING' | 'SUCCEEDED';
+  providerStatus: 'pending' | 'requires_action' | 'succeeded';
+};
+
 export interface PaymentService {
   createIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult>;
   verifyWebhook(input: {
@@ -76,13 +84,19 @@ export interface PaymentService {
     providerPaymentId: string;
     amountCents: number;
     idempotencyKey: string;
-  }): Promise<PaymentRefundResult>;
+  }): Promise<PaymentRefundSubmissionResult>;
   /** Safe read-only reconciliation for an accepted nonterminal provider refund. */
   getRefundStatus?(input: {
     providerRefundId: string;
     providerPaymentId: string;
     amountCents: number;
   }): Promise<PaymentRefundResult>;
+  /** Finds the accepted refund after provider success preceded the first local ID write. */
+  findRefund?(input: {
+    providerPaymentId: string;
+    amountCents: number;
+    idempotencyKey: string;
+  }): Promise<PaymentRefundResult | null>;
 }
 
 export interface TaxAddress {

@@ -4,6 +4,7 @@ import {
   PaymentRefundRejectedError,
   PaymentRefundUncertainError,
   type PaymentRefundResult,
+  type PaymentRefundSubmissionResult,
   type PaymentService,
 } from './commerce-contracts';
 import { adjustStoreCreditWithClient } from './store-credit';
@@ -269,24 +270,49 @@ export class OrderRefundService {
       [input.orderNumber, input.idempotencyKey],
     );
     const refund = found.rows[0];
-    if (
-      !refund ||
-      refund.status !== 'PENDING' ||
-      !refund.provider_refund_id ||
-      !this.payments.getRefundStatus
-    )
-      return refund ? result(refund, true) : null;
+    if (!refund || refund.status !== 'PENDING') return refund ? result(refund, true) : null;
     let provider: PaymentRefundResult;
     try {
-      provider = await this.payments.getRefundStatus({
-        providerRefundId: refund.provider_refund_id,
-        providerPaymentId: refund.provider_payment_id,
-        amountCents: refund.amount_cents,
-      });
+      if (refund.provider_refund_id && this.payments.getRefundStatus)
+        provider = await this.payments.getRefundStatus({
+          providerRefundId: refund.provider_refund_id,
+          providerPaymentId: refund.provider_payment_id,
+          amountCents: refund.amount_cents,
+        });
+      else if (!refund.provider_refund_id && this.payments.findRefund) {
+        const foundProvider = await this.payments.findRefund({
+          providerPaymentId: refund.provider_payment_id,
+          amountCents: refund.amount_cents,
+          idempotencyKey: input.idempotencyKey,
+        });
+        if (!foundProvider) return result(refund, true);
+        provider = foundProvider;
+      } else return result(refund, true);
     } catch {
       return result(refund, true);
     }
-    if (provider.status === 'PENDING') return result(refund, true);
+    let identified: RefundRow = refund;
+    if (!refund.provider_refund_id) {
+      identified = await withTransaction(this.pool, async (client) => {
+        await lockRefundOrder(client, refund.order_id);
+        const updated = await client.query<RefundRow>(
+          `UPDATE app.order_refunds SET provider_refund_id=$2
+           WHERE id=$1 AND status='PENDING' AND provider_refund_id IS NULL RETURNING *`,
+          [refund.id, provider.providerRefundId],
+        );
+        const current =
+          updated.rows[0] ??
+          (
+            await client.query<RefundRow>('SELECT * FROM app.order_refunds WHERE id=$1', [
+              refund.id,
+            ])
+          ).rows[0];
+        if (!current || current.provider_refund_id !== provider.providerRefundId)
+          throw new PaymentRefundUncertainError();
+        return current;
+      });
+    }
+    if (provider.status === 'PENDING') return result(identified, true);
     const reconciled = await withTransaction(this.pool, async (client) => {
       await lockRefundOrder(client, refund.order_id);
       const updated = await client.query<RefundRow>(
@@ -333,18 +359,20 @@ export class OrderRefundService {
       this.reserve(client, actor, input, 'ORIGINAL_PAYMENT'),
     );
     if (reservation.duplicate) {
-      if (reservation.refund.status === 'PENDING' && reservation.refund.provider_refund_id)
+      if (reservation.refund.status === 'PENDING')
         return (await this.recoverRefundResult(actor, input)) ?? result(reservation.refund, true);
       return result(reservation.refund, true);
     }
 
-    let provider: PaymentRefundResult;
+    let provider: PaymentRefundSubmissionResult;
     try {
       provider = await this.payments.refund({
         providerPaymentId: reservation.order.provider_payment_id,
         amountCents: reservation.refund.amount_cents,
         idempotencyKey: input.idempotencyKey,
       });
+      if (!['PENDING', 'SUCCEEDED'].includes(provider.status as string))
+        throw new PaymentRefundRejectedError();
     } catch (error) {
       if (!(error instanceof PaymentRefundRejectedError)) {
         // The provider may already have refunded money. Retain both the monetary

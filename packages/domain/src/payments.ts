@@ -7,6 +7,7 @@ import type {
   PaymentIntentResult,
   PaymentOutcome,
   PaymentRefundResult,
+  PaymentRefundSubmissionResult,
   PaymentService,
   TaxCalculation,
   TaxService,
@@ -152,6 +153,7 @@ export class StripePaymentService implements PaymentService {
     const form = new URLSearchParams({
       payment_intent: input.providerPaymentId,
       amount: String(input.amountCents),
+      'metadata[platform_refund_key]': input.idempotencyKey,
     });
     let response: Response;
     let result: Record<string, unknown>;
@@ -187,7 +189,7 @@ export class StripePaymentService implements PaymentService {
     }
     const refund = stripeRefundResult(result, input);
     if (refund.status === 'FAILED') throw new PaymentRefundRejectedError();
-    return refund;
+    return refund as PaymentRefundSubmissionResult;
   }
 
   async getRefundStatus(input: {
@@ -211,6 +213,49 @@ export class StripePaymentService implements PaymentService {
       throw new PaymentRefundUncertainError();
     }
     return stripeRefundResult(result, input);
+  }
+
+  async findRefund(input: {
+    providerPaymentId: string;
+    amountCents: number;
+    idempotencyKey: string;
+  }): Promise<PaymentRefundResult | null> {
+    let startingAfter: string | undefined;
+    for (;;) {
+      const query = new URLSearchParams({
+        payment_intent: input.providerPaymentId,
+        limit: '100',
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      let response: Response;
+      let result: Record<string, unknown>;
+      try {
+        response = await fetch(`${this.baseUrl}/refunds?${query}`, {
+          headers: { Authorization: `Bearer ${this.secretKey}` },
+        });
+        result = (await response.json()) as Record<string, unknown>;
+        if (!response.ok || !result || typeof result !== 'object' || !Array.isArray(result.data))
+          throw new PaymentRefundUncertainError();
+      } catch {
+        throw new PaymentRefundUncertainError();
+      }
+      const matches = result.data.filter((entry): entry is Record<string, unknown> => {
+        if (!entry || typeof entry !== 'object') return false;
+        const metadata = (entry as Record<string, unknown>).metadata;
+        return (
+          !!metadata &&
+          typeof metadata === 'object' &&
+          (metadata as Record<string, unknown>).platform_refund_key === input.idempotencyKey
+        );
+      });
+      if (matches.length > 1) throw new PaymentRefundUncertainError();
+      if (matches[0]) return stripeRefundResult(matches[0], input);
+      if (result.has_more !== true) return null;
+      const last = result.data.at(-1) as Record<string, unknown> | undefined;
+      if (!last || typeof last.id !== 'string' || !last.id.startsWith('re_'))
+        throw new PaymentRefundUncertainError();
+      startingAfter = last.id;
+    }
   }
 }
 

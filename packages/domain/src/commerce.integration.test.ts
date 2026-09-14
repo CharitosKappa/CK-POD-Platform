@@ -783,6 +783,20 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       };
     }
 
+    async function failProviderIdentityWrite(orderId: string) {
+      const name = `refund_identity_test_${randomBytes(8).toString('hex')}`;
+      await pool.query(`CREATE FUNCTION app.${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.order_id = '${orderId}'::uuid AND OLD.provider_refund_id IS NULL
+          AND NEW.provider_refund_id IS NOT NULL THEN RAISE EXCEPTION 'fixture identity failure';
+        END IF; RETURN NEW; END; $$`);
+      await pool.query(`CREATE TRIGGER ${name} BEFORE UPDATE ON app.order_refunds
+        FOR EACH ROW EXECUTE FUNCTION app.${name}()`);
+      return async () => {
+        await pool.query(`DROP TRIGGER ${name} ON app.order_refunds`);
+        await pool.query(`DROP FUNCTION app.${name}()`);
+      };
+    }
+
     // A lost actor/key/amount mapping would debit the provider incorrectly or corrupt the audit.
     it('refunds original payment for staff with the persisted amount and unchanged provider key', async () => {
       const f = await fixture();
@@ -1093,6 +1107,66 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
           provider_refund_id: providerRefundId,
           completed_at: expect.any(Date),
         },
+      ]);
+    });
+
+    it('recovers provider identity read-only when its first local write fails after acceptance', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const input = f.input(f.amount_cents);
+      const payment = await pool.query<{ provider_payment_id: string }>(
+        'SELECT provider_payment_id FROM app.payments WHERE id=$1',
+        [f.payment_id],
+      );
+      const providerRefundId = `re_${randomUUID()}`;
+      const calls: string[] = [];
+      vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${url}`);
+        const refund = {
+          id: providerRefundId,
+          status: 'succeeded',
+          payment_intent: payment.rows[0]!.provider_payment_id,
+          amount: input.amountCents,
+          metadata: { platform_refund_key: input.idempotencyKey },
+        };
+        return new Response(
+          JSON.stringify(url.includes('?') ? { has_more: false, data: [refund] } : refund),
+        );
+      });
+      const removeFailure = await failProviderIdentityWrite(f.id);
+      try {
+        await expect(refunds.refundOriginalPayment(f.staff, input)).rejects.toThrow(
+          'fixture identity failure',
+        );
+      } finally {
+        await removeFailure();
+      }
+      expect((await state(f.id)).refunds).toMatchObject([
+        { status: 'PENDING', provider_refund_id: null },
+      ]);
+      await expect(refunds.refundOriginalPayment(f.staff, input)).resolves.toMatchObject({
+        status: 'SUCCEEDED',
+        providerRefundId,
+        duplicate: true,
+      });
+      expect(calls.filter((call) => call.startsWith('POST'))).toHaveLength(1);
+      expect(calls.filter((call) => call.startsWith('GET'))).toHaveLength(1);
+    });
+
+    it('fails closed if an adapter violates the submission contract with a failed result', async () => {
+      const f = await fixture();
+      const payments = new FakePaymentService();
+      vi.spyOn(payments, 'refund').mockResolvedValue({
+        providerRefundId: `fake_re_${randomUUID()}`,
+        status: 'FAILED',
+        providerStatus: 'failed',
+      } as never);
+      const refunds = new domain.OrderRefundService(pool, payments);
+      await expect(refunds.refundOriginalPayment(f.staff, f.input())).rejects.toThrow(
+        'Stripe could not process the refund.',
+      );
+      expect((await state(f.id)).refunds).toMatchObject([
+        { status: 'FAILED', completed_at: expect.any(Date), provider_refund_id: null },
       ]);
     });
 
