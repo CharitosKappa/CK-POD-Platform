@@ -295,6 +295,8 @@ describe('customer detail commerce summary', () => {
     );
     expect(ordersSql?.[0]).toContain('o.customer_profile_id = $1');
     expect(ordersSql?.[0]).toContain('o.customer_profile_id IS NULL');
+    expect(ordersSql?.[0]).toContain("oi.item_snapshot ->> 'unitPriceCents'");
+    expect(ordersSql?.[0]).toContain("oi.item_snapshot ->> 'unitRetailCents'");
   });
 });
 

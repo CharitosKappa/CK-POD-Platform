@@ -504,7 +504,12 @@ export class CustomerOperationsService {
                   'color', coalesce(oi.item_snapshot ->> 'colorName', variant.color_name, oi.item_snapshot ->> 'colorCode', '—'),
                   'size', coalesce(oi.item_snapshot ->> 'size', oi.item_snapshot ->> 'sizeCode', variant.size, '—'),
                   'quantity', oi.quantity,
-                  'unitPriceCents', coalesce((oi.item_snapshot ->> 'unitRetailCents')::int, variant.price_cents, 0),
+                  'unitPriceCents', coalesce(
+                    (oi.item_snapshot ->> 'unitPriceCents')::int,
+                    (oi.item_snapshot ->> 'unitRetailCents')::int,
+                    variant.price_cents,
+                    0
+                  ),
                   'imageUrl', variant.image_url
                 ) ORDER BY oi.created_at) FILTER (WHERE oi.id IS NOT NULL), '[]'::jsonb) AS items
          FROM app.orders o
