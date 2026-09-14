@@ -1,0 +1,45 @@
+import { routeContract, uuid } from '../_actions/route-test-support';
+import { POST } from './route';
+const shippingAddress = {
+  recipientName: 'Taylor Davis',
+  email: 'new@example.test',
+  phone: '+1 555 123 4567',
+  line1: '123 Main Street',
+  line2: 'Unit 2',
+  city: 'Cheyenne',
+  stateCode: 'WY',
+  postalCode: '82001',
+  countryCode: 'US',
+};
+routeContract({
+  name: 'Edit order',
+  handler: POST,
+  service: 'editOrder',
+  body: {
+    reasonCode: 'CUSTOMER_REQUEST',
+    customerEmail: 'new@example.test',
+    note: 'Contact updated',
+    items: [{ orderItemId: uuid, productVariantId: uuid, quantity: 2 }],
+    shippingCents: 500,
+    discountCents: 200,
+    tags: ['VIP'],
+    customerPhone: '',
+    shippingAddress,
+  },
+  invalid: [
+    { reasonCode: 'EDIT', shippingCents: 1.5 },
+    { reasonCode: 'EDIT', items: [{ productVariantId: uuid, quantity: 0 }] },
+    { reasonCode: 'EDIT', items: [{ productVariantId: uuid, quantity: 1, priceCents: 1 }] },
+    { reasonCode: 'EDIT', shippingAddress: { recipientName: 'Name' } },
+    { reasonCode: 'EDIT', shippingAddress: { ...shippingAddress, taxCents: 0 } },
+    { reasonCode: 'EDIT', shippingAddress: { ...shippingAddress, countryCode: 'USA' } },
+    { reasonCode: 'EDIT', customerPhone: 'not a phone' },
+    { reasonCode: 'EDIT', items: [{ productVariantId: 'not-a-uuid', quantity: 1 }] },
+    { reasonCode: 'EDIT', items: [{ productVariantId: uuid, quantity: 100 }] },
+    { reasonCode: 'EDIT', discountCents: -1 },
+    { reasonCode: 'EDIT', shippingCents: 2_147_483_648 },
+    { reasonCode: 'EDIT', customerEmail: 'invalid' },
+    { reasonCode: 'EDIT', tags: [''] },
+    { reasonCode: 'EDIT', note: 'x'.repeat(1001) },
+  ],
+});

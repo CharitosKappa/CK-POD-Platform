@@ -17,6 +17,9 @@ import {
   MockupService,
   OrderOperationsService,
   OrderDetailService,
+  OrderAdminActionsService,
+  OrderRefundService,
+  OrderRepricingService,
   CxOperationsService,
   CustomerOperationsService,
   LifecycleOrchestrator,
@@ -168,6 +171,67 @@ export function adminCommerceRuntime() {
 
 export function orderDetailRuntime() {
   return new OrderDetailService(databasePool());
+}
+
+/** One configured dependency graph for staff order mutations and monetary settlement. */
+export async function orderAdminActionsRuntime() {
+  const environment = serverEnvironment();
+  const pool = databasePool();
+  const fulfillment = createFulfillmentAdapter({
+    adapter: environment.FULFILLMENT_ADAPTER,
+    baseUrl: environment.PRINTIFY_API_BASE_URL,
+    ...(environment.PRINTIFY_API_TOKEN ? { apiToken: environment.PRINTIFY_API_TOKEN } : {}),
+    ...(environment.PRINTIFY_SHOP_ID ? { shopId: environment.PRINTIFY_SHOP_ID } : {}),
+    ...(environment.PRINTIFY_WEBHOOK_SECRET
+      ? { webhookSecret: environment.PRINTIFY_WEBHOOK_SECRET }
+      : {}),
+  });
+  const payments =
+    environment.PAYMENT_ADAPTER === 'stripe'
+      ? new StripePaymentService(
+          environment.STRIPE_SECRET_KEY!,
+          environment.STRIPE_WEBHOOK_SECRET!,
+          environment.STRIPE_API_BASE_URL,
+        )
+      : new FakePaymentService();
+  const taxes =
+    environment.TAX_ADAPTER === 'stripe'
+      ? new StripeTaxService(environment.STRIPE_SECRET_KEY!, environment.STRIPE_API_BASE_URL)
+      : new FakeTaxService(environment.DEVELOPMENT_TAX_RATE_BASIS_POINTS);
+  const configuration = {
+    ...developmentCommerceConfiguration,
+    developmentProviderOnly: environment.FULFILLMENT_ADAPTER === 'fake',
+    ...(environment.FULFILLMENT_ADAPTER === 'fake'
+      ? { eligibleProviderExternalIds: ['fake-harbor', 'fake-summit'] }
+      : {}),
+  };
+  const { storage } = await generationRuntime();
+  const lifecycle = lifecycleRuntime(pool, environment);
+  const operations = new OrderOperationsService(
+    pool,
+    storage,
+    fulfillment,
+    {
+      fulfillmentAdapter: environment.FULFILLMENT_ADAPTER,
+      realProductionSubmissionEnabled: operationalCapability(environment, 'PRODUCTION_SUBMISSION')
+        .enabled,
+    },
+    undefined,
+    lifecycle,
+  );
+  // OrderRefundService owns the transactional Store Credit ledger boundary.
+  const refunds = new OrderRefundService(pool, payments);
+  return {
+    actions: new OrderAdminActionsService(pool, {
+      fulfillment,
+      operations,
+      refunds,
+      lifecycle,
+      repricing: new OrderRepricingService(pool, taxes, configuration),
+    }),
+    refunds,
+    detail: new OrderDetailService(pool),
+  };
 }
 
 export function staffIdentityRuntime() {
