@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { createDatabaseClient, integrationTestDatabaseUrl, type SqlPool } from '@let-it-be/db';
 import { applyEditorCommand, createEmptyEditorDocument } from '@let-it-be/editor-schema';
@@ -84,6 +84,73 @@ integrationSuite('AI generation orchestration integration', () => {
     expect(asset.rows[0]?.storage_key).toMatch(/^generations\//);
     expect(await harness.storage.exists(asset.rows[0]?.storage_key as string)).toBe(true);
     expect(JSON.stringify(delivered)).not.toContain('storage_key');
+    await harness.close();
+  });
+
+  it('resolves active private reference bytes for the provider without exposing storage keys', async () => {
+    const capture = new CapturingProvider('reference-provider', 'reference-v1');
+    const harness = await createHarness({
+      providers: [provider('reference-provider', capture, false)],
+    });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const referenceId = randomUUID();
+    const storageKey = `projects/${project.id}/references/${referenceId}.png`;
+    const body = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    await harness.storage.put({ key: storageKey, body, contentType: 'image/png' });
+    await pool.query(
+      `INSERT INTO app.assets (
+         id, project_id, asset_type, storage_key, content_type, byte_size, width, height
+       ) VALUES ($1, $2, 'REFERENCE', $3, 'image/png', $4, 1, 1)`,
+      [referenceId, project.id, storageKey, body.byteLength],
+    );
+
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'Use the private reference as inspiration for an original badge.',
+      referenceAssetIds: [referenceId],
+    });
+    await harness.queue.waitForIdle();
+
+    expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
+      status: 'SUCCEEDED',
+      creditStatus: 'CONSUMED',
+    });
+    expect(capture.requests).toHaveLength(1);
+    expect(capture.requests[0]?.referenceAssets).toEqual([
+      { id: referenceId, body, contentType: 'image/png' },
+    ]);
+    expect(JSON.stringify(capture.requests[0])).not.toContain(storageKey);
+    await harness.close();
+  });
+
+  it('fails before provider execution and preserves credit when a private reference object is missing', async () => {
+    const capture = new CapturingProvider('reference-provider', 'reference-v1');
+    const harness = await createHarness({
+      providers: [provider('reference-provider', capture, false)],
+    });
+    const guest = await identity.createGuestSession();
+    const project = await projects.create(guest, selection('black'));
+    const referenceId = randomUUID();
+    await pool.query(
+      `INSERT INTO app.assets (
+         id, project_id, asset_type, storage_key, content_type, byte_size, width, height
+       ) VALUES ($1, $2, 'REFERENCE', $3, 'image/png', 8, 1, 1)`,
+      [referenceId, project.id, `projects/${project.id}/references/missing.png`],
+    );
+
+    const created = await harness.generations.create(guest, project.id, {
+      rawPrompt: 'Use the unavailable private reference.',
+      referenceAssetIds: [referenceId],
+    });
+    await harness.queue.waitForIdle();
+
+    expect(await harness.generations.get(guest, project.id, created.id)).toMatchObject({
+      status: 'FAILED',
+      creditStatus: 'NOT_CONSUMED',
+      failureCategory: 'STORAGE_FAILURE',
+    });
+    expect(capture.requests).toHaveLength(0);
+    expect(await harness.credits.getBalance(guest)).toMatchObject({ balance: 1 });
     await harness.close();
   });
 

@@ -53,6 +53,8 @@ async function createRuntime(): Promise<WebGenerationRuntime> {
     storage,
     logger: createLogger({ service: 'web-ai', minimumLevel: environment.LOG_LEVEL }),
     providerConfiguration: environment.AI_PROVIDER_CONFIG,
+    ...(environment.OPENAI_API_KEY ? { openAiApiKey: environment.OPENAI_API_KEY } : {}),
+    openAiApiBaseUrl: environment.OPENAI_API_BASE_URL,
     guestFreeCredits: environment.AI_GUEST_FREE_CREDITS,
     registeredFreeCredits: environment.AI_REGISTERED_FREE_CREDITS,
     maxReferenceAssets: environment.AI_MAX_REFERENCE_ASSETS,

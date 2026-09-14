@@ -7,6 +7,7 @@ import {
   type GenerationModerationService,
   type GenerationProvider,
   type GenerationValidationService,
+  type ProviderReferenceAsset,
   ProviderExecutionError,
 } from './ai-contracts';
 import type { ProviderRegistry } from './ai-providers';
@@ -22,6 +23,16 @@ interface AttemptRow {
 interface AssetRow {
   id: string;
 }
+
+interface ReferenceAssetRow {
+  id: string;
+  storage_key: string;
+  content_type: string;
+  byte_size: number;
+}
+
+const maximumReferenceBytes = 15 * 1024 * 1024;
+const providerReferenceContentTypes = ['image/png', 'image/jpeg', 'image/webp'] as const;
 
 export class GenerationWorkerService {
   public constructor(
@@ -71,6 +82,13 @@ export class GenerationWorkerService {
         return;
       }
 
+      const referenceAssets = await loadProviderReferenceAssets(
+        this.pool,
+        this.storage,
+        generation.projectId,
+        generation.referenceAssetIds,
+      );
+
       const candidates = this.providers.forTask(generation.task);
       if (!candidates.length) {
         await this.generations.fail(generation.id, 'CONFIGURATION_ERROR');
@@ -79,7 +97,7 @@ export class GenerationWorkerService {
 
       let lastFailure: GenerationFailureCategory = 'PROVIDER_ERROR';
       for (const [providerIndex, provider] of candidates.entries()) {
-        const outcome = await this.tryProvider(generation, provider);
+        const outcome = await this.tryProvider(generation, provider, referenceAssets);
         if (outcome.resolved) return;
         lastFailure = outcome.failureCategory;
         if (!provider.configuration.fallbackEligible || providerIndex === candidates.length - 1)
@@ -100,6 +118,7 @@ export class GenerationWorkerService {
   private async tryProvider(
     generation: GenerationWorkItem,
     provider: GenerationProvider,
+    referenceAssets: ProviderReferenceAsset[],
   ): Promise<{ resolved: boolean; failureCategory: GenerationFailureCategory }> {
     const maximumAttempts = provider.configuration.maxRetries + 1;
     let lastCategory: GenerationFailureCategory = 'PROVIDER_ERROR';
@@ -117,6 +136,7 @@ export class GenerationWorkerService {
             styleSelection: generation.styleSelection,
             productContext: generation.productContext,
             referenceAssetIds: generation.referenceAssetIds,
+            referenceAssets,
           }),
           provider.configuration.timeoutMs,
         );
@@ -354,6 +374,50 @@ export class GenerationWorkerService {
       });
     });
   }
+}
+
+export async function loadProviderReferenceAssets(
+  pool: SqlPool,
+  storage: PrivateObjectStorage,
+  projectId: string,
+  referenceAssetIds: string[],
+): Promise<ProviderReferenceAsset[]> {
+  if (!referenceAssetIds.length) return [];
+  const result = await pool.query<ReferenceAssetRow>(
+    `SELECT id, storage_key, content_type, byte_size
+     FROM app.assets
+     WHERE project_id = $1 AND id = ANY($2::uuid[])
+       AND asset_type = 'REFERENCE' AND status = 'ACTIVE'`,
+    [projectId, referenceAssetIds],
+  );
+  const rows = new Map(result.rows.map((row) => [row.id, row]));
+
+  return Promise.all(
+    referenceAssetIds.map(async (id) => {
+      const row = rows.get(id);
+      if (!row) throw new Error('Reference image is no longer available.');
+      if (!isProviderReferenceContentType(row.content_type)) {
+        throw new Error('Reference image format is not supported.');
+      }
+      if (row.byte_size < 1 || row.byte_size > maximumReferenceBytes) {
+        throw new Error('Reference image size is not supported.');
+      }
+      const object = await storage.get(row.storage_key);
+      if (!object || object.body.byteLength !== row.byte_size) {
+        throw new Error('Reference image is no longer available.');
+      }
+      if (object.contentType !== row.content_type) {
+        throw new Error('Reference image metadata is inconsistent.');
+      }
+      return { id, body: object.body, contentType: row.content_type };
+    }),
+  );
+}
+
+function isProviderReferenceContentType(
+  value: string,
+): value is ProviderReferenceAsset['contentType'] {
+  return providerReferenceContentTypes.some((contentType) => contentType === value);
 }
 
 async function insertAsset(

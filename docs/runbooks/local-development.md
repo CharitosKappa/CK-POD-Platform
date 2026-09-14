@@ -116,6 +116,36 @@ verify lifecycle, retry, lineage, and production-master access controls.
 
 ## Milestone 2 generation checks
 
+### Real OpenAI artwork generation
+
+Real local artwork generation is enabled when the following server-only values exist in the
+root, uncommitted `.env` file:
+
+```text
+OPENAI_API_KEY=...
+OPENAI_IMAGE_MODEL=gpt-image-2.5-sunburst
+OPENAI_API_BASE_URL=https://api.openai.com/v1
+```
+
+Do not prefix the key with `NEXT_PUBLIC_`, place it in browser code, log it, or commit it. When
+the key is present and `AI_PROVIDER_CONFIG` is not explicitly set, the server routes initial
+`TEXT_TO_ARTWORK` work to Sunburst. It requests a transparent, high-quality 1024 × 1024 PNG.
+Reference images remain private: the worker resolves their bytes from private object storage and
+uses the Image API edit endpoint without exposing storage keys to the browser or provider logs.
+
+In the default local `QUEUE_DRIVER=memory` and `STORAGE_DRIVER=memory` mode, generation happens in
+the web process and generated objects disappear when that process restarts. Redis plus S3 is
+required for durable production operation. A successful request progresses through `QUEUED`,
+`PROCESSING`, `VALIDATING`, and `SUCCEEDED`; the Design Credit is consumed only after validated
+output is stored. Provider failures keep the credit unconsumed and do not silently substitute
+fixture artwork.
+
+Every real generation may incur OpenAI charges. The normal `pnpm benchmark:g1` command stays on
+the deterministic zero-cost providers even when a key exists. Set
+`G1_BENCHMARK_USE_RUNTIME_PROVIDERS=true` only for an intentional paid provider benchmark.
+Run `pnpm smoke:openai-image` only when you intentionally want one paid provider request; it emits
+non-secret request metadata and a content hash without writing the artwork or printing credentials.
+
 Use Redis locally for a separate generation worker (`QUEUE_DRIVER=redis` in `.env.example`), then start it in a second terminal:
 
 ```powershell

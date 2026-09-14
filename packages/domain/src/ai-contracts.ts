@@ -51,7 +51,7 @@ export interface ProductGenerationContext {
 
 export interface ProviderConfiguration {
   id: string;
-  adapter: 'deterministic-svg' | 'deterministic-pattern';
+  adapter: 'deterministic-svg' | 'deterministic-pattern' | 'openai-images';
   enabled: boolean;
   tasks: AiTask[];
   model: string;
@@ -62,6 +62,12 @@ export interface ProviderConfiguration {
   fallbackEligible: boolean;
 }
 
+export interface ProviderReferenceAsset {
+  id: string;
+  body: Uint8Array;
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp';
+}
+
 export interface ProviderGenerationRequest {
   generationId: string;
   task: AiTask;
@@ -70,6 +76,7 @@ export interface ProviderGenerationRequest {
   styleSelection: ResolvedStyleSelection;
   productContext: ProductGenerationContext;
   referenceAssetIds: string[];
+  referenceAssets?: ProviderReferenceAsset[];
 }
 
 export interface ProviderGenerationOutput {

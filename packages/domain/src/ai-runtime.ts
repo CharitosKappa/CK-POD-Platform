@@ -28,6 +28,8 @@ export interface GenerationRuntimeOptions {
   storage: PrivateObjectStorage;
   logger: AppLogger;
   providerConfiguration: string;
+  openAiApiKey?: string;
+  openAiApiBaseUrl?: string;
   guestFreeCredits: number;
   registeredFreeCredits: number;
   maxReferenceAssets: number;
@@ -44,6 +46,10 @@ export function createGenerationRuntime(options: GenerationRuntimeOptions) {
   });
   const providers = createConfiguredProviderRegistry(
     parseProviderConfigurations(options.providerConfiguration),
+    {
+      ...(options.openAiApiKey ? { openAiApiKey: options.openAiApiKey } : {}),
+      ...(options.openAiApiBaseUrl ? { openAiApiBaseUrl: options.openAiApiBaseUrl } : {}),
+    },
   );
   const policy = new PolicyService(options.pool);
   const generations = new GenerationService(

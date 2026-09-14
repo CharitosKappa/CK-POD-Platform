@@ -11,6 +11,13 @@ import {
   type ProviderGenerationRequest,
   ProviderExecutionError,
 } from './ai-contracts';
+import { OpenAiImageProvider } from './openai-image-provider';
+
+export interface ProviderRegistryOptions {
+  openAiApiKey?: string;
+  openAiApiBaseUrl?: string;
+  fetch?: typeof globalThis.fetch;
+}
 
 export class ProviderRegistry {
   public constructor(private readonly providers: GenerationProvider[]) {}
@@ -132,16 +139,33 @@ export function parseProviderConfigurations(value: string): ProviderConfiguratio
 
 export function createConfiguredProviderRegistry(
   configurations: ProviderConfiguration[],
+  options: ProviderRegistryOptions = {},
 ): ProviderRegistry {
   return new ProviderRegistry(
     configurations.map((configuration) => ({
       configuration,
-      service:
-        configuration.adapter === 'deterministic-pattern'
-          ? new DeterministicPatternProvider(configuration.id, configuration.model)
-          : new DeterministicSvgProvider(configuration.id, configuration.model),
+      service: createProviderService(configuration, options),
     })),
   );
+}
+
+function createProviderService(
+  configuration: ProviderConfiguration,
+  options: ProviderRegistryOptions,
+): ImageGenerationService {
+  if (configuration.adapter === 'openai-images') {
+    if (!options.openAiApiKey) {
+      throw new Error('OPENAI_API_KEY is required by the configured OpenAI image provider.');
+    }
+    return new OpenAiImageProvider(configuration, {
+      apiKey: options.openAiApiKey,
+      ...(options.openAiApiBaseUrl ? { apiBaseUrl: options.openAiApiBaseUrl } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  }
+  return configuration.adapter === 'deterministic-pattern'
+    ? new DeterministicPatternProvider(configuration.id, configuration.model)
+    : new DeterministicSvgProvider(configuration.id, configuration.model);
 }
 
 function parseProviderConfiguration(value: unknown, index: number): ProviderConfiguration {
@@ -154,7 +178,9 @@ function parseProviderConfiguration(value: unknown, index: number): ProviderConf
   if (
     typeof input.id !== 'string' ||
     !input.id ||
-    (adapter !== 'deterministic-svg' && adapter !== 'deterministic-pattern') ||
+    (adapter !== 'deterministic-svg' &&
+      adapter !== 'deterministic-pattern' &&
+      adapter !== 'openai-images') ||
     !Array.isArray(tasks) ||
     !tasks.every((task) => typeof task === 'string' && aiTasks.includes(task as AiTask)) ||
     typeof input.model !== 'string' ||

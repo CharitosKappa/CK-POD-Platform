@@ -40,6 +40,7 @@ export * from './analytics';
 export * from './account';
 export * from './assets';
 export * from './ai-providers';
+export * from './openai-image-provider';
 export * from './ai-runtime';
 export * from './benchmark';
 export * from './credits';
