@@ -207,6 +207,7 @@ interface CancellationGroupRow {
   external_order_id: string | null;
   status: 'REQUESTED' | 'CANCELLED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'FAILED';
   attempt_count: number;
+  provider_error_code: string | null;
 }
 
 interface LockedOrder {
@@ -270,7 +271,7 @@ export class OrderAdminActionsService {
         );
       if (commercial) {
         const blockers = await client.query(
-          `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))
+          `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN')))
           UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
           UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
           UNION ALL SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED') LIMIT 1`,
@@ -857,6 +858,18 @@ export class OrderAdminActionsService {
               [order.id],
             )
           ).rows;
+          const ambiguousCreations = (
+            await client.query<{
+              id: string;
+              fulfillment_group_id: string | null;
+              status: 'PENDING' | 'RETRYING' | 'FAILED';
+            }>(
+              `SELECT id,fulfillment_group_id,status FROM app.order_fulfillment_actions
+              WHERE order_id=$1 AND action='CREATE_EXTERNAL_ORDER' AND attempt_count>0
+              AND status IN ('PENDING','RETRYING','FAILED') ORDER BY updated_at DESC,id DESC`,
+              [order.id],
+            )
+          ).rows;
           if (
             legacy &&
             !groups.some((group) => group.external_order_id === legacy.external_order_id) &&
@@ -882,17 +895,41 @@ export class OrderAdminActionsService {
               ],
             )
           ).rows[0]!;
-          await client.query(
-            `INSERT INTO app.order_cancellation_groups
-            (order_cancellation_id,fulfillment_group_id,external_order_id,status)
-            SELECT $1,id,COALESCE(external_order_id,$3),CASE WHEN COALESCE(external_order_id,$3) IS NULL THEN 'NOT_REQUIRED' ELSE 'REQUESTED' END
-            FROM app.order_fulfillment_groups WHERE order_id=$2 ORDER BY id`,
-            [
-              cancellation.id,
-              order.id,
-              groups.length === 1 ? (legacy?.external_order_id ?? null) : null,
-            ],
-          );
+          for (const group of groups) {
+            const externalOrderId =
+              group.external_order_id ??
+              (groups.length === 1 ? (legacy?.external_order_id ?? null) : null);
+            const ambiguousCreation =
+              externalOrderId === null
+                ? ambiguousCreations.find(
+                    (action) =>
+                      action.fulfillment_group_id === group.id ||
+                      (action.fulfillment_group_id === null && groups.length === 1),
+                  )
+                : undefined;
+            await client.query(
+              `INSERT INTO app.order_cancellation_groups
+              (order_cancellation_id,fulfillment_group_id,external_order_id,status,provider_error_code,response_metadata)
+              VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
+              [
+                cancellation.id,
+                group.id,
+                externalOrderId,
+                externalOrderId || ambiguousCreation ? 'REQUESTED' : 'NOT_REQUIRED',
+                ambiguousCreation ? 'CANCELLATION_OUTCOME_UNKNOWN' : null,
+                JSON.stringify(
+                  ambiguousCreation
+                    ? {
+                        upstreamAction: 'CREATE_EXTERNAL_ORDER',
+                        upstreamActionId: ambiguousCreation.id,
+                        upstreamActionStatus: ambiguousCreation.status,
+                        requiresManualResolution: true,
+                      }
+                    : {},
+                ),
+              ],
+            );
+          }
         } else {
           await client.query(
             `UPDATE app.order_cancellations SET status='PROCESSING',failure_reason=NULL,
@@ -1107,8 +1144,13 @@ export class OrderAdminActionsService {
     fulfillment: FulfillmentService,
   ): Promise<void> {
     const groups = await client.query<CancellationGroupRow>(
-      `SELECT * FROM app.order_cancellation_groups
-      WHERE order_cancellation_id=$1 AND status NOT IN ('CANCELLED','NOT_REQUIRED') ORDER BY fulfillment_group_id`,
+      `SELECT attempt.id,attempt.fulfillment_group_id,
+        COALESCE(attempt.external_order_id,group_row.external_order_id) AS external_order_id,
+        attempt.status,attempt.attempt_count,attempt.provider_error_code
+      FROM app.order_cancellation_groups attempt
+      JOIN app.order_fulfillment_groups group_row ON group_row.id=attempt.fulfillment_group_id
+      WHERE attempt.order_cancellation_id=$1 AND attempt.status NOT IN ('CANCELLED','NOT_REQUIRED')
+      ORDER BY attempt.fulfillment_group_id`,
       [cancellation.id],
     );
     for (const group of groups.rows) {
@@ -1116,7 +1158,9 @@ export class OrderAdminActionsService {
       // Losing the DB session does not stop a provider POST already in flight. The
       // durable started/no-result distinction survives that loss even when a new worker
       // has the advisory claim. An unchanged GET is not proof that another POST is safe.
-      const reconcileOnly = group.status === 'REQUESTED' && group.attempt_count > 0;
+      const reconcileOnly =
+        group.status === 'REQUESTED' &&
+        (group.attempt_count > 0 || group.provider_error_code === 'CANCELLATION_OUTCOME_UNKNOWN');
       const eligible = await transactionOn(client, async () => {
         const order = await this.lockOrder(client, orderNumber);
         const eligibility = await this.loadEligibility(client, session, order);
@@ -1141,18 +1185,25 @@ export class OrderAdminActionsService {
       let errorCode: string | null = null;
       let occurredAt: Date | null = null;
       let reconciliationErrorCode: string | null = null;
+      let readOnlyRecoveryRequired = reconcileOnly;
       try {
         if (reconcileOnly) {
-          const response = await fulfillment.getOrderStatus({
-            externalOrderId: group.external_order_id!,
-          });
-          state =
-            response.externalOrderId === group.external_order_id &&
-            ['cancelled', 'canceled'].includes(response.state.trim().toLowerCase())
-              ? 'CANCELLED'
-              : 'REQUESTED';
-          occurredAt = state === 'CANCELLED' ? response.occurredAt : null;
-          if (state === 'REQUESTED') errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
+          if (group.external_order_id === null) {
+            state = 'REQUESTED';
+            errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
+            reconciliationErrorCode = 'EXTERNAL_ORDER_ID_UNRESOLVED';
+          } else {
+            const response = await fulfillment.getOrderStatus({
+              externalOrderId: group.external_order_id,
+            });
+            state =
+              response.externalOrderId === group.external_order_id &&
+              ['cancelled', 'canceled'].includes(response.state.trim().toLowerCase())
+                ? 'CANCELLED'
+                : 'REQUESTED';
+            occurredAt = state === 'CANCELLED' ? response.occurredAt : null;
+            if (state === 'REQUESTED') errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
+          }
         } else {
           const response = await fulfillment.cancelOrder({
             externalOrderId: group.external_order_id!,
@@ -1162,11 +1213,15 @@ export class OrderAdminActionsService {
           occurredAt = response.occurredAt;
         }
       } catch (error) {
-        state = reconcileOnly ? 'REQUESTED' : 'FAILED';
-        if (reconcileOnly) {
+        const normalized = normalizeFulfillmentError(error);
+        const ambiguousTransport =
+          !reconcileOnly && ['TIMEOUT', 'NETWORK_ERROR'].includes(normalized.code);
+        readOnlyRecoveryRequired = reconcileOnly || ambiguousTransport;
+        state = readOnlyRecoveryRequired ? 'REQUESTED' : 'FAILED';
+        if (readOnlyRecoveryRequired) {
           errorCode = 'CANCELLATION_OUTCOME_UNKNOWN';
-          reconciliationErrorCode = normalizeFulfillmentError(error).code;
-        } else errorCode = normalizeFulfillmentError(error).code;
+          reconciliationErrorCode = normalized.code;
+        } else errorCode = normalized.code;
       }
       await transactionOn(client, async () => {
         await this.lockOrder(client, orderNumber);
@@ -1175,7 +1230,9 @@ export class OrderAdminActionsService {
         ]);
         await client.query(
           `UPDATE app.order_cancellation_groups SET status=$2,provider_error_code=$3,
-          response_metadata=$4::jsonb,updated_at=now() WHERE id=$1`,
+          response_metadata=response_metadata || $4::jsonb,
+          external_order_id=COALESCE(external_order_id,$5),updated_at=now()
+          WHERE id=$1`,
           [
             group.id,
             state,
@@ -1183,7 +1240,7 @@ export class OrderAdminActionsService {
             JSON.stringify({
               idempotencyKey,
               occurredAt,
-              ...(reconcileOnly
+              ...(readOnlyRecoveryRequired
                 ? {
                     reconciliation: 'READ_ONLY',
                     requiresManualResolution: state === 'REQUESTED',
@@ -1191,6 +1248,7 @@ export class OrderAdminActionsService {
                   }
                 : {}),
             }),
+            group.external_order_id,
           ],
         );
         await client.query(
@@ -1207,7 +1265,7 @@ export class OrderAdminActionsService {
               status: state,
               providerErrorCode: errorCode,
               idempotencyKey,
-              ...(reconcileOnly
+              ...(readOnlyRecoveryRequired
                 ? { reconciliation: 'READ_ONLY', requiresManualResolution: state === 'REQUESTED' }
                 : {}),
               note: cancellation.staff_note,
@@ -1464,7 +1522,7 @@ export class OrderAdminActionsService {
       `SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
       UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
       UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
-      UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0)) LIMIT 1`,
+       UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN'))) LIMIT 1`,
       [order.id],
     );
     if (

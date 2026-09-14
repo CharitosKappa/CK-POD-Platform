@@ -2634,7 +2634,7 @@ async function assertCancellationResolved(client: SqlClient, orderId: string): P
     WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED')
       OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt
         WHERE attempt.order_cancellation_id=cancellation.id AND attempt.status='REQUESTED'
-        AND attempt.attempt_count>0)) LIMIT 1`,
+        AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN'))) LIMIT 1`,
     [orderId],
   );
   if (cancellation.rows.length)

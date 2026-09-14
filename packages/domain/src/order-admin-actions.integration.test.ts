@@ -1803,43 +1803,94 @@ suite('order archive transaction integration', () => {
     );
   });
 
-  it.each(['refusal', 'timeout'])(
-    'preserves the active order on provider %s and allows only explicit retry',
-    async (failure) => {
+  it('preserves the active order on a definitive provider refusal and allows explicit retry', async () => {
+    const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
+    await externalGroup(f, `refusal-${randomUUID()}`);
+    const transport = vi
+      .fn<domain.FulfillmentService['cancelOrder']>()
+      .mockResolvedValue({ state: 'UNAVAILABLE', occurredAt: null });
+    const { actions } = cancellationService(transport);
+    const before = await snapshot(f.orderId);
+    const input = cancellationInput(f.orderNumber);
+    const result = await actions.cancel(staff, input);
+    expect(result).toMatchObject({
+      status: 'FAILED',
+      orderStatus: 'SUBMITTED_TO_PRINTIFY',
+      unresolvedFulfillmentGroupIds: [f.groupId],
+      ambiguousFulfillmentGroupIds: [],
+    });
+    expect(await snapshot(f.orderId)).toEqual(before);
+    await actions.cancel(staff, input);
+    expect(transport).toHaveBeenCalledOnce();
+    transport.mockResolvedValue({ state: 'CANCELLED', occurredAt: null });
+    expect(
+      await actions.retryCancellation(staff, {
+        orderNumber: f.orderNumber,
+        cancellationId: result.cancellationId,
+        idempotencyKey: randomUUID(),
+      }),
+    ).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
+    expect(transport.mock.calls.map(([request]) => request.idempotencyKey)).toEqual([
+      `cancel:${result.cancellationId}:${f.groupId}`,
+      `cancel:${result.cancellationId}:${f.groupId}`,
+    ]);
+  });
+
+  it.each(['TIMEOUT', 'NETWORK_ERROR'] as const)(
+    'keeps a %s provider cancellation transport failure ambiguous and retries read-only',
+    async (code) => {
       const f = await fixture('UNFULFILLED', 'SUBMITTED_TO_PRINTIFY', 'SUBMITTED');
-      await externalGroup(f, `failure-${randomUUID()}`);
-      const transport = vi.fn<domain.FulfillmentService['cancelOrder']>();
-      if (failure === 'refusal')
-        transport.mockResolvedValue({ state: 'UNAVAILABLE', occurredAt: null });
-      else
-        transport.mockRejectedValue(
-          new domain.FulfillmentIntegrationError('TIMEOUT', 'Fixture timeout'),
-        );
-      const { actions } = cancellationService(transport);
-      expect(actions.cancel).toBeTypeOf('function');
+      const externalOrderId = `ambiguous-${randomUUID()}`;
+      await externalGroup(f, externalOrderId);
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const cancelOrder = vi
+        .fn<domain.FulfillmentService['cancelOrder']>()
+        .mockRejectedValue(new domain.FulfillmentIntegrationError(code, 'Transport uncertain'));
+      const getOrderStatus = vi
+        .fn<domain.FulfillmentService['getOrderStatus']>()
+        .mockResolvedValueOnce({ externalOrderId, state: 'in-production', occurredAt: null })
+        .mockResolvedValueOnce({ externalOrderId, state: 'canceled', occurredAt: null });
+      fulfillment.cancelOrder = cancelOrder;
+      fulfillment.getOrderStatus = getOrderStatus;
+      const { actions } = cancellationService(undefined, { fulfillment });
       const before = await snapshot(f.orderId);
-      const input = cancellationInput(f.orderNumber);
-      const result = await actions.cancel(staff, input);
+      const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
       expect(result).toMatchObject({
         status: 'FAILED',
         orderStatus: 'SUBMITTED_TO_PRINTIFY',
         unresolvedFulfillmentGroupIds: [f.groupId],
+        ambiguousFulfillmentGroupIds: [f.groupId],
       });
       expect(await snapshot(f.orderId)).toEqual(before);
-      await actions.cancel(staff, input);
-      expect(transport).toHaveBeenCalledOnce();
-      transport.mockResolvedValue({ state: 'CANCELLED', occurredAt: null });
+      expect(cancelOrder).toHaveBeenCalledOnce();
+
       expect(
         await actions.retryCancellation(staff, {
           orderNumber: f.orderNumber,
           cancellationId: result.cancellationId,
           idempotencyKey: randomUUID(),
         }),
-      ).toMatchObject({ status: 'SUCCEEDED', orderStatus: 'CANCELLED' });
-      expect(transport.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
-        `cancel:${result.cancellationId}:${f.groupId}`,
-        `cancel:${result.cancellationId}:${f.groupId}`,
-      ]);
+      ).toMatchObject({
+        status: 'FAILED',
+        orderStatus: 'SUBMITTED_TO_PRINTIFY',
+        ambiguousFulfillmentGroupIds: [f.groupId],
+      });
+      expect(cancelOrder).toHaveBeenCalledOnce();
+      expect(getOrderStatus).toHaveBeenCalledOnce();
+
+      expect(
+        await actions.retryCancellation(staff, {
+          orderNumber: f.orderNumber,
+          cancellationId: result.cancellationId,
+          idempotencyKey: randomUUID(),
+        }),
+      ).toMatchObject({
+        status: 'SUCCEEDED',
+        orderStatus: 'CANCELLED',
+        ambiguousFulfillmentGroupIds: [],
+      });
+      expect(cancelOrder).toHaveBeenCalledOnce();
+      expect(getOrderStatus).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -2769,6 +2820,50 @@ suite('order archive transaction integration', () => {
     expect(await cancellationRows(f.orderId)).toEqual({ cancellations: [], attempts: [] });
     expect(cancelOrder).not.toHaveBeenCalled();
   });
+
+  it.each(['PENDING', 'RETRYING', 'FAILED'] as const)(
+    'carries a started %s external-order creation without a provider ID as ambiguous cancellation work',
+    async (status) => {
+      const f = await fixture('UNFULFILLED', 'READY_FOR_PRODUCTION', 'READY_FOR_PRODUCTION');
+      await pool.query(
+        `INSERT INTO app.order_fulfillment_actions
+        (order_id,fulfillment_group_id,action,idempotency_key,status,attempt_count,requested_by_staff_member_id)
+        VALUES ($1,$2,'CREATE_EXTERNAL_ORDER',$3,$4,1,$5)`,
+        [f.orderId, f.groupId, randomUUID(), status, staff.staffMemberId],
+      );
+      const fulfillment = new ArchiveFixtureFulfillment();
+      const cancelOrder = vi.spyOn(fulfillment, 'cancelOrder');
+      const getOrderStatus = vi.spyOn(fulfillment, 'getOrderStatus');
+      const { actions, operations } = cancellationService(undefined, { fulfillment });
+
+      const result = await actions.cancel(staff, cancellationInput(f.orderNumber));
+      expect(result).toMatchObject({
+        status: 'FAILED',
+        orderStatus: 'READY_FOR_PRODUCTION',
+        unresolvedFulfillmentGroupIds: [f.groupId],
+        ambiguousFulfillmentGroupIds: [f.groupId],
+      });
+      expect((await cancellationRows(f.orderId)).attempts).toMatchObject([
+        {
+          status: 'REQUESTED',
+          attempt_count: 0,
+          provider_error_code: 'CANCELLATION_OUTCOME_UNKNOWN',
+          response_metadata: {
+            upstreamAction: 'CREATE_EXTERNAL_ORDER',
+            upstreamActionStatus: status,
+            reconciliation: 'READ_ONLY',
+            requiresManualResolution: true,
+            reconciliationErrorCode: 'EXTERNAL_ORDER_ID_UNRESOLVED',
+          },
+        },
+      ]);
+      expect(cancelOrder).not.toHaveBeenCalled();
+      expect(getOrderStatus).not.toHaveBeenCalled();
+      await expect(operations.submitProduction(staff, f.orderNumber)).rejects.toThrow(
+        'Cancellation must be resolved',
+      );
+    },
+  );
 
   it.each(['order', 'group'])(
     'waits for the %s lock and refuses fresh cancellation-ineligible evidence',
