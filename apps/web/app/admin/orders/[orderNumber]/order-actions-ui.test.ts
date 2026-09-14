@@ -408,11 +408,34 @@ describe('order action surfaces', () => {
     };
     const path = '/api/admin/orders/%2342/returns/return-1/transitions';
     await createOrderActionSession(path).submit({ toState: 'CLOSED', note: 'Inspected' });
-    expect(canManageReturn('/api/admin/orders', '#42', returned)).toBe(true);
+    expect(canManageReturn('/api/admin/orders', '#42', returned, true)).toBe(true);
     const html = markup(ManageReturnModal, { ...props, returned });
     expect(html).toContain('Check status');
     expect(html).toContain('Closed');
     expect(html).toContain('Inspected');
+  });
+
+  it('does not expose browser-journal recovery when the server denies mutation recovery', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Lost response')));
+    const returned = {
+      id: 'return-restricted',
+      state: 'CLOSED' as const,
+      permittedTransitions: [] as const,
+      reasonCode: 'CUSTOMER_REQUEST',
+      shippingRequired: false,
+      note: null,
+      carrier: null,
+      trackingNumber: null,
+      createdByName: 'ops@example.test',
+      createdAt: '2026-09-14T12:00:00Z',
+      updatedAt: '2026-09-14T12:00:00Z',
+      items: [{ orderItemId: 'item-1', quantity: 1 }],
+    };
+    const path = '/api/admin/orders/%2342/returns/return-restricted/transitions';
+
+    await createOrderActionSession(path).submit({ toState: 'CLOSED', note: 'Inspected' });
+
+    expect(canManageReturn('/api/admin/orders', '#42', returned, false)).toBe(false);
   });
   it('renders durable pending refunds in Payment and offers an explicit read-only reconciliation', () => {
     const pendingRefund = {

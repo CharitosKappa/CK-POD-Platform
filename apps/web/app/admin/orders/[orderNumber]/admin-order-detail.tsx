@@ -231,7 +231,12 @@ export function AdminOrderDetail({
                           <span className="order-layer-badge">
                             {returned.state.replaceAll('_', ' ').toLowerCase()}
                           </span>
-                          {canManageReturn(apiBase, order.orderNumber, returned) ? (
+                          {canManageReturn(
+                            apiBase,
+                            order.orderNumber,
+                            returned,
+                            order.actionRecovery.canResume,
+                          ) ? (
                             <button
                               type="button"
                               className="order-action-button"
@@ -334,7 +339,8 @@ export function canManageReturn(
   apiBase: string,
   orderNumber: string,
   returned: OrderDetail['returns'][number],
+  canResume: boolean,
 ): boolean {
   const path = `${apiBase}/${encodeURIComponent(orderNumber)}/returns/${encodeURIComponent(returned.id)}/transitions`;
-  return returned.permittedTransitions.length > 0 || hasOrderActionJournal(path);
+  return returned.permittedTransitions.length > 0 || (canResume && hasOrderActionJournal(path));
 }
