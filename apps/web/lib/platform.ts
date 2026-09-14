@@ -39,7 +39,7 @@ import {
 } from '@let-it-be/domain';
 
 import { generationRuntime } from './generation-runtime';
-import { localDevelopmentAdminEmail } from './development-auth';
+import { adminBootstrapEmail } from './development-auth';
 import { serverEnvironment } from './runtime-environment';
 
 const sessionCookieName = 'let_it_be_session';
@@ -255,7 +255,7 @@ export function paymentWebhookRuntime() {
 
 export function staffIdentityRuntime() {
   const environment = serverEnvironment();
-  const initialOwnerEmail = localDevelopmentAdminEmail(environment);
+  const initialOwnerEmail = adminBootstrapEmail(environment);
   return new StaffIdentityService(databasePool(), {
     pepper: environment.STAFF_AUTH_EMAIL_CODE_PEPPER,
     ...(initialOwnerEmail ? { initialOwnerEmail } : {}),

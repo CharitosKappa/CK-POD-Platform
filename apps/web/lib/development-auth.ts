@@ -13,3 +13,12 @@ export function localDevelopmentAdminEmail(environment: LocalAdminEnvironment): 
   if (!mayExposeLocalDevelopmentCode(environment)) return undefined;
   return environment.INITIAL_ADMIN_EMAIL?.trim().toLowerCase() || fallbackLocalAdminEmail;
 }
+
+/** The configured bootstrap identity is valid in every environment. Only the
+ * convenience fallback and on-screen OTP remain restricted to local development. */
+export function adminBootstrapEmail(environment: LocalAdminEnvironment): string | undefined {
+  return (
+    environment.INITIAL_ADMIN_EMAIL?.trim().toLowerCase() ||
+    localDevelopmentAdminEmail(environment)
+  );
+}

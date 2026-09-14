@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { localDevelopmentAdminEmail, mayExposeLocalDevelopmentCode } from './development-auth';
+import {
+  adminBootstrapEmail,
+  localDevelopmentAdminEmail,
+  mayExposeLocalDevelopmentCode,
+} from './development-auth';
 
 describe('mayExposeLocalDevelopmentCode', () => {
   it.each([
@@ -37,6 +41,25 @@ describe('mayExposeLocalDevelopmentCode', () => {
     expect(
       localDevelopmentAdminEmail({
         APP_ENV: 'production',
+        NODE_ENV: 'production',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('keeps an explicitly configured bootstrap owner in non-local environments', () => {
+    expect(
+      adminBootstrapEmail({
+        APP_ENV: 'production',
+        NODE_ENV: 'production',
+        INITIAL_ADMIN_EMAIL: ' Owner@Example.com ',
+      }),
+    ).toBe('owner@example.com');
+  });
+
+  it('never invents a bootstrap owner outside local development', () => {
+    expect(
+      adminBootstrapEmail({
+        APP_ENV: 'staging',
         NODE_ENV: 'production',
       }),
     ).toBeUndefined();
