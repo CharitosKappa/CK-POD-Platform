@@ -1607,15 +1607,18 @@ function orderAddressSql() {
 function orderSummarySql(alias = 'order_summary') {
   void alias;
   return `SELECT count(*)::int AS order_count,
-                 coalesce(sum(greatest(
-                   (orders.pricing_snapshot->>'totalCents')::int
-                     - coalesce(succeeded_refund.refunded_cents, 0),
-                   0
-                 )),0)::int AS total_spent_cents,
+                 coalesce(sum(${capturedCustomerSpendSql(
+                   'orders',
+                   'checkout_payment',
+                   'succeeded_refund',
+                 )}),0)::int AS total_spent_cents,
                  max(orders.created_at) AS last_order_at,
                  count(*) FILTER (WHERE coalesce(succeeded_refund.refunded_cents, 0) > 0)::int
                    AS returned_order_count
           FROM app.orders orders
+          JOIN app.payments checkout_payment
+            ON checkout_payment.checkout_attempt_id=orders.checkout_attempt_id
+           AND checkout_payment.status='SUCCEEDED'
           LEFT JOIN LATERAL (
             SELECT coalesce(sum(actual.amount_cents),0)::int AS refunded_cents FROM (
               SELECT allocation.amount_cents FROM app.order_refund_allocations allocation
@@ -1650,20 +1653,38 @@ function customerOrderSummariesCteSql() {
           order_summaries AS (
             SELECT orders.customer_profile_id,
                    count(*)::int AS order_count,
-                   coalesce(sum(greatest(
-                     (orders.pricing_snapshot->>'totalCents')::int
-                       - coalesce(refunded_orders.refunded_cents, 0),
-                     0
-                   )), 0)::int AS total_spent_cents,
+                   coalesce(sum(${capturedCustomerSpendSql(
+                     'orders',
+                     'checkout_payment',
+                     'refunded_orders',
+                   )}), 0)::int AS total_spent_cents,
                    max(orders.created_at) AS last_order_at,
                    count(*) FILTER (WHERE coalesce(refunded_orders.refunded_cents, 0) > 0)::int
                      AS returned_order_count
             FROM app.orders orders
+            JOIN app.payments checkout_payment
+              ON checkout_payment.checkout_attempt_id=orders.checkout_attempt_id
+             AND checkout_payment.status='SUCCEEDED'
             LEFT JOIN refunded_orders ON refunded_orders.order_id=orders.id
             WHERE orders.customer_profile_id IS NOT NULL
               AND orders.status NOT IN ('DRAFT','PAYMENT_PENDING','CANCELLED','FAILED')
             GROUP BY orders.customer_profile_id
           )`;
+}
+
+function capturedCustomerSpendSql(
+  orderAlias: string,
+  checkoutPaymentAlias: string,
+  refundAlias: string,
+) {
+  return `greatest(
+    ${checkoutPaymentAlias}.amount_cents
+      + coalesce((SELECT sum(capture.amount_cents)
+                  FROM app.order_payment_captures capture
+                  WHERE capture.order_id=${orderAlias}.id), 0)
+      - coalesce(${refundAlias}.refunded_cents, 0),
+    0
+  )`;
 }
 
 function addressSearchDocumentSql(alias: string) {

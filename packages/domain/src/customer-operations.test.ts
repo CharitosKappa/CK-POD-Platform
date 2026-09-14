@@ -64,6 +64,10 @@ describe('customer lifecycle views', () => {
     );
     expect(directorySql).toContain('WITH refunded_orders AS');
     expect(directorySql).toContain('LEFT JOIN order_summaries order_summary');
+    expect(directorySql).toContain('JOIN app.payments checkout_payment');
+    expect(directorySql).toContain("checkout_payment.status='SUCCEEDED'");
+    expect(directorySql).toContain('FROM app.order_payment_captures capture');
+    expect(directorySql).not.toContain("(orders.pricing_snapshot->>'totalCents')::int");
     expect(directorySql).toContain('FROM app.customer_addresses search_address');
     expect(directorySql).not.toContain('LEFT JOIN LATERAL (SELECT count(*)::int AS order_count');
     expect(metricsSql).toContain('WITH refunded_orders AS');
@@ -286,6 +290,10 @@ describe('customer detail commerce summary', () => {
     expect(identitySql?.[0]).toContain("refund.status='SUCCEEDED'");
     expect(identitySql?.[0]).toContain('succeeded_refund.refunded_cents');
     expect(identitySql?.[0]).toContain('greatest(');
+    expect(identitySql?.[0]).toContain('JOIN app.payments checkout_payment');
+    expect(identitySql?.[0]).toContain("checkout_payment.status='SUCCEEDED'");
+    expect(identitySql?.[0]).toContain('FROM app.order_payment_captures capture');
+    expect(identitySql?.[0]).not.toContain("(orders.pricing_snapshot->>'totalCents')::int");
     expect(identitySql?.[0]).toContain('LEFT JOIN app.store_credit_accounts store_credit');
     expect(identitySql?.[0]).toContain('coalesce(store_credit.current_balance_cents, 0)::int');
     expect(identitySql?.[0]).toContain('store_credit_transaction_count');
