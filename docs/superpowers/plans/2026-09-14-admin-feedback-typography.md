@@ -24,19 +24,21 @@
 ### Task 1: Shared admin feedback component
 
 **Files:**
+
 - Create: `apps/web/app/admin/_components/admin-feedback.tsx`
 - Create: `apps/web/app/admin/_components/admin-feedback.test.tsx`
 
 **Interfaces:**
+
 - Produces: `AdminFeedback({ children, tone, onDismiss })`, `ADMIN_FEEDBACK_DISMISS_MS`, and `scheduleAdminFeedbackDismiss(tone, onDismiss, schedule, cancel)`.
 - Consumes: React `useEffect`, `useRef`, and `ReactNode` only.
 
 - [ ] **Step 1: Write failing markup and timer tests**
 
 ```tsx
-expect(renderToStaticMarkup(
-  createElement(AdminFeedback, { tone: 'success', onDismiss }, 'Saved.'),
-)).toContain('aria-label="Dismiss message"');
+expect(
+  renderToStaticMarkup(createElement(AdminFeedback, { tone: 'success', onDismiss }, 'Saved.')),
+).toContain('aria-label="Dismiss message"');
 
 const cleanup = scheduleAdminFeedbackDismiss('success', onDismiss, schedule, cancel);
 expect(schedule).toHaveBeenCalledWith(expect.any(Function), 4_000);
@@ -74,14 +76,13 @@ export function scheduleAdminFeedbackDismiss(
 export function AdminFeedback({ children, tone, onDismiss }: Props) {
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
-  useEffect(
-    () => scheduleAdminFeedbackDismiss(tone, () => dismiss.current()),
-    [children, tone],
-  );
+  useEffect(() => scheduleAdminFeedbackDismiss(tone, () => dismiss.current()), [children, tone]);
   return (
     <div className={`admin-feedback is-${tone}`} role={tone === 'error' ? 'alert' : 'status'}>
       <div>{children}</div>
-      <button type="button" aria-label="Dismiss message" onClick={onDismiss}>×</button>
+      <button type="button" aria-label="Dismiss message" onClick={onDismiss}>
+        ×
+      </button>
     </div>
   );
 }
@@ -102,6 +103,7 @@ git commit -m "feat: add dismissible admin feedback"
 ### Task 2: Adopt feedback consistently on admin screens
 
 **Files:**
+
 - Modify: `apps/web/app/admin/customers/_components/admin-customers-client.tsx`
 - Modify: `apps/web/app/admin/customers/_components/customer-detail-client.tsx`
 - Modify: `apps/web/app/admin/orders/_components/admin-orders-client.tsx`
@@ -109,6 +111,7 @@ git commit -m "feat: add dismissible admin feedback"
 - Test: `apps/web/app/admin/_components/admin-feedback.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `AdminFeedback` from Task 1.
 - Produces: page-level feedback surfaces whose parent state is cleared through `onDismiss`.
 
@@ -129,16 +132,20 @@ Expected: FAIL because the four page-level surfaces still use raw paragraphs.
 - [ ] **Step 3: Replace page-level raw feedback with the shared component**
 
 ```tsx
-{feedback ? (
-  <AdminFeedback tone="success" onDismiss={() => setFeedback(undefined)}>
-    {feedback}
-  </AdminFeedback>
-) : null}
-{error ? (
-  <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
-    {error}
-  </AdminFeedback>
-) : null}
+{
+  feedback ? (
+    <AdminFeedback tone="success" onDismiss={() => setFeedback(undefined)}>
+      {feedback}
+    </AdminFeedback>
+  ) : null;
+}
+{
+  error ? (
+    <AdminFeedback tone="error" onDismiss={() => setError(undefined)}>
+      {error}
+    </AdminFeedback>
+  ) : null;
+}
 ```
 
 Orders-list errors retain their existing `Try again` button as a child of `AdminFeedback`. Loading-state copy and inline form/modal validation remain unchanged.
@@ -158,10 +165,12 @@ git commit -m "refactor: standardize admin action feedback"
 ### Task 3: Increase admin main-body typography
 
 **Files:**
+
 - Modify: `apps/web/app/globals.css`
 - Create: `apps/web/app/admin/admin-main-typography.test.ts`
 
 **Interfaces:**
+
 - Produces: `.commerce-admin-main` typography tokens and scoped overrides.
 - Consumes: existing admin class names; no component API changes.
 
@@ -169,7 +178,9 @@ git commit -m "refactor: standardize admin action feedback"
 
 ```ts
 expect(styles).toMatch(/\.commerce-admin-main\s*{[^}]*--admin-body-size:\s*0\.875rem;/s);
-expect(styles).toMatch(/\.commerce-admin-main \.commerce-admin-table-scroll table\s*{[^}]*font-size:\s*var\(--admin-body-size\)/s);
+expect(styles).toMatch(
+  /\.commerce-admin-main \.commerce-admin-table-scroll table\s*{[^}]*font-size:\s*var\(--admin-body-size\)/s,
+);
 expect(styles).not.toMatch(/\.commerce-admin-sidebar[^}]*var\(--admin-body-size\)/s);
 expect(styles).toMatch(/\.admin-feedback-dismiss[^}]*width:\s*28px/s);
 ```
@@ -223,9 +234,11 @@ git commit -m "style: enlarge admin main typography"
 ### Task 4: Final verification
 
 **Files:**
+
 - Verify only; no expected source changes.
 
 **Interfaces:**
+
 - Consumes: Tasks 1–3.
 - Produces: evidence that feedback behavior and typography do not regress the admin build.
 

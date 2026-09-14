@@ -2311,6 +2311,179 @@ select:focus-visible {
   }
 }
 
+/* Shared readability scale for admin content. The fixed sidebar intentionally keeps its own type. */
+.commerce-admin-main {
+  --admin-body-size: 0.875rem;
+  --admin-helper-size: 0.75rem;
+  --admin-control-size: 0.875rem;
+  font-size: var(--admin-body-size);
+  line-height: 1.45;
+}
+
+.commerce-admin-main .commerce-admin-table-scroll table,
+.commerce-admin-main .customer-directory-table {
+  font-size: var(--admin-body-size);
+}
+
+.commerce-admin-main .commerce-admin-table-scroll th,
+.commerce-admin-main .customer-directory-table th {
+  font-size: var(--admin-helper-size);
+}
+
+.commerce-admin-main .commerce-admin-table-scroll td small,
+.commerce-admin-main small,
+.commerce-admin-main time {
+  font-size: var(--admin-helper-size);
+}
+
+.commerce-admin-main :where(button, input, select, textarea) {
+  font-size: var(--admin-control-size);
+}
+
+.commerce-admin-main .commerce-admin-tabs :where(a, button),
+.commerce-admin-main .commerce-status,
+.commerce-admin-main .customer-pagination,
+.commerce-admin-main .commerce-admin-pagination {
+  font-size: 0.8125rem;
+}
+
+.commerce-admin-main .commerce-admin-page-heading > div > span {
+  font-size: 0.95rem;
+}
+
+.commerce-admin-main .commerce-admin-page-heading > div > p,
+.commerce-admin-main .commerce-admin-card header p {
+  font-size: var(--admin-helper-size);
+}
+
+.commerce-admin-main .commerce-admin-card header a,
+.commerce-admin-main .commerce-admin-page-heading > a {
+  font-size: var(--admin-body-size);
+}
+
+.commerce-admin-main .commerce-admin-metrics p,
+.commerce-admin-main .commerce-admin-metrics small {
+  font-size: var(--admin-helper-size);
+}
+
+.commerce-admin-main .customer-detail-page p,
+.commerce-admin-main .customer-detail-page address,
+.commerce-admin-main .order-detail-page p,
+.commerce-admin-main .order-detail-page address {
+  font-size: var(--admin-body-size);
+  line-height: 1.5;
+}
+
+.commerce-admin-main .customer-contact-card {
+  --customer-sidebar-meta-size: 0.8125rem;
+}
+
+.commerce-admin-main .customer-contact-links,
+.commerce-admin-main .customer-sidebar-address,
+.commerce-admin-main .customer-sidebar-subsection,
+.commerce-admin-main .customer-sidebar-card-value,
+.commerce-admin-main .customer-info-list > div,
+.commerce-admin-main .customer-timeline strong,
+.commerce-admin-main .order-detail-meta,
+.commerce-admin-main .order-summary-list,
+.commerce-admin-main .order-provider-group {
+  font-size: 0.8125rem;
+}
+
+.commerce-admin-main .customer-notification-language,
+.commerce-admin-main .customer-timeline time,
+.commerce-admin-main .customer-detailed-timeline small,
+.commerce-admin-main .order-timeline time,
+.commerce-admin-main .order-timeline small {
+  font-size: var(--admin-helper-size);
+}
+
+.commerce-admin-main .customer-dialog p,
+.commerce-admin-main .customer-dialog label,
+.commerce-admin-main .customer-modal-panel p,
+.commerce-admin-main .customer-modal-panel label,
+.commerce-admin-main .order-action-modal p,
+.commerce-admin-main .order-action-modal label {
+  font-size: var(--admin-body-size);
+}
+
+.admin-feedback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 14px;
+  border: 1px solid #cadcc7;
+  border-radius: 9px;
+  background: #eaf3e7;
+  padding: 10px 10px 10px 13px;
+  color: #345437;
+  font-size: var(--admin-body-size, 0.875rem);
+}
+
+.admin-feedback.is-info {
+  border-color: #ccd9df;
+  background: #edf3f5;
+  color: #3d5965;
+}
+
+.admin-feedback.is-error {
+  border-color: #e8cbc1;
+  background: #f7e9e4;
+  color: #7a382e;
+}
+
+.customer-detail-page > .admin-feedback,
+.order-detail-page > .admin-feedback {
+  margin: 0 0 14px;
+}
+
+.admin-feedback-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-feedback-content button,
+.admin-feedback-content a {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.admin-feedback-dismiss {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: currentcolor;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  opacity: 0.72;
+}
+
+.admin-feedback-dismiss:hover {
+  background: color-mix(in srgb, currentcolor 9%, transparent);
+  opacity: 1;
+}
+
+.admin-feedback-dismiss:focus-visible {
+  outline: 2px solid currentcolor;
+  outline-offset: 1px;
+  opacity: 1;
+}
+
 /* Order actions share the commerce admin's restrained surfaces and type scale. */
 .order-detail-heading > .order-actions-menu {
   flex-shrink: 0;

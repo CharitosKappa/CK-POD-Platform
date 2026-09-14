@@ -33,10 +33,7 @@ export function AdminFeedback({
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
 
-  useEffect(
-    () => scheduleAdminFeedbackDismiss(tone, () => dismiss.current()),
-    [children, tone],
-  );
+  useEffect(() => scheduleAdminFeedbackDismiss(tone, () => dismiss.current()), [children, tone]);
 
   return (
     <div className={`admin-feedback is-${tone}`} role={tone === 'error' ? 'alert' : 'status'}>
