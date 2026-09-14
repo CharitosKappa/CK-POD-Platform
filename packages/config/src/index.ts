@@ -68,7 +68,9 @@ export const serverEnvironmentSchema = z
     S3_SECRET_ACCESS_KEY: optionalNonEmptyString,
     QUEUE_DRIVER: queueDriver.default('memory'),
     OPENAI_API_KEY: optionalNonEmptyString,
-    OPENAI_IMAGE_MODEL: z.literal('gpt-image-2.5-sunburst').default('gpt-image-2.5-sunburst'),
+    OPENAI_IMAGE_MODEL: z
+      .enum(['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'])
+      .default('gpt-image-2.5-sunburst'),
     OPENAI_API_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
     AI_PROVIDER_CONFIG: z.string().min(2).default(defaultProviderConfiguration),
     AI_GUEST_FREE_CREDITS: positiveInteger.default(5),

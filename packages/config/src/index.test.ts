@@ -96,12 +96,26 @@ describe('parseServerEnvironment', () => {
     expect(environment.AI_PROVIDER_CONFIG).toBe(explicit);
   });
 
-  it('rejects a different OpenAI image model for the locked Sunburst integration', () => {
+  it('allows Flare as an explicit temporary image-model override', () => {
+    const environment = parseServerEnvironment({
+      ...baseEnvironment,
+      OPENAI_API_KEY: 'server-only-key',
+      OPENAI_IMAGE_MODEL: 'gpt-image-2.5-flare',
+    });
+
+    expect(environment.OPENAI_IMAGE_MODEL).toBe('gpt-image-2.5-flare');
+    expect(JSON.parse(environment.AI_PROVIDER_CONFIG)[0]).toMatchObject({
+      adapter: 'openai-images',
+      model: 'gpt-image-2.5-flare',
+      maxRetries: 0,
+    });
+  });
+
+  it('rejects image models outside the approved GPT-Image 2.5 pair', () => {
     expect(() =>
       parseServerEnvironment({
         ...baseEnvironment,
-        OPENAI_API_KEY: 'server-only-key',
-        OPENAI_IMAGE_MODEL: 'gpt-image-2.5-flare',
+        OPENAI_IMAGE_MODEL: 'unapproved-image-model',
       }),
     ).toThrow();
   });
