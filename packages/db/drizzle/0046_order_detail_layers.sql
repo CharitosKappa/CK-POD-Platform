@@ -23,13 +23,12 @@ SET printing_status = CASE fulfillment_group.status
         WHERE shipment.fulfillment_group_id = fulfillment_group.id
           AND (shipment.delivered_at IS NOT NULL OR lower(shipment.status) = 'delivered')
       ) THEN 'DELIVERED'
-      WHEN fulfillment_group.status = 'DELIVERED' THEN 'DELIVERED'
       WHEN EXISTS (
         SELECT 1 FROM app.order_shipments shipment
         WHERE shipment.fulfillment_group_id = fulfillment_group.id
           AND (shipment.shipped_at IS NOT NULL OR lower(shipment.status) IN ('shipped','delivered'))
       ) THEN 'FULFILLED'
-      WHEN fulfillment_group.status = 'SHIPPED' THEN 'FULFILLED'
+      WHEN fulfillment_group.status IN ('SHIPPED','DELIVERED') THEN 'FULFILLED'
       WHEN fulfillment_group.status = 'CANCELLED' THEN 'CANCELLED'
       ELSE 'UNFULFILLED'
     END;
