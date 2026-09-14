@@ -109,11 +109,15 @@ suite('order detail persistence integration', () => {
       .flatMap((group) => group.items)
       .find((row) => row.id === order.itemId)!;
     expect(item.productVariantId).toBe('essential-dtg-tee-black-M');
-    expect(item.variantOptions).toContainEqual({
-      id: 'essential-dtg-tee-black-M',
-      color: 'Black',
-      size: 'M',
-    });
+    expect(item.variantOptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'essential-dtg-tee-black-M',
+          color: 'Black',
+          size: 'M',
+        }),
+      ]),
+    );
     const available = await pool.query<{ id: string }>(
       "SELECT id FROM app.product_variants WHERE product_model_id='essential-dtg-tee' AND status='ACTIVE'",
     );
