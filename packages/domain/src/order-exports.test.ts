@@ -79,6 +79,55 @@ describe('hybrid order exports', () => {
     }
   });
 
+  it('neutralizes customer-controlled spreadsheet formulas without changing numeric cells', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith('SELECT count')) return { rows: [{ count: 1 }], rowCount: 1 };
+      if (sql.includes('SELECT orders.id,'))
+        return {
+          rows: [
+            {
+              id: orderId,
+              order_number: '#1',
+              created_at: now,
+              customer_name: '=HYPERLINK("https://example.test")',
+              customer_email: '+cmd@example.test',
+              products: ['@SUM(1+1)'],
+              item_count: 2,
+              payment_status: 'SUCCEEDED',
+              printing_status: 'PRINTED',
+              fulfillment_status: 'FULFILLED',
+              total_cents: 3999,
+              currency: 'USD',
+              shipping_city: '-1+1',
+              shipping_state: '\t=CMD()',
+              shipping_country: '\r=CMD()',
+            },
+          ],
+          rowCount: 1,
+        };
+      return { rows: [], rowCount: 0 };
+    });
+    const service = new OrderExportService(
+      { query } as unknown as SqlPool,
+      new InMemoryJobQueue(),
+      new MemoryObjectStorage(),
+    );
+
+    const result = await service.request(actor, { type: 'IDS', orderIds: [orderId] });
+
+    expect(result.mode).toBe('IMMEDIATE');
+    if (result.mode === 'IMMEDIATE') {
+      const csv = new TextDecoder().decode(result.body);
+      expect(csv).toContain("'=HYPERLINK");
+      expect(csv).toContain("'+cmd@example.test");
+      expect(csv).toContain("'@SUM(1+1)");
+      expect(csv).toContain("'-1+1");
+      expect(csv).toContain("'\t=CMD()");
+      expect(csv).toContain("'\r=CMD()");
+      expect(csv).toContain(',2,SUCCEEDED,PRINTED,FULFILLED,39.99,USD,');
+    }
+  });
+
   it('uses the shared joined order filter contract for filtered exports', async () => {
     const executedValues: Array<readonly unknown[] | undefined> = [];
     const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {

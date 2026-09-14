@@ -421,7 +421,11 @@ function csvRow(row: OrderExportDataRow) {
     .join(',');
 }
 function escapeCsv(value: unknown) {
-  const valueText = value == null ? '' : String(value);
+  const raw = value == null ? '' : String(value);
+  // Spreadsheet applications may execute formula-like text even when a CSV cell is
+  // correctly quoted. Preserve genuine numeric values, but force every text value
+  // with a dangerous prefix to remain literal data when staff opens the export.
+  const valueText = typeof value === 'string' && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(valueText) ? `"${valueText.replaceAll('"', '""')}"` : valueText;
 }
 function concatenate(chunks: Uint8Array[]) {
