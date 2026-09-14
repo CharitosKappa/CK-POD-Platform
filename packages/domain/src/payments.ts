@@ -1,6 +1,11 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { PaymentRefundRejectedError, PaymentRefundUncertainError } from './commerce-contracts';
+import {
+  PaymentIntentRejectedError,
+  PaymentIntentUncertainError,
+  PaymentRefundRejectedError,
+  PaymentRefundUncertainError,
+} from './commerce-contracts';
 
 import type {
   PaymentIntentRequest,
@@ -27,6 +32,17 @@ export class FakePaymentService implements PaymentService {
       clientSecret: `fake_secret_${referenceId}`,
       status: 'PENDING',
     };
+  }
+
+  async getIntent(input: {
+    providerPaymentId: string;
+    request: PaymentIntentRequest;
+  }): Promise<PaymentIntentResult> {
+    return fakeIntent(input.request, input.providerPaymentId);
+  }
+
+  async findIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult> {
+    return fakeIntent(input);
   }
 
   async verifyWebhook(input: {
@@ -101,23 +117,76 @@ export class StripePaymentService implements PaymentService {
       receipt_email: input.customerEmail,
       ...paymentIntentMetadata(input),
     });
-    const response = await fetch(`${this.baseUrl}/payment_intents`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.secretKey}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Idempotency-Key': input.idempotencyKey,
-      },
-      body: form,
+    let response: Response;
+    let parsed: Record<string, unknown>;
+    try {
+      response = await fetch(`${this.baseUrl}/payment_intents`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Idempotency-Key': input.idempotencyKey,
+        },
+        body: form,
+      });
+      parsed = (await response.json()) as Record<string, unknown>;
+    } catch {
+      throw new PaymentIntentUncertainError();
+    }
+    if (!response.ok) {
+      const error = parsed.error as { type?: unknown } | undefined;
+      const definitive = new Map<number, string[]>([
+        [400, ['invalid_request_error']],
+        [401, ['authentication_error']],
+        [402, ['card_error']],
+        [403, ['permission_error']],
+        [404, ['invalid_request_error']],
+      ]);
+      if (typeof error?.type === 'string' && definitive.get(response.status)?.includes(error.type))
+        throw new PaymentIntentRejectedError();
+      throw new PaymentIntentUncertainError();
+    }
+    return stripeIntentResult(parsed, input);
+  }
+
+  async getIntent(input: {
+    providerPaymentId: string;
+    request: PaymentIntentRequest;
+  }): Promise<PaymentIntentResult> {
+    let response: Response;
+    let result: Record<string, unknown>;
+    try {
+      response = await fetch(
+        `${this.baseUrl}/payment_intents/${encodeURIComponent(input.providerPaymentId)}`,
+        { headers: { Authorization: `Bearer ${this.secretKey}` } },
+      );
+      result = (await response.json()) as Record<string, unknown>;
+      if (!response.ok) throw new PaymentIntentUncertainError();
+    } catch {
+      throw new PaymentIntentUncertainError();
+    }
+    return stripeIntentResult(result, input.request);
+  }
+
+  async findIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult | null> {
+    if (input.reference.kind !== 'ORDER_EDIT') throw new PaymentIntentUncertainError();
+    const query = new URLSearchParams({
+      query: `metadata['order_edit_payment_attempt_id']:'${input.reference.orderEditPaymentAttemptId}'`,
     });
-    if (!response.ok) throw new Error('Stripe could not prepare payment.');
-    const parsed = (await response.json()) as { id: string; client_secret: string; status: string };
-    return {
-      provider: 'STRIPE',
-      providerPaymentId: parsed.id,
-      clientSecret: parsed.client_secret,
-      status: stripeOutcome(parsed.status),
-    };
+    let response: Response;
+    let result: Record<string, unknown>;
+    try {
+      response = await fetch(`${this.baseUrl}/payment_intents/search?${query}`, {
+        headers: { Authorization: `Bearer ${this.secretKey}` },
+      });
+      result = (await response.json()) as Record<string, unknown>;
+      if (!response.ok || !Array.isArray(result.data)) throw new PaymentIntentUncertainError();
+    } catch {
+      throw new PaymentIntentUncertainError();
+    }
+    if (result.data.length === 0) return null;
+    if (result.data.length !== 1) throw new PaymentIntentUncertainError();
+    return stripeIntentResult(result.data[0] as Record<string, unknown>, input);
   }
 
   async verifyWebhook(input: {
@@ -276,6 +345,51 @@ function paymentIntentMetadata(input: PaymentIntentRequest): Record<string, stri
     'metadata[order_id]': input.reference.orderId,
     'metadata[order_revision_id]': input.reference.orderRevisionId,
     'metadata[order_edit_payment_attempt_id]': input.reference.orderEditPaymentAttemptId,
+  };
+}
+
+function fakeIntent(input: PaymentIntentRequest, providerPaymentId?: string): PaymentIntentResult {
+  const referenceId =
+    input.reference.kind === 'CHECKOUT'
+      ? input.reference.checkoutAttemptId
+      : input.reference.orderEditPaymentAttemptId;
+  return {
+    provider: 'FAKE',
+    providerPaymentId:
+      providerPaymentId ??
+      `fake_pi_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
+    clientSecret: `fake_secret_${referenceId}`,
+    status: 'PENDING',
+  };
+}
+
+function stripeIntentResult(
+  value: Record<string, unknown>,
+  expected: PaymentIntentRequest,
+): PaymentIntentResult {
+  const metadata =
+    value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
+      ? (value.metadata as Record<string, unknown>)
+      : {};
+  const expectedMetadata = Object.fromEntries(
+    Object.entries(paymentIntentMetadata(expected)).map(([key, field]) => [
+      key.slice('metadata['.length, -1),
+      field,
+    ]),
+  );
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.status !== 'string' ||
+    value.amount !== expected.amountCents ||
+    value.currency !== 'usd' ||
+    Object.entries(expectedMetadata).some(([key, field]) => metadata[key] !== field)
+  )
+    throw new PaymentIntentUncertainError();
+  return {
+    provider: 'STRIPE',
+    providerPaymentId: value.id,
+    clientSecret: typeof value.client_secret === 'string' ? value.client_secret : null,
+    status: stripeOutcome(value.status),
   };
 }
 

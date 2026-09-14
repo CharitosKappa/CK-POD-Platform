@@ -42,6 +42,8 @@ export const requiredApplicationTables = [
   'order_fulfillment_status_events',
   'order_exports',
   'order_edit_payment_attempts',
+  'order_payment_captures',
+  'order_refund_allocations',
   'order_holds',
   'order_items',
   'order_notes',

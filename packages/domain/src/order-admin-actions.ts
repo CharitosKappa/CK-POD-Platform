@@ -269,7 +269,7 @@ export class OrderAdminActionsService {
           `SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN')))
           UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
           UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
-          UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND status IN ('PREPARING','PENDING')
+          UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND (status IN ('PREPARING','PENDING') OR (status='FAILED' AND provider_payment_id IS NOT NULL))
           UNION ALL SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED') LIMIT 1`,
           [locked.id],
         );
@@ -627,8 +627,7 @@ export class OrderAdminActionsService {
       !returnStates.includes(input.toState) ||
       [input.carrier, input.trackingNumber].some(
         (value) => value !== undefined && (typeof value !== 'string' || value.length > 200),
-      ) ||
-      (input.toState === 'IN_TRANSIT' && (!input.carrier?.trim() || !input.trackingNumber?.trim()))
+      )
     ) {
       throw new OrderAdminActionValidationError(
         'Provide a valid return, target state, and tracking fields of at most 200 characters.',
@@ -666,6 +665,13 @@ export class OrderAdminActionsService {
         )
       )
         throw new OrderAdminActionConflictError('This return state transition is not allowed.');
+      if (
+        input.toState === 'IN_TRANSIT' &&
+        (!input.carrier?.trim() || !input.trackingNumber?.trim())
+      )
+        throw new OrderAdminActionValidationError(
+          'Provide both carrier and tracking number for an in-transit return.',
+        );
       await client.query(
         `UPDATE app.order_returns SET state=$2,carrier=COALESCE($3,carrier),tracking_number=COALESCE($4,tracking_number),updated_at=now() WHERE id=$1`,
         [
@@ -1479,7 +1485,9 @@ export class OrderAdminActionsService {
       returnable_quantity: number;
     }>(
       `SELECT layers.fulfillment_status, payment.status AS payment_status,
-         CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END AS paid_cents,
+         CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents+
+           COALESCE((SELECT sum(capture.amount_cents) FROM app.order_payment_captures capture
+             WHERE capture.order_id=orders.id),0) ELSE 0 END AS paid_cents,
          COALESCE((SELECT sum(amount_cents) FROM app.order_refunds
            WHERE order_id=orders.id AND status='SUCCEEDED'),0)::int AS refunded_cents,
          COALESCE((SELECT sum(amount_cents) FROM app.order_refunds
@@ -1500,6 +1508,13 @@ export class OrderAdminActionsService {
     );
     const row = evidence.rows[0];
     if (!row) throw new OrderAdminActionNotFoundError('Order not found.');
+    const activeAdditionalPayments = await client.query(
+      `SELECT id FROM app.order_edit_payment_attempts
+       WHERE order_id=$1 AND (status IN ('PREPARING','PENDING')
+         OR (status='FAILED' AND provider_payment_id IS NOT NULL))
+       ORDER BY id FOR UPDATE`,
+      [order.id],
+    );
     // Only the canonical cancellation authority can make cancellation terminal for archive.
     const fulfillmentState =
       order.status === 'CANCELLED'
@@ -1523,10 +1538,14 @@ export class OrderAdminActionsService {
         ['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED'].includes(group.fulfillment_status),
       ),
     });
+    if (activeAdditionalPayments.rows.length) {
+      eligibility.actions.cancel = false;
+      eligibility.actions.refund = false;
+    }
     const blocked = await client.query(
       `SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=$1 AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
       UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=$1
-      UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND status IN ('PREPARING','PENDING')
+      UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=$1 AND (status IN ('PREPARING','PENDING') OR (status='FAILED' AND provider_payment_id IS NOT NULL))
       UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=$1 AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
        UNION ALL SELECT 1 FROM app.order_cancellations WHERE order_id=$1 AND (status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=app.order_cancellations.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN'))) LIMIT 1`,
       [order.id],

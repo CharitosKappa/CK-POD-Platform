@@ -33,6 +33,8 @@ import {
   OrderAdminActionConflictError,
   FulfillmentIntegrationError,
   EditedOrderBalanceAttributionError,
+  PaymentIntentRejectedError,
+  PaymentIntentUncertainError,
 } from '@let-it-be/domain';
 
 import { ApiRateLimitError } from './security';
@@ -205,6 +207,24 @@ export function handleRouteError(error: unknown): NextResponse {
 
 /** Provider errors are normalized only for the staff action API surface. */
 export function handleOrderActionRouteError(error: unknown): NextResponse {
+  if (error instanceof PaymentIntentRejectedError)
+    return NextResponse.json(
+      {
+        error: 'The payment provider refused this additional payment.',
+        code: 'ORDER_PAYMENT_REFUSED',
+        retryable: false,
+      },
+      { status: 409 },
+    );
+  if (error instanceof PaymentIntentUncertainError)
+    return NextResponse.json(
+      {
+        error: 'Additional payment status is uncertain. Reconcile the existing payment.',
+        code: 'ORDER_PAYMENT_UNCERTAIN',
+        retryable: true,
+      },
+      { status: 503 },
+    );
   if (error instanceof CommerceAccessError) {
     return NextResponse.json(
       {

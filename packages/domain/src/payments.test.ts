@@ -3,6 +3,11 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FakePaymentService, FakeTaxService, StripePaymentService } from './payments.js';
+import {
+  PaymentIntentRejectedError,
+  PaymentIntentUncertainError,
+  type PaymentIntentRequest,
+} from './commerce-contracts.js';
 
 describe('platform payment and tax adapters', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -149,6 +154,14 @@ describe('platform payment and tax adapters', () => {
           id: 'pi_order_edit_1',
           client_secret: 'pi_order_edit_1_secret',
           status: 'requires_payment_method',
+          amount: 725,
+          currency: 'usd',
+          metadata: {
+            payment_reference_kind: 'ORDER_EDIT',
+            order_id: '10000000-0000-4000-8000-000000000001',
+            order_revision_id: '10000000-0000-4000-8000-000000000002',
+            order_edit_payment_attempt_id: '10000000-0000-4000-8000-000000000003',
+          },
         }),
       ),
     );
@@ -185,6 +198,69 @@ describe('platform payment and tax adapters', () => {
       'metadata[order_edit_payment_attempt_id]': '10000000-0000-4000-8000-000000000003',
     });
     expect(Object.fromEntries(form)).not.toHaveProperty('metadata[checkout_attempt_id]');
+  });
+
+  it('distinguishes a definitive PaymentIntent refusal from an ambiguous provider outcome', async () => {
+    const request = orderEditIntentRequest();
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { type: 'invalid_request_error' } }), {
+            status: 400,
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { type: 'api_error' } }), { status: 503 }),
+        ),
+    );
+    const payments = new StripePaymentService('fixture', 'fixture');
+    await expect(payments.createIntent(request)).rejects.toBeInstanceOf(PaymentIntentRejectedError);
+    await expect(payments.createIntent(request)).rejects.toBeInstanceOf(
+      PaymentIntentUncertainError,
+    );
+  });
+
+  it('finds and gets a PaymentIntent read-only and validates its immutable request identity', async () => {
+    const request = orderEditIntentRequest();
+    const providerIntent = {
+      id: 'pi_order_edit_recovered',
+      client_secret: 'pi_order_edit_recovered_secret',
+      status: 'requires_payment_method',
+      amount: request.amountCents,
+      currency: 'usd',
+      metadata: {
+        payment_reference_kind: 'ORDER_EDIT',
+        order_id: request.reference.kind === 'ORDER_EDIT' ? request.reference.orderId : '',
+        order_revision_id:
+          request.reference.kind === 'ORDER_EDIT' ? request.reference.orderRevisionId : '',
+        order_edit_payment_attempt_id:
+          request.reference.kind === 'ORDER_EDIT'
+            ? request.reference.orderEditPaymentAttemptId
+            : '',
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [providerIntent], has_more: false })),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(providerIntent)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ ...providerIntent, amount: 1 }], has_more: false })),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const payments = new StripePaymentService('fixture', 'fixture');
+    await expect(payments.findIntent!(request)).resolves.toMatchObject({
+      providerPaymentId: 'pi_order_edit_recovered',
+      status: 'PENDING',
+    });
+    await expect(
+      payments.getIntent!({ providerPaymentId: 'pi_order_edit_recovered', request }),
+    ).resolves.toMatchObject({ providerPaymentId: 'pi_order_edit_recovered' });
+    await expect(payments.findIntent!(request)).rejects.toBeInstanceOf(PaymentIntentUncertainError);
+    expect(fetchMock.mock.calls.every((call) => call[1]?.method !== 'POST')).toBe(true);
   });
 
   it('uses integer minor-unit rounding for development tax', async () => {
@@ -249,3 +325,27 @@ describe('platform payment and tax adapters', () => {
     ).resolves.toBeNull();
   });
 });
+
+function orderEditIntentRequest(): PaymentIntentRequest {
+  return {
+    reference: {
+      kind: 'ORDER_EDIT',
+      orderId: '10000000-0000-4000-8000-000000000001',
+      orderRevisionId: '10000000-0000-4000-8000-000000000002',
+      orderEditPaymentAttemptId: '10000000-0000-4000-8000-000000000003',
+    },
+    amountCents: 725,
+    currency: 'USD',
+    idempotencyKey: 'order-edit-payment-001',
+    customerEmail: 'person@example.test',
+    billingAddress: {
+      recipientName: 'Person Example',
+      line1: '1 Example Street',
+      line2: null,
+      city: 'San Francisco',
+      stateCode: 'CA',
+      postalCode: '94107',
+      countryCode: 'US',
+    },
+  };
+}

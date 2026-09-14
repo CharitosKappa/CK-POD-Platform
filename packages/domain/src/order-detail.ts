@@ -280,6 +280,7 @@ interface BaseOrderRow {
   refundable_adjustment_cents: number;
   pending_refund_cents: number;
   edit_blocked: boolean;
+  additional_payment_active: boolean;
   id: string;
   order_number: string;
   customer_profile_id: string | null;
@@ -485,6 +486,10 @@ export class OrderDetailService {
         ['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED'].includes(group.fulfillment_status),
       ),
     });
+    if (order.additional_payment_active) {
+      eligibility.actions.cancel = false;
+      eligibility.actions.refund = false;
+    }
     if (
       order.edit_blocked ||
       [
@@ -1037,8 +1042,11 @@ export class OrderDetailService {
               layers.fulfillment_status,
               orders.status,orders.archived_at,orders.archived_by_staff_member_id,
               archive_staff.normalized_email AS archived_by_name,orders.amount_due_cents,orders.refundable_adjustment_cents,
+              EXISTS (SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=orders.id
+                AND (status IN ('PREPARING','PENDING') OR (status='FAILED' AND provider_payment_id IS NOT NULL))) AS additional_payment_active,
               EXISTS (SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=orders.id AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
                 UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=orders.id
+                UNION ALL SELECT 1 FROM app.order_edit_payment_attempts WHERE order_id=orders.id AND (status IN ('PREPARING','PENDING') OR (status='FAILED' AND provider_payment_id IS NOT NULL))
                 UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=orders.id AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
                 UNION ALL SELECT 1 FROM app.order_cancellations c WHERE c.order_id=orders.id AND (c.status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=c.id AND attempt.status='REQUESTED' AND (attempt.attempt_count>0 OR attempt.provider_error_code='CANCELLATION_OUTCOME_UNKNOWN')))) AS edit_blocked,
               nullif(trim(concat_ws(' ', customer.first_name, customer.last_name)), '') AS customer_name,
@@ -1048,7 +1056,9 @@ export class OrderDetailService {
                 WHERE customer_order.customer_profile_id = orders.customer_profile_id
               ) END AS customer_order_count,
               orders.owner_type, payment.status AS payment_status,
-              payment.amount_cents AS payment_amount_cents, payment.currency AS payment_currency,
+              (payment.amount_cents+COALESCE((SELECT sum(capture.amount_cents)
+                FROM app.order_payment_captures capture WHERE capture.order_id=orders.id),0))::int AS payment_amount_cents,
+              payment.currency AS payment_currency,
               payment.provider AS payment_provider, payment.provider_metadata AS payment_metadata,
               coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
                         WHERE refund.order_id = orders.id AND refund.status = 'SUCCEEDED'), 0) AS refunded_cents,

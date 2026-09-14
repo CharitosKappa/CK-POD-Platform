@@ -547,6 +547,13 @@ suite('order archive transaction integration', () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const { actions } = editService();
     const before = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    const initialPayment = (
+      await pool.query(
+        `SELECT id,provider_payment_id,amount_cents,currency,status
+         FROM app.payments WHERE checkout_attempt_id=(SELECT checkout_attempt_id FROM app.orders WHERE id=$1)`,
+        [f.orderId],
+      )
+    ).rows;
     const edit = await actions.editOrder(staff, {
       ...f.input(),
       items: [
@@ -585,6 +592,34 @@ suite('order archive transaction integration', () => {
     const after = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
     expect(after!.financials.paidCents).toBe(before!.financials.paidCents + edit.amountDueCents);
     expect(after!.refundableCents).toBe(before!.refundableCents + edit.amountDueCents);
+    expect(
+      (
+        await pool.query(
+          `SELECT id,provider_payment_id,amount_cents,currency,status
+           FROM app.payments WHERE checkout_attempt_id=(SELECT checkout_attempt_id FROM app.orders WHERE id=$1)`,
+          [f.orderId],
+        )
+      ).rows,
+    ).toEqual(initialPayment);
+    const capture = (
+      await pool.query<{ id: string; amount_cents: number }>(
+        'SELECT id,amount_cents FROM app.order_payment_captures WHERE order_id=$1',
+        [f.orderId],
+      )
+    ).rows[0]!;
+    await expect(
+      pool.query('UPDATE app.order_payment_captures SET amount_cents=amount_cents+1 WHERE id=$1', [
+        capture.id,
+      ]),
+    ).rejects.toThrow(/immutable/i);
+    expect(
+      (
+        await pool.query<{ amount_cents: number }>(
+          'SELECT amount_cents FROM app.order_payment_captures WHERE id=$1',
+          [capture.id],
+        )
+      ).rows,
+    ).toEqual([{ amount_cents: capture.amount_cents }]);
     const refund = await new domain.OrderRefundService(
       actionDatabase.pool,
       payments,
@@ -621,6 +656,11 @@ suite('order archive transaction integration', () => {
       orderRevisionId: edit.revisionId,
       idempotencyKey: `edit-payment-${randomUUID()}`,
     });
+    const detail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+    expect(detail?.eligibility.actions).toMatchObject({ cancel: false, refund: false });
+    await expect(
+      actions.editOrder(staff, { ...f.input(), shippingCents: 1100 }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
     await expect(
       new domain.OrderRefundService(actionDatabase.pool, payments).refundOriginalPayment(
         {
@@ -706,7 +746,7 @@ suite('order archive transaction integration', () => {
         outcome: 'FAILED',
         amountCents: edit.amountDueCents,
       }),
-    ).resolves.toMatchObject({ status: 'FAILED' });
+    ).resolves.toMatchObject({ status: 'PENDING' });
     expect((await snapshot(f.orderId)).order).toMatchObject({
       status: 'ON_HOLD',
       amount_due_cents: edit.amountDueCents,
@@ -1817,6 +1857,15 @@ suite('order archive transaction integration', () => {
     let approved!: domain.OrderReturnSummary;
     const approveKey = randomUUID();
     for (const toState of ['APPROVED', 'IN_TRANSIT', 'RECEIVED', 'CLOSED'] as const) {
+      if (toState === 'IN_TRANSIT')
+        await expect(
+          actions.transitionReturn(staff, {
+            orderNumber: f.orderNumber,
+            returnId: created.id,
+            toState,
+            idempotencyKey: randomUUID(),
+          }),
+        ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
       const next = await actions.transitionReturn(staff, {
         orderNumber: f.orderNumber,
         returnId: created.id,
@@ -2016,6 +2065,9 @@ suite('order archive transaction integration', () => {
             orderNumber: f.orderNumber,
             returnId: created.id,
             toState,
+            ...(toState === 'IN_TRANSIT'
+              ? { carrier: 'Fixture Carrier', trackingNumber: `TRACK-${randomUUID()}` }
+              : {}),
             idempotencyKey: randomUUID(),
           });
           if (toState === fromState) break;

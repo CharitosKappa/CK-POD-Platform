@@ -39,6 +39,22 @@ export interface PaymentIntentResult {
   status: PaymentOutcome;
 }
 
+/** A provider proved the request invalid before creating any PaymentIntent. */
+export class PaymentIntentRejectedError extends Error {
+  constructor() {
+    super('The payment provider refused the additional payment request.');
+  }
+}
+
+/** The provider may have accepted the request; only a read may resolve it safely. */
+export class PaymentIntentUncertainError extends Error {
+  constructor() {
+    super(
+      'Additional payment status is uncertain. Reconcile the existing payment before retrying.',
+    );
+  }
+}
+
 export interface VerifiedPaymentEvent {
   provider: PaymentAdapter;
   providerEventId: string;
@@ -85,6 +101,13 @@ export type PaymentRefundSubmissionResult = Omit<
 
 export interface PaymentService {
   createIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult>;
+  /** Safe read by immutable provider identity after local persistence was interrupted. */
+  getIntent?(input: {
+    providerPaymentId: string;
+    request: PaymentIntentRequest;
+  }): Promise<PaymentIntentResult>;
+  /** Safe read by immutable metadata; it must never create another intent. */
+  findIntent?(input: PaymentIntentRequest): Promise<PaymentIntentResult | null>;
   verifyWebhook(input: {
     body: string;
     signature: string | null;

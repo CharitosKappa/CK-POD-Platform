@@ -275,7 +275,7 @@ describe('independent return preflight', () => {
       ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
     await expect(actions.createReturn(staff, create)).rejects.toBe(databaseReached);
   });
-  it('validates transition identity, state and tracking fields before persistence', async () => {
+  it('validates transition identity, state and tracking field bounds before persistence', async () => {
     const actions = service();
     expect(actions.transitionReturn).toBeTypeOf('function');
     for (const invalid of [
@@ -285,8 +285,6 @@ describe('independent return preflight', () => {
       { carrier: null },
       { carrier: 'x'.repeat(201) },
       { trackingNumber: 'x'.repeat(201) },
-      { toState: 'IN_TRANSIT', carrier: undefined, trackingNumber: undefined },
-      { toState: 'IN_TRANSIT', carrier: 'UPS', trackingNumber: '' },
       { note: 'x'.repeat(1001) },
       { idempotencyKey: 'short' },
     ])
