@@ -20,6 +20,30 @@ describe('admin main-body typography and feedback styling', () => {
     );
   });
 
+  it('normalizes the complete admin hierarchy without changing the Printing modal scale', () => {
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(p, address, li, td, dd\):not\(\.order-printing-modal \*\)\s*{[^}]*font-size:\s*var\(--admin-body-size\);/s,
+    );
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(small, time, label\):not\(\.order-printing-modal \*\)\s*{[^}]*font-size:\s*var\(--admin-helper-size\);/s,
+    );
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(h2, h3\):not\(\.order-printing-modal \*\)\s*{[^}]*font-size:\s*var\(--admin-section-heading-size\);/s,
+    );
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(button, input, select, textarea\):not\(\.order-printing-modal \*\)\s*{[^}]*font-size:\s*var\(--admin-control-size\);/s,
+    );
+    expect(styles).toMatch(
+      /\.commerce-admin-main\s+:where\(th, \.commerce-status, \.order-layer-badge\):not\(\.order-printing-modal \*\)\s*{[^}]*font-size:\s*var\(--admin-compact-size\);/s,
+    );
+    const printingModalRoot = styles.match(/\.order-printing-modal\s*{(?<body>[^}]*)}/)?.groups
+      ?.body;
+    expect(printingModalRoot).toBeDefined();
+    expect(printingModalRoot).not.toMatch(
+      /var\(--admin-(?:body|helper|control|compact|section-heading)-size\)/,
+    );
+  });
+
   it('styles a distinct accessible dismiss control without changing layout width', () => {
     expect(styles).toMatch(
       /\.admin-feedback\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s,

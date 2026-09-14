@@ -2311,6 +2311,82 @@ select:focus-visible {
   }
 }
 
+@media (min-width: 901px) {
+  /* Final readable scale for commerce admin content, excluding the fixed sidebar and Printing modal. */
+  .commerce-admin-main
+    :where(p, address, li, td, dd):not(.order-printing-modal *) {
+    font-size: var(--admin-body-size);
+  }
+
+  .commerce-admin-main
+    :where(small, time, label):not(.order-printing-modal *) {
+    font-size: var(--admin-helper-size);
+  }
+
+  .commerce-admin-main
+    :where(h2, h3):not(.order-printing-modal *) {
+    font-size: var(--admin-section-heading-size);
+  }
+
+  .commerce-admin-main
+    :where(button, input, select, textarea):not(.order-printing-modal *) {
+    font-size: var(--admin-control-size);
+  }
+
+  .commerce-admin-main
+    :where(th, .commerce-status, .order-layer-badge):not(.order-printing-modal *) {
+    font-size: var(--admin-compact-size);
+  }
+
+  .commerce-admin-main
+    :where(
+      .commerce-admin-table-scroll td,
+      .customer-directory-table td,
+      .customer-timeline strong,
+      .order-timeline strong,
+      .order-summary-list dd,
+      .order-line-item strong,
+      .customer-contact-links,
+      .customer-sidebar-address,
+      .customer-sidebar-subsection,
+      .customer-sidebar-card-value,
+      .customer-info-list > div,
+      .order-detail-meta,
+      .order-provider-group
+    ):not(.order-printing-modal *) {
+    font-size: var(--admin-body-size);
+  }
+
+  .commerce-admin-main
+    :where(
+      .commerce-admin-page-heading p,
+      .commerce-admin-card header p,
+      .customer-detailed-timeline h3,
+      .customer-export-status,
+      .customer-tags span,
+      .customer-sort-button,
+      .order-sort-button,
+      .order-attention-flag
+    ):not(.order-printing-modal *) {
+    font-size: var(--admin-compact-size);
+  }
+
+  .commerce-admin-main
+    :where(
+      .commerce-admin-page-heading span,
+      .customer-pagination,
+      .commerce-admin-pagination,
+      .customer-timeline-pagination,
+      .order-timeline-pagination,
+      .customer-feedback,
+      .admin-feedback,
+      .customer-back-link,
+      .order-back-link
+    ):not(.order-printing-modal *) {
+    font-size: var(--admin-helper-size);
+  }
+}
+
 /* Shared readability scale for admin content. The fixed sidebar intentionally keeps its own type. */
 .commerce-admin-main {
   --admin-body-size: 0.9375rem;
