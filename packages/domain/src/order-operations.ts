@@ -2930,7 +2930,7 @@ async function updateLegacyFulfillmentGroupStatus(
 // Retain retired planning/history rows but do not count them as outstanding work.
 // Empty provider-backed, attempted, shipped or ordinarily cancelled groups are
 // deliberately NOT excluded: absence of items is not proof of local retirement.
-const activeFulfillmentPlanPredicate = `NOT (
+export const activeFulfillmentPlanPredicate = `NOT (
   fulfillment_group.status='CANCELLED' AND fulfillment_group.printing_status='CANCELLED'
   AND fulfillment_group.fulfillment_status='UNFULFILLED' AND fulfillment_group.external_order_id IS NULL
   AND NOT EXISTS (SELECT 1 FROM app.order_fulfillment_group_items WHERE fulfillment_group_id=fulfillment_group.id)

@@ -551,6 +551,14 @@ suite('order archive transaction integration', () => {
       expect((await snapshot(f.orderId)).groups.find((group) => group.id === f.groupId)).toEqual(
         retired,
       );
+      const detail = await new domain.OrderDetailService(pool).getOrder(staff, f.orderNumber);
+      expect(detail?.fulfillmentState).toBe('DELIVERED');
+      expect(detail?.groups.map((group) => group.id)).toEqual([groupId]);
+      // Display excludes proven retired local planning, while mutation gates retain
+      // their authoritative all-group policy and return matching eligibility.
+      await expect(actions.archive(staff, f.input())).rejects.toMatchObject({
+        eligibility: detail?.eligibility,
+      });
       expect(
         (
           await pool.query(

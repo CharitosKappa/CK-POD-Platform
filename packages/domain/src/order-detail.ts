@@ -2,6 +2,7 @@ import { withTransaction, type SqlPool } from '@let-it-be/db';
 
 import type { StaffSession } from './staff-identity';
 import { adminOrderLayerSql } from './admin-commerce';
+import { activeFulfillmentPlanPredicate } from './order-operations';
 import {
   resolveOrderActionEligibility,
   type OrderActionEligibility,
@@ -284,6 +285,7 @@ interface BaseOrderRow {
 }
 
 interface GroupRow {
+  active_plan: boolean;
   id: string;
   provider_name: string;
   external_order_id: string | null;
@@ -431,7 +433,7 @@ export class OrderDetailService {
     // Use the same persisted group projection as mutation eligibility. Empty historical
     // groups may be hidden from presentation, but must not disappear from action gates.
     const fulfillment = order.fulfillment_status;
-    const fulfillmentState =
+    const eligibilityFulfillmentState =
       order.status === 'CANCELLED'
         ? 'CANCELLED'
         : fulfillment === 'CANCELLED'
@@ -446,7 +448,7 @@ export class OrderDetailService {
       role: session.role,
       paymentState,
       printingStates: groupRows.map((group) => group.printing_status),
-      fulfillmentState,
+      fulfillmentState: eligibilityFulfillmentState,
       archived: order.archived_at !== null,
       refundableCents: balances.refundableCents,
       returnableQuantity: returnableRows.rows.reduce(
@@ -488,7 +490,8 @@ export class OrderDetailService {
         order.owner_type === 'GUEST' || order.owner_type === 'USER' ? 'Online Store' : '—',
       paymentState,
       printingState: aggregatePrintingState(groups.map((group) => group.printingState)),
-      fulfillmentState,
+      fulfillmentState:
+        order.status === 'CANCELLED' ? 'CANCELLED' : activePlanFulfillmentState(groupRows),
       customer: {
         id: order.customer_profile_id,
         name: order.customer_name?.trim() || shippingAddress.recipientName || order.customer_email,
@@ -1019,6 +1022,7 @@ export class OrderDetailService {
     return (
       await this.pool.query<GroupRow>(
         `SELECT fulfillment_group.id, provider.display_name AS provider_name,
+                (${activeFulfillmentPlanPredicate}) AS active_plan,
                 fulfillment_group.external_order_id, fulfillment_group.printing_status,
                 fulfillment_group.fulfillment_status, fulfillment_group.shipping_snapshot,
                 fulfillment_group.last_provider_sync_at, fulfillment_group.created_at
@@ -1321,6 +1325,24 @@ function toAdminShipment(shipment: ShipmentRow): AdminOrderShipment {
     shippedAt: shipment.shipped_at,
     deliveredAt: shipment.delivered_at,
   };
+}
+
+function activePlanFulfillmentState(groups: GroupRow[]): FulfillmentState {
+  // This is a display projection. Authoritative action eligibility above continues
+  // using all persisted groups, while Task 8's exact predicate identifies retired
+  // local edit planning without hiding ordinary cancelled/provider-backed groups.
+  const active = groups.filter((group) => group.active_plan);
+  if (!active.length) return 'UNFULFILLED';
+  if (active.every((group) => group.fulfillment_status === 'DELIVERED')) return 'DELIVERED';
+  if (active.every((group) => ['FULFILLED', 'DELIVERED'].includes(group.fulfillment_status)))
+    return 'FULFILLED';
+  if (
+    active.some((group) =>
+      ['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED'].includes(group.fulfillment_status),
+    )
+  )
+    return 'PARTIALLY_FULFILLED';
+  return 'UNFULFILLED';
 }
 
 export function permittedPrintingActions(
