@@ -2,6 +2,13 @@ import { withTransaction, type SqlPool } from '@let-it-be/db';
 
 import type { StaffSession } from './staff-identity';
 import {
+  resolveOrderActionEligibility,
+  type OrderActionEligibility,
+  type ReturnState,
+  type CancellationStatus,
+  type RefundDestination,
+} from './order-admin-actions-contracts';
+import {
   aggregatePrintingState,
   projectFulfillmentState,
   projectPaymentState,
@@ -117,6 +124,17 @@ export interface AdminOrderNote {
 }
 
 export interface AdminOrderDetail {
+  eligibility: OrderActionEligibility;
+  archived: boolean;
+  archivedAt: Date | null;
+  archivedByStaffMemberId: string | null;
+  archivedByName: string | null;
+  amountDueCents: number;
+  refundableAdjustmentCents: number;
+  refundableCents: number;
+  returnableItems: AdminOrderReturnableItem[];
+  returns: AdminOrderReturn[];
+  cancellation: AdminOrderCancellation | null;
   orderNumber: string;
   createdAt: Date;
   salesChannel: string;
@@ -137,6 +155,48 @@ export interface AdminOrderDetail {
   groups: AdminOrderGroupSummary[];
   notes: AdminOrderNote[];
   tags: string[];
+}
+
+export interface AdminOrderReturnableItem {
+  orderItemId: string;
+  fulfilledQuantity: number;
+  returnedQuantity: number;
+  returnableQuantity: number;
+}
+
+export interface AdminOrderReturn {
+  id: string;
+  state: ReturnState;
+  reasonCode: string;
+  shippingRequired: boolean;
+  note: string | null;
+  carrier: string | null;
+  trackingNumber: string | null;
+  createdByName: string;
+  createdAt: Date;
+  updatedAt: Date;
+  items: Array<{ orderItemId: string; quantity: number }>;
+}
+
+export interface AdminOrderCancellation {
+  id: string;
+  status: CancellationStatus;
+  refundDestination: RefundDestination;
+  refundAmountCents: number;
+  reasonCode: string;
+  staffNote: string | null;
+  notifyCustomer: boolean;
+  failureReason: string | null;
+  initiatedByName: string;
+  createdAt: Date;
+  updatedAt: Date;
+  groups: Array<{
+    fulfillmentGroupId: string;
+    externalOrderId: string | null;
+    status: string;
+    attemptCount: number;
+    providerErrorCode: string | null;
+  }>;
 }
 
 export interface PrintingGroupDetail {
@@ -193,6 +253,14 @@ export interface AdminOrderTimelinePage {
 }
 
 interface BaseOrderRow {
+  status: string;
+  archived_at: Date | null;
+  archived_by_staff_member_id: string | null;
+  archived_by_name: string | null;
+  amount_due_cents: number;
+  refundable_adjustment_cents: number;
+  pending_refund_cents: number;
+  edit_blocked: boolean;
   id: string;
   order_number: string;
   customer_profile_id: string | null;
@@ -264,7 +332,16 @@ export class OrderDetailService {
     assertOrderDetailAccess(session);
     const order = await this.baseOrder(orderNumber);
     if (!order) return null;
-    const [groupRows, itemRows, shipmentRows, noteRows, tagRows] = await Promise.all([
+    const [
+      groupRows,
+      itemRows,
+      shipmentRows,
+      noteRows,
+      tagRows,
+      returnRows,
+      returnableRows,
+      cancellationRows,
+    ] = await Promise.all([
       this.groups(order.id),
       this.items(order.id),
       this.shipments(order.id),
@@ -291,6 +368,41 @@ export class OrderDetailService {
          ORDER BY lower(tag.value), tag.id`,
         [order.id],
       ),
+      this.pool.query<AdminOrderReturn>(
+        `SELECT returned.id,returned.state,returned.reason_code AS "reasonCode",
+          returned.shipping_required AS "shippingRequired",returned.note,returned.carrier,
+          returned.tracking_number AS "trackingNumber",staff.normalized_email AS "createdByName",
+          returned.created_at AS "createdAt",returned.updated_at AS "updatedAt",
+          COALESCE((SELECT jsonb_agg(jsonb_build_object('orderItemId',item.order_item_id,'quantity',item.quantity) ORDER BY item.order_item_id)
+            FROM app.order_return_items item WHERE item.order_return_id=returned.id),'[]'::jsonb) AS items
+        FROM app.order_returns returned JOIN app.staff_members staff ON staff.id=returned.created_by_staff_member_id
+        WHERE returned.order_id=$1 ORDER BY returned.created_at DESC,returned.id DESC`,
+        [order.id],
+      ),
+      this.pool.query<AdminOrderReturnableItem>(
+        `SELECT item.id AS "orderItemId",fulfilled.quantity AS "fulfilledQuantity",
+          returned.quantity AS "returnedQuantity",GREATEST(0,fulfilled.quantity-returned.quantity)::int AS "returnableQuantity"
+        FROM app.order_items item
+        CROSS JOIN LATERAL (SELECT CASE WHEN EXISTS (SELECT 1 FROM app.order_fulfillment_group_items assignment
+          JOIN app.order_fulfillment_groups g ON g.id=assignment.fulfillment_group_id
+          WHERE assignment.order_item_id=item.id AND g.fulfillment_status IN ('FULFILLED','DELIVERED')) THEN item.quantity ELSE 0 END AS quantity) fulfilled
+        CROSS JOIN LATERAL (SELECT COALESCE(sum(ri.quantity),0)::int AS quantity FROM app.order_return_items ri
+          JOIN app.order_returns r ON r.id=ri.order_return_id WHERE ri.order_item_id=item.id AND r.state<>'REJECTED') returned
+        WHERE item.order_id=$1 ORDER BY item.created_at,item.id`,
+        [order.id],
+      ),
+      this.pool.query<AdminOrderCancellation>(
+        `SELECT c.id,c.status,c.refund_destination AS "refundDestination",c.refund_amount_cents AS "refundAmountCents",
+          c.reason_code AS "reasonCode",c.staff_note AS "staffNote",c.notify_customer AS "notifyCustomer",
+          c.failure_reason AS "failureReason",staff.normalized_email AS "initiatedByName",
+          c.created_at AS "createdAt",c.updated_at AS "updatedAt",
+          COALESCE((SELECT jsonb_agg(jsonb_build_object('fulfillmentGroupId',g.fulfillment_group_id,'externalOrderId',g.external_order_id,
+            'status',g.status,'attemptCount',g.attempt_count,'providerErrorCode',g.provider_error_code) ORDER BY g.fulfillment_group_id)
+            FROM app.order_cancellation_groups g WHERE g.order_cancellation_id=c.id),'[]'::jsonb) AS groups
+        FROM app.order_cancellations c JOIN app.staff_members staff ON staff.id=c.initiated_by_staff_member_id
+        WHERE c.order_id=$1 ORDER BY c.created_at DESC,c.id DESC LIMIT 1`,
+        [order.id],
+      ),
     ]);
     const itemsByGroup = groupBy(itemRows, (item) => item.group_id);
     const shipmentsByGroup = groupBy(shipmentRows, (shipment) => shipment.group_id);
@@ -308,18 +420,72 @@ export class OrderDetailService {
     const billingAddress = parsePostalAddressSnapshot(order.billing_address_snapshot);
     const paidCents = order.payment_status === 'SUCCEEDED' ? (order.payment_amount_cents ?? 0) : 0;
     const refundedCents = order.refunded_cents;
+    const balances = calculateOrderActionBalances({
+      paidCents,
+      refundedCents,
+      pendingRefundCents: order.pending_refund_cents,
+      amountDueCents: order.amount_due_cents,
+      refundableAdjustmentCents: order.refundable_adjustment_cents,
+    });
+    const fulfillment = aggregateFulfillmentGroups(groups);
+    const fulfillmentState =
+      order.status === 'CANCELLED'
+        ? 'CANCELLED'
+        : fulfillment === 'CANCELLED'
+          ? 'UNFULFILLED'
+          : fulfillment;
+    const paymentState = projectPaymentState({
+      paymentStatus: order.payment_status,
+      paidCents,
+      refundedCents,
+    });
+    const eligibility = resolveOrderActionEligibility({
+      role: session.role,
+      paymentState,
+      printingStates: groupRows.map((group) => group.printing_status),
+      fulfillmentState,
+      archived: order.archived_at !== null,
+      refundableCents: balances.refundableCents,
+      returnableQuantity: returnableRows.rows.reduce(
+        (sum, item) => sum + item.returnableQuantity,
+        0,
+      ),
+      hasShippedQuantity: groupRows.some((group) =>
+        ['PARTIALLY_FULFILLED', 'FULFILLED', 'DELIVERED'].includes(group.fulfillment_status),
+      ),
+    });
+    if (
+      order.edit_blocked ||
+      [
+        'CANCELLED',
+        'SHIPPED',
+        'DELIVERED',
+        'PARTIALLY_SHIPPED',
+        'IN_PRODUCTION',
+        'SUBMITTED_TO_PRINTIFY',
+      ].includes(order.status)
+    ) {
+      eligibility.editFields.items = false;
+      eligibility.editFields.pricing = false;
+      eligibility.editFields.shippingAddress = false;
+    }
     return {
+      ...balances,
+      eligibility,
+      archived: order.archived_at !== null,
+      archivedAt: order.archived_at,
+      archivedByStaffMemberId: order.archived_by_staff_member_id,
+      archivedByName: order.archived_by_name,
+      returns: returnRows.rows,
+      returnableItems: returnableRows.rows,
+      cancellation: cancellationRows.rows[0] ?? null,
       orderNumber: order.order_number,
       createdAt: order.created_at,
       salesChannel:
         order.owner_type === 'GUEST' || order.owner_type === 'USER' ? 'Online Store' : '—',
-      paymentState: projectPaymentState({
-        paymentStatus: order.payment_status,
-        paidCents,
-        refundedCents,
-      }),
+      paymentState,
       printingState: aggregatePrintingState(groups.map((group) => group.printingState)),
-      fulfillmentState: aggregateFulfillmentGroups(groups),
+      fulfillmentState,
       customer: {
         id: order.customer_profile_id,
         name: order.customer_name?.trim() || shippingAddress.recipientName || order.customer_email,
@@ -638,11 +804,13 @@ export class OrderDetailService {
     options: { limit?: number; page?: number } = {},
   ): Promise<AdminOrderTimelinePage> {
     assertOrderDetailAccess(session);
-    const limit = Math.min(50, Math.max(1, Math.floor(options.limit ?? 10)));
-    const page = Math.max(1, Math.floor(options.page ?? 1));
+    const limit = Number.isFinite(options.limit)
+      ? Math.min(10, Math.max(1, Math.floor(options.limit!)))
+      : 10;
+    const page = Number.isFinite(options.page) ? Math.max(1, Math.floor(options.page!)) : 1;
     const offset = (page - 1) * limit;
     const result = await this.pool.query<{
-      id: string;
+      id: string | null;
       type: string;
       occurred_at: Date;
       source: AdminOrderTimelineEvent['source'];
@@ -678,11 +846,36 @@ export class OrderDetailService {
          FROM app.payments payment
          JOIN target_order orders ON orders.checkout_attempt_id = payment.checkout_attempt_id
          UNION ALL
-         SELECT 'refund:' || refund.id, 'REFUND_' || refund.status, refund.created_at,
-                'PAYMENT_PROVIDER', NULL,
+         SELECT 'refund:' || refund.id, 'REFUND_' || refund.status, coalesce(refund.completed_at,refund.created_at),
+                CASE WHEN refund.initiated_by_staff_member_id IS NOT NULL THEN 'STAFF' ELSE 'PAYMENT_PROVIDER' END, staff.normalized_email,
                 'Refund ' || replace(lower(refund.status), '_', ' '),
-                jsonb_build_object('amountCents', refund.amount_cents, 'reasonCode', refund.reason_code)
+                jsonb_build_object('refundId',refund.id,'amountCents', refund.amount_cents, 'reasonCode', refund.reason_code,
+                  'destination',refund.destination,'status',refund.status,'providerRefundId',refund.provider_refund_id)
          FROM app.order_refunds refund JOIN target_order orders ON orders.id = refund.order_id
+         LEFT JOIN app.staff_members staff ON staff.id=refund.initiated_by_staff_member_id
+         UNION ALL
+         SELECT 'revision:' || revision.id,'ORDER_EDITED',revision.created_at,'STAFF',staff.normalized_email,
+           'Order edited',jsonb_build_object('revisionId',revision.id,'priceDifferenceCents',revision.price_difference_cents,
+             'reasonCode',revision.reason_code,'note',revision.note,'result','SUCCEEDED',
+             'beforeSnapshot',revision.before_snapshot::text,'afterSnapshot',revision.after_snapshot::text)
+         FROM app.order_revisions revision JOIN target_order orders ON orders.id=revision.order_id
+         JOIN app.staff_members staff ON staff.id=revision.created_by_staff_member_id
+         UNION ALL
+         SELECT 'cancellation:' || c.id,'CANCELLATION_' || c.status,c.updated_at,'STAFF',staff.normalized_email,
+           'Cancellation ' || lower(c.status),jsonb_build_object('cancellationId',c.id,'status',c.status,
+             'reasonCode',c.reason_code,'note',c.staff_note,'refundDestination',c.refund_destination,
+             'refundAmountCents',c.refund_amount_cents,'notifyCustomer',c.notify_customer,'failureReason',c.failure_reason)
+         FROM app.order_cancellations c JOIN target_order orders ON orders.id=c.order_id
+         JOIN app.staff_members staff ON staff.id=c.initiated_by_staff_member_id
+         UNION ALL
+         SELECT 'return-event:' || event.id,'RETURN_' || event.to_state,event.created_at,'STAFF',staff.normalized_email,
+           'Return ' || replace(lower(event.to_state),'_',' '),jsonb_build_object('returnId',returned.id,
+             'fromState',event.from_state,'toState',event.to_state,'reasonCode',returned.reason_code,'note',event.note,
+             'shippingRequired',returned.shipping_required,'quantity',(SELECT sum(quantity)::int FROM app.order_return_items WHERE order_return_id=returned.id),
+             'items',(SELECT jsonb_agg(jsonb_build_object('orderItemId',order_item_id,'quantity',quantity) ORDER BY order_item_id)::text FROM app.order_return_items WHERE order_return_id=returned.id))
+         FROM app.order_return_events event JOIN app.order_returns returned ON returned.id=event.order_return_id
+         JOIN target_order orders ON orders.id=returned.order_id
+         JOIN app.staff_members staff ON staff.id=event.actor_staff_member_id
          UNION ALL
          SELECT 'printing:' || event.id, 'PRINTING_STATE_CHANGED', event.created_at,
                 CASE WHEN event.source = 'OPS' THEN 'STAFF'
@@ -722,6 +915,11 @@ export class OrderDetailService {
          UNION ALL
          SELECT 'audit:' || audit.id,
                 CASE WHEN audit.action = 'order_tags_replaced' THEN 'ORDER_TAGS_CHANGED'
+                     WHEN audit.action = 'order_archived' THEN 'ORDER_ARCHIVED'
+                     WHEN audit.action = 'order_unarchived' THEN 'ORDER_UNARCHIVED'
+                     WHEN audit.action = 'order_cancellation_group_result' THEN 'PROVIDER_CANCELLATION_RESULT'
+                     WHEN audit.action LIKE 'refund_%' THEN upper(audit.action)
+                     WHEN audit.action LIKE 'order_cancellation_%' THEN upper(audit.action)
                      ELSE 'OPERATIONAL_ACTION' END,
                 audit.created_at,
                 CASE WHEN audit.actor_type = 'OPS' THEN 'STAFF'
@@ -730,36 +928,45 @@ export class OrderDetailService {
                 staff.normalized_email,
                 CASE WHEN audit.action = 'order_tags_replaced' THEN 'Order tags changed'
                      ELSE replace(lower(audit.action), '_', ' ') END,
-                jsonb_build_object('action', audit.action, 'reasonCode', audit.reason_code)
+                audit.metadata || jsonb_build_object('action', audit.action, 'reasonCode', audit.reason_code,
+                  'result',audit.metadata->'result', 'before',audit.metadata->'before', 'after',audit.metadata->'after')
          FROM app.order_operational_audits audit
          JOIN target_order orders ON orders.id = audit.order_id
          LEFT JOIN app.staff_members staff ON staff.id = audit.actor_staff_member_id
+         UNION ALL
+         SELECT 'delivery-queued:' || delivery.id, 'MESSAGE_QUEUED', delivery.created_at,
+                'SYSTEM', NULL,'Customer notification queued',
+                jsonb_build_object('messageType', delivery.message_type,'classification',delivery.classification,
+                  'notificationId',delivery.id,'notificationLanguage',delivery.payload->>'preferredLocale')
+         FROM app.lifecycle_deliveries delivery
+         JOIN target_order orders ON orders.id = delivery.order_id
          UNION ALL
          SELECT 'delivery:' || delivery.id, 'MESSAGE_' || delivery.status, delivery.updated_at,
                 'SYSTEM', NULL,
                 replace(lower(delivery.message_type), '_', ' ') || ' email ' || lower(delivery.status),
                 jsonb_build_object('messageType', delivery.message_type,
                                    'classification', delivery.classification,
-                                   'status', delivery.status)
+                                   'status', delivery.status,'notificationId',delivery.id)
          FROM app.lifecycle_deliveries delivery
          JOIN target_order orders ON orders.id = delivery.order_id
+         WHERE delivery.status<>'PENDING'
        )
-       SELECT id, type, occurred_at, source, actor_name, description, details,
-              count(*) OVER()::int AS total
-       FROM timeline
-       ORDER BY occurred_at DESC, id DESC
-       LIMIT $2 OFFSET $3`,
+       SELECT page.*,counts.total FROM (SELECT count(*)::int AS total FROM timeline) counts
+       LEFT JOIN LATERAL (SELECT * FROM timeline ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3) page ON true
+       ORDER BY page.occurred_at DESC,page.id DESC`,
       [orderNumber, limit, offset],
     );
-    const events = result.rows.map((event) => ({
-      id: event.id,
-      type: event.type,
-      occurredAt: event.occurred_at,
-      source: event.source,
-      actorName: event.actor_name,
-      description: event.description,
-      details: safeTimelineDetails(event.details),
-    }));
+    const events = result.rows
+      .filter((event) => event.id !== null)
+      .map((event) => ({
+        id: event.id!,
+        type: event.type,
+        occurredAt: event.occurred_at,
+        source: event.source,
+        actorName: event.actor_name,
+        description: event.description,
+        details: safeTimelineDetails(event.details),
+      }));
     return {
       events,
       total: result.rows[0]?.total ?? 0,
@@ -771,6 +978,12 @@ export class OrderDetailService {
   private async baseOrder(orderNumber: string): Promise<BaseOrderRow | null> {
     const result = await this.pool.query<BaseOrderRow>(
       `SELECT orders.id, orders.order_number, orders.customer_profile_id, orders.customer_email,
+              orders.status,orders.archived_at,orders.archived_by_staff_member_id,
+              archive_staff.normalized_email AS archived_by_name,orders.amount_due_cents,orders.refundable_adjustment_cents,
+              EXISTS (SELECT 1 FROM app.order_fulfillment_groups WHERE order_id=orders.id AND (external_order_id IS NOT NULL OR printing_status IN ('SUBMITTING','SUBMITTED','IN_PRODUCTION','PRINTED') OR fulfillment_status<>'UNFULFILLED')
+                UNION ALL SELECT 1 FROM app.external_fulfillment_orders WHERE order_id=orders.id
+                UNION ALL SELECT 1 FROM app.order_fulfillment_actions WHERE order_id=orders.id AND (status='PROCESSING' OR (action='CREATE_EXTERNAL_ORDER' AND (attempt_count>0 OR status<>'PENDING')))
+                UNION ALL SELECT 1 FROM app.order_cancellations c WHERE c.order_id=orders.id AND (c.status IN ('REQUESTED','PROCESSING','PARTIAL','SUCCEEDED') OR EXISTS (SELECT 1 FROM app.order_cancellation_groups attempt WHERE attempt.order_cancellation_id=c.id AND attempt.status='REQUESTED' AND attempt.attempt_count>0))) AS edit_blocked,
               nullif(trim(concat_ws(' ', customer.first_name, customer.last_name)), '') AS customer_name,
               customer.phone AS customer_phone,
               CASE WHEN orders.customer_profile_id IS NULL THEN 1 ELSE (
@@ -782,10 +995,13 @@ export class OrderDetailService {
               payment.provider AS payment_provider, payment.provider_metadata AS payment_metadata,
               coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
                         WHERE refund.order_id = orders.id AND refund.status = 'SUCCEEDED'), 0) AS refunded_cents,
+              coalesce((SELECT sum(refund.amount_cents)::int FROM app.order_refunds refund
+                        WHERE refund.order_id = orders.id AND refund.status = 'PENDING'), 0) AS pending_refund_cents,
               orders.shipping_address_snapshot, orders.billing_address_snapshot,
-              orders.pricing_snapshot, checkout.tax_snapshot, orders.created_at
+              orders.pricing_snapshot, coalesce(orders.financial_snapshot->'taxSnapshot',checkout.tax_snapshot) AS tax_snapshot, orders.created_at
        FROM app.orders orders
        LEFT JOIN app.customer_profiles customer ON customer.id = orders.customer_profile_id
+       LEFT JOIN app.staff_members archive_staff ON archive_staff.id=orders.archived_by_staff_member_id
        LEFT JOIN app.payments payment ON payment.checkout_attempt_id = orders.checkout_attempt_id
        LEFT JOIN app.checkout_attempts checkout ON checkout.id = orders.checkout_attempt_id
        WHERE orders.order_number = $1`,
@@ -875,6 +1091,21 @@ export class OrderDetailService {
       shipments: shipments.map(toAdminShipment),
     };
   }
+}
+
+export function calculateOrderActionBalances(input: {
+  paidCents: number;
+  refundedCents: number;
+  pendingRefundCents: number;
+  amountDueCents: number;
+  refundableAdjustmentCents: number;
+}) {
+  return {
+    refundableCents: Math.max(0, input.paidCents - input.refundedCents - input.pendingRefundCents),
+    // Persisted edit responsibility is independent of goodwill refunds.
+    amountDueCents: input.amountDueCents,
+    refundableAdjustmentCents: input.refundableAdjustmentCents,
+  };
 }
 
 export function parseOrderPricingSnapshot(value: unknown): OrderPricingSnapshot {
@@ -1183,11 +1414,17 @@ function canonicalTags(values: string[]): string[] {
 
 function safeTimelineDetails(value: unknown): Record<string, string | number | boolean | null> {
   if (!isRecord(value)) return {};
+  // Keep the existing scalar display contract while preserving structured audit evidence.
   return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, string | number | boolean | null] =>
-        entry[1] === null || ['string', 'number', 'boolean'].includes(typeof entry[1]),
-    ),
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      entry === null ||
+      typeof entry === 'string' ||
+      typeof entry === 'number' ||
+      typeof entry === 'boolean'
+        ? entry
+        : JSON.stringify(entry),
+    ]),
   );
 }
 

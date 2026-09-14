@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   calculateProductionEconomics,
+  calculateOrderActionBalances,
   filterNonEmptyOrderGroups,
   OrderDetailDataError,
   paymentMethodLabel,
@@ -10,6 +11,31 @@ import {
   parsePostalAddressSnapshot,
   permittedPrintingActions,
 } from './order-detail.js';
+
+describe('order action financial projection', () => {
+  it('reserves pending refunds without turning a goodwill refund into edit debt', () => {
+    expect(
+      calculateOrderActionBalances({
+        paidCents: 5000,
+        refundedCents: 1000,
+        pendingRefundCents: 500,
+        amountDueCents: 0,
+        refundableAdjustmentCents: 200,
+      }),
+    ).toEqual({ refundableCents: 3500, amountDueCents: 0, refundableAdjustmentCents: 200 });
+  });
+  it('preserves the explicit edit balance and clamps an exhausted refund cap', () => {
+    expect(
+      calculateOrderActionBalances({
+        paidCents: 5000,
+        refundedCents: 5000,
+        pendingRefundCents: 0,
+        amountDueCents: 800,
+        refundableAdjustmentCents: 0,
+      }),
+    ).toEqual({ refundableCents: 0, amountDueCents: 800, refundableAdjustmentCents: 0 });
+  });
+});
 
 describe('order detail snapshot boundary', () => {
   it('accepts the immutable order pricing fields used by the admin projection', () => {

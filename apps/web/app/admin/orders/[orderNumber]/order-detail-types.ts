@@ -1,3 +1,5 @@
+import type { AdminOrderDetail, AdminOrderReturn, AdminOrderCancellation } from '@let-it-be/domain';
+
 export type LayerTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info';
 
 export interface OrderAddress {
@@ -60,6 +62,24 @@ export interface OrderNote {
 }
 
 export interface OrderDetail {
+  eligibility: AdminOrderDetail['eligibility'];
+  archived: boolean;
+  archivedAt: string | null;
+  archivedByStaffMemberId: string | null;
+  archivedByName: string | null;
+  amountDueCents: number;
+  refundableAdjustmentCents: number;
+  refundableCents: number;
+  returnableItems: AdminOrderDetail['returnableItems'];
+  returns: Array<
+    Omit<AdminOrderReturn, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }
+  >;
+  cancellation:
+    | (Omit<AdminOrderCancellation, 'createdAt' | 'updatedAt'> & {
+        createdAt: string;
+        updatedAt: string;
+      })
+    | null;
   orderNumber: string;
   createdAt: string;
   salesChannel: string;
