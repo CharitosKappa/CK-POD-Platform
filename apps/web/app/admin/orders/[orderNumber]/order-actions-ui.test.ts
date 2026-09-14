@@ -28,6 +28,7 @@ import type { OrderDetail } from './order-detail-types';
 
 const order: OrderDetail = {
   actionRecovery: { canResume: true, cancellation: null, additionalPayment: false },
+  completedRefunds: [],
   orderNumber: '#42',
   createdAt: '2026-09-14T12:00:00Z',
   salesChannel: 'Online Store',

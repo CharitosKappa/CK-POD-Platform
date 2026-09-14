@@ -102,6 +102,119 @@ describe('order printing controls', () => {
     expect(markup).toContain('<dt>Taxes</dt><dd>California Sales Tax (8.75%)</dd><dd>$3.50</dd>');
   });
 
+  it('shows the persisted refund destination and Shopify-style net payment', () => {
+    const order = {
+      paymentState: 'PARTIALLY_REFUNDED',
+      groups: [group],
+      completedRefunds: [
+        {
+          id: 'refund-1',
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 2000,
+          reasonCode: 'ORDER_CANCELLED',
+          completedAt: '2026-09-14T12:00:00.000Z',
+        },
+      ],
+      pendingRefunds: [],
+      financials: {
+        subtotalCents: 3999,
+        discountCents: 0,
+        shippingCents: 550,
+        taxCents: 350,
+        totalCents: 4899,
+        paidCents: 4899,
+        refundedCents: 2000,
+        currency: 'USD',
+        taxLines: [{ label: 'California Sales Tax', rateBasisPoints: 875, amountCents: 350 }],
+        paymentMethod: 'Credit card',
+      },
+    } as unknown as OrderDetail;
+
+    const markup = renderToStaticMarkup(createElement(OrderPaymentSummary, { order }));
+
+    expect(markup).toContain(
+      '<dt>Refunded</dt><dd>Credit card · Reason: “Order cancelled”</dd><dd>−$20.00</dd>',
+    );
+    expect(markup).toContain('<dt>Net payment</dt><dd></dd><dd>$28.99</dd>');
+  });
+
+  it('summarizes mixed refund destinations and shows zero after a full refund', () => {
+    const order = {
+      paymentState: 'REFUNDED',
+      groups: [group],
+      completedRefunds: [
+        {
+          id: 'refund-1',
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 3000,
+          reasonCode: 'ORDER_CANCELLED',
+          completedAt: '2026-09-14T12:00:00.000Z',
+        },
+        {
+          id: 'refund-2',
+          destination: 'STORE_CREDIT',
+          amountCents: 1899,
+          reasonCode: 'CUSTOMER_REQUEST',
+          completedAt: '2026-09-14T12:05:00.000Z',
+        },
+      ],
+      pendingRefunds: [],
+      financials: {
+        subtotalCents: 3999,
+        discountCents: 0,
+        shippingCents: 550,
+        taxCents: 350,
+        totalCents: 4899,
+        paidCents: 4899,
+        refundedCents: 4899,
+        currency: 'USD',
+        taxLines: [{ label: 'California Sales Tax', rateBasisPoints: 875, amountCents: 350 }],
+        paymentMethod: 'Credit card',
+      },
+    } as unknown as OrderDetail;
+
+    const markup = renderToStaticMarkup(createElement(OrderPaymentSummary, { order }));
+
+    expect(markup).toContain(
+      '<dt>Refunded</dt><dd>Credit card + Store credit · 2 refunds</dd><dd>−$48.99</dd>',
+    );
+    expect(markup).toContain('<dt>Net payment</dt><dd></dd><dd>$0.00</dd>');
+  });
+
+  it('does not reduce net payment for a pending refund', () => {
+    const order = {
+      paymentState: 'PAID',
+      groups: [group],
+      completedRefunds: [],
+      pendingRefunds: [
+        {
+          id: 'refund-pending',
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 1000,
+          status: 'PENDING',
+          createdAt: '2026-09-14T12:00:00.000Z',
+        },
+      ],
+      financials: {
+        subtotalCents: 3999,
+        discountCents: 0,
+        shippingCents: 550,
+        taxCents: 350,
+        totalCents: 4899,
+        paidCents: 4899,
+        refundedCents: 0,
+        currency: 'USD',
+        taxLines: [{ label: 'California Sales Tax', rateBasisPoints: 875, amountCents: 350 }],
+        paymentMethod: 'Credit card',
+      },
+    } as unknown as OrderDetail;
+
+    const markup = renderToStaticMarkup(createElement(OrderPaymentSummary, { order }));
+
+    expect(markup).toContain('<dt>Pending refund</dt>');
+    expect(markup).not.toContain('<dt>Net payment</dt>');
+  });
+
   it('shows Collect payment only when the server-authorized caller supplies the action', () => {
     const order = {
       paymentState: 'PARTIALLY_PAID',

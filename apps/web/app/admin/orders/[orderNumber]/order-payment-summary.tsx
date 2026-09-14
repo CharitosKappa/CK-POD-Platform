@@ -17,6 +17,7 @@ export function OrderPaymentSummary({
   onCollectPayment?: () => void;
 }>) {
   const status = layerStatusPresentation('payment', order.paymentState);
+  const refundDetail = formatRefundDetail(order);
   const rows = [
     [
       'Subtotal',
@@ -68,11 +69,20 @@ export function OrderPaymentSummary({
           <dd>{money.format(order.financials.paidCents / 100)}</dd>
         </div>
         {order.financials.refundedCents > 0 ? (
-          <div>
-            <dt>Refunded</dt>
-            <dd />
-            <dd>−{money.format(order.financials.refundedCents / 100)}</dd>
-          </div>
+          <>
+            <div>
+              <dt>Refunded</dt>
+              <dd>{refundDetail}</dd>
+              <dd>−{money.format(order.financials.refundedCents / 100)}</dd>
+            </div>
+            <div className="order-payment-net">
+              <dt>Net payment</dt>
+              <dd />
+              <dd>
+                {money.format((order.financials.paidCents - order.financials.refundedCents) / 100)}
+              </dd>
+            </div>
+          </>
         ) : null}
         {order.pendingRefunds.map((refund) => (
           <div className="order-payment-pending-refund" key={refund.id}>
@@ -137,6 +147,35 @@ export function OrderPaymentSummary({
       ) : null}
     </article>
   );
+}
+
+export function formatRefundDetail(
+  order: Pick<OrderDetail, 'completedRefunds' | 'financials'>,
+): string {
+  const completedRefunds = order.completedRefunds ?? [];
+  if (!completedRefunds.length) return 'Refund details unavailable';
+
+  const destinationLabels = [
+    ...new Set(
+      completedRefunds.map((refund) =>
+        refund.destination === 'STORE_CREDIT'
+          ? 'Store credit'
+          : (order.financials.paymentMethod ?? 'Original payment method'),
+      ),
+    ),
+  ];
+  const reasonLabels = [
+    ...new Set(completedRefunds.map((refund) => formatReasonCode(refund.reasonCode))),
+  ];
+  const detail = destinationLabels.join(' + ');
+  return reasonLabels.length === 1
+    ? `${detail} · Reason: “${reasonLabels[0]}”`
+    : `${detail} · ${completedRefunds.length} refunds`;
+}
+
+function formatReasonCode(value: string): string {
+  const words = value.trim().toLowerCase().replaceAll('_', ' ');
+  return words ? `${words[0]!.toUpperCase()}${words.slice(1)}` : 'Reason unavailable';
 }
 
 function formatTaxRate(basisPoints: number): string {

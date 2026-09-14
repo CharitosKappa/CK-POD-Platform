@@ -3398,6 +3398,12 @@ select:focus-visible {
   padding-top: 10px;
   border-top: 1px solid #e7e8e2;
 }
+.order-payment-card .order-payment-net {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid #e7e8e2;
+  font-weight: 760;
+}
 .order-payment-actions {
   display: flex;
   flex-wrap: wrap;

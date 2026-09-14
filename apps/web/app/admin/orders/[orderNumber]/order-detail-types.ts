@@ -73,6 +73,13 @@ export interface OrderDetail {
   amountDueCents: number;
   refundableAdjustmentCents: number;
   refundableCents: number;
+  completedRefunds: Array<{
+    id: string;
+    destination: 'ORIGINAL_PAYMENT' | 'STORE_CREDIT';
+    amountCents: number;
+    reasonCode: string;
+    completedAt: string;
+  }>;
   pendingRefunds: Array<
     Omit<AdminOrderDetail['pendingRefunds'][number], 'createdAt'> & { createdAt: string }
   >;
