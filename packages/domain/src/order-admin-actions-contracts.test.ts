@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  allowedReturnTransitions,
   cancellationStatuses,
   orderAdminActions,
   refundDestinations,
@@ -20,6 +21,14 @@ const baseInput = {
 };
 
 describe('order admin action contracts', () => {
+  it('publishes the exact legal Return transitions for read models and mutations', () => {
+    expect(allowedReturnTransitions('REQUESTED')).toEqual(['APPROVED', 'REJECTED']);
+    expect(allowedReturnTransitions('APPROVED')).toEqual(['IN_TRANSIT', 'REJECTED']);
+    expect(allowedReturnTransitions('IN_TRANSIT')).toEqual(['RECEIVED']);
+    expect(allowedReturnTransitions('RECEIVED')).toEqual(['CLOSED']);
+    expect(allowedReturnTransitions('CLOSED')).toEqual([]);
+    expect(allowedReturnTransitions('REJECTED')).toEqual([]);
+  });
   it('defines the approved action and workflow state values', () => {
     expect(orderAdminActions).toEqual([
       'EDIT',

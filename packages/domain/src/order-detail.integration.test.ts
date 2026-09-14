@@ -213,7 +213,13 @@ suite('order detail persistence integration', () => {
           returnableQuantity: 1,
         },
       ],
-      returns: [{ id: returned.id, state: 'REQUESTED' }],
+      returns: [
+        {
+          id: returned.id,
+          state: 'REQUESTED',
+          permittedTransitions: ['APPROVED', 'REJECTED'],
+        },
+      ],
       eligibility: {
         actions: { cancel: false, return: true, unarchive: true },
         editFields: { items: false },

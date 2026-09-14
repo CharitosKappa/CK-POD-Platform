@@ -8,6 +8,7 @@ import {
 } from './admin-commerce';
 import {
   resolveOrderActionEligibility,
+  allowedReturnTransitions,
   type CancellationStatus,
   type RefundDestination,
   type OrderActionEligibility,
@@ -64,7 +65,10 @@ export interface ArchiveResult {
 }
 
 export interface EditOrderInput extends ArchiveOrderInput {
-  items?: Array<{ orderItemId?: string; productVariantId: string; quantity: number }>;
+  items?: Array<
+    | { orderItemId: string; sourceOrderItemId?: never; productVariantId: string; quantity: number }
+    | { orderItemId?: never; sourceOrderItemId: string; productVariantId: string; quantity: number }
+  >;
   discountCents?: number;
   shippingCents?: number;
   shippingAddress?: ShippingAddressInput;
@@ -138,15 +142,6 @@ export interface OrderReturnSummary {
 type StoredReturnSummary = Omit<OrderReturnSummary, 'createdAt' | 'updatedAt'> & {
   createdAt: string;
   updatedAt: string;
-};
-
-const returnTransitions: Record<ReturnState, readonly ReturnState[]> = {
-  REQUESTED: ['APPROVED', 'REJECTED'],
-  APPROVED: ['IN_TRANSIT', 'REJECTED'],
-  IN_TRANSIT: ['RECEIVED'],
-  RECEIVED: ['CLOSED'],
-  CLOSED: [],
-  REJECTED: [],
 };
 
 export interface CancelOrderInput {
@@ -632,7 +627,8 @@ export class OrderAdminActionsService {
       !returnStates.includes(input.toState) ||
       [input.carrier, input.trackingNumber].some(
         (value) => value !== undefined && (typeof value !== 'string' || value.length > 200),
-      )
+      ) ||
+      (input.toState === 'IN_TRANSIT' && (!input.carrier?.trim() || !input.trackingNumber?.trim()))
     ) {
       throw new OrderAdminActionValidationError(
         'Provide a valid return, target state, and tracking fields of at most 200 characters.',
@@ -660,7 +656,7 @@ export class OrderAdminActionsService {
         )
       ).rows[0];
       if (!returned) throw new OrderAdminActionNotFoundError('Return not found for this order.');
-      if (!returnTransitions[returned.state]?.includes(input.toState))
+      if (!allowedReturnTransitions(returned.state).includes(input.toState))
         throw new OrderAdminActionConflictError('This return state transition is not allowed.');
       await client.query(
         `UPDATE app.order_returns SET state=$2,carrier=COALESCE($3,carrier),tracking_number=COALESCE($4,tracking_number),updated_at=now() WHERE id=$1`,
@@ -1609,7 +1605,9 @@ function validateEdit(input: EditOrderInput) {
           !item ||
           typeof item.productVariantId !== 'string' ||
           !item.productVariantId.trim() ||
+          (item.orderItemId === undefined) === (item.sourceOrderItemId === undefined) ||
           (item.orderItemId !== undefined && !isUuid(item.orderItemId)) ||
+          (item.sourceOrderItemId !== undefined && !isUuid(item.sourceOrderItemId)) ||
           !Number.isInteger(item.quantity) ||
           item.quantity < 1 ||
           item.quantity > 99,
@@ -1671,15 +1669,14 @@ async function editSnapshot(client: SqlClient, orderId: string) {
 }
 
 function resolveEditedItem(price: RepricedOrderItem, items: EditableItemRow[]) {
-  const candidates = price.orderItemId
-    ? items.filter((item) => item.id === price.orderItemId!.toLowerCase())
-    : items.filter((item) => item.product_model_id === price.productModelId);
-  // New lines must inherit an unambiguous existing artwork/proof. No invented design provenance.
-  if (candidates.length !== 1 || candidates[0]!.product_model_id !== price.productModelId)
+  const sourceId = price.orderItemId ?? price.sourceOrderItemId;
+  const source = items.find((item) => item.id === sourceId?.toLowerCase());
+  // New lines inherit one explicitly selected same-order artwork/proof. No model-based guessing.
+  if (!source || source.product_model_id !== price.productModelId)
     throw new OrderAdminActionValidationError(
-      'Select an existing item with an unambiguous design for this product model.',
+      'Select an existing same-order item whose design matches this product model.',
     );
-  return { id: price.orderItemId?.toLowerCase() ?? randomUUID(), source: candidates[0]!, price };
+  return { id: price.orderItemId?.toLowerCase() ?? randomUUID(), source, price };
 }
 
 function restoreReturnSummary(value: StoredReturnSummary): OrderReturnSummary {

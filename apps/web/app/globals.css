@@ -2694,6 +2694,18 @@ select:focus-visible {
   color: #74776e;
   font-size: 0.67rem;
 }
+
+.order-return-state-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-return-state-actions .order-action-button {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
 .order-cancellation-notice {
   display: flex;
   align-items: center;

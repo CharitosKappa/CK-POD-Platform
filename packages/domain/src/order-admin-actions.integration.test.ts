@@ -1065,7 +1065,11 @@ suite('order archive transaction integration', () => {
       ...f.input(),
       items: [
         { orderItemId: f.itemId, productVariantId: 'essential-dtg-tee-black-2XL', quantity: 1 },
-        { productVariantId: 'essential-dtg-tee-white-L', quantity: 1 },
+        {
+          sourceOrderItemId: f.itemId,
+          productVariantId: 'essential-dtg-tee-white-L',
+          quantity: 1,
+        },
       ],
     });
     let after = await snapshot(f.orderId);
@@ -1090,6 +1094,31 @@ suite('order archive transaction integration', () => {
     expect(after.items).toHaveLength(1);
     expect(after.items[0]).toMatchObject({ id: f.itemId, quantity: 1 });
     expect(after.payments).toEqual(before.payments);
+  });
+
+  it('requires each new line to name an exact same-order design source', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const other = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    await expect(
+      actions.editOrder(staff, {
+        ...f.input(),
+        items: [{ productVariantId: 'essential-dtg-tee-white-L', quantity: 1 }] as never,
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
+    await expect(
+      actions.editOrder(staff, {
+        ...f.input(),
+        idempotencyKey: randomUUID(),
+        items: [
+          {
+            sourceOrderItemId: other.itemId,
+            productVariantId: 'essential-dtg-tee-white-L',
+            quantity: 1,
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionValidationError);
   });
 
   it('serializes duplicate edit keys into one revision and rejects cross-order reuse', async () => {

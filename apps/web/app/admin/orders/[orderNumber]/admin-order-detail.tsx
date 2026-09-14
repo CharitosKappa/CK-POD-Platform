@@ -16,6 +16,7 @@ import { OrderTimeline } from './order-timeline';
 import { OrderActionsMenu, OrderActionHost } from './order-actions-menu';
 import { pendingOrderActions, type OrderActionName } from './order-action-client';
 import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
+import { ManageReturnModal } from './manage-return-modal';
 
 export function AdminOrderDetail({
   orderNumber,
@@ -35,8 +36,10 @@ export function AdminOrderDetail({
   const [activeAction, setActiveAction] = useState<OrderActionName>();
   const [pendingActions, setPendingActions] = useState<OrderActionName[]>([]);
   const [pendingRefundId, setPendingRefundId] = useState<string>();
+  const [managedReturnId, setManagedReturnId] = useState<string>();
   const actionTrigger = useRef<HTMLElement | null>(null);
   const pendingRefund = order?.pendingRefunds.find((refund) => refund.id === pendingRefundId);
+  const managedReturn = order?.returns.find((returned) => returned.id === managedReturnId);
 
   const load = useCallback(async () => {
     const response = await adminApiFetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
@@ -220,8 +223,23 @@ export function AdminOrderDetail({
                             {new Date(returned.createdAt).toLocaleDateString('en-US')}
                           </small>
                         </span>
-                        <span className="order-layer-badge">
-                          {returned.state.replaceAll('_', ' ').toLowerCase()}
+                        <span className="order-return-state-actions">
+                          <span className="order-layer-badge">
+                            {returned.state.replaceAll('_', ' ').toLowerCase()}
+                          </span>
+                          {returned.permittedTransitions.length ? (
+                            <button
+                              type="button"
+                              className="order-action-button"
+                              onClick={() => {
+                                actionTrigger.current =
+                                  document.activeElement as HTMLElement | null;
+                                setManagedReturnId(returned.id);
+                              }}
+                            >
+                              Manage
+                            </button>
+                          ) : null}
                         </span>
                       </div>
                     ))}
@@ -276,6 +294,20 @@ export function AdminOrderDetail({
               refund={pendingRefund}
               apiBase={apiBase}
               onClose={closeRefundReconciliation}
+              onSaved={actionSaved}
+            />
+          ) : null}
+          {managedReturn ? (
+            <ManageReturnModal
+              order={order}
+              returned={managedReturn}
+              apiBase={apiBase}
+              onClose={() => {
+                setManagedReturnId(undefined);
+                requestAnimationFrame(
+                  () => actionTrigger.current?.isConnected && actionTrigger.current.focus(),
+                );
+              }}
               onSaved={actionSaved}
             />
           ) : null}

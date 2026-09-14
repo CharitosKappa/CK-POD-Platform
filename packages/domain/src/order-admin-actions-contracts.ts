@@ -35,6 +35,20 @@ export type ReturnState = (typeof returnStates)[number];
 export type RefundDestination = (typeof refundDestinations)[number];
 export type CancellationStatus = (typeof cancellationStatuses)[number];
 
+const returnTransitionMap: Record<ReturnState, readonly ReturnState[]> = {
+  REQUESTED: ['APPROVED', 'REJECTED'],
+  APPROVED: ['IN_TRANSIT', 'REJECTED'],
+  IN_TRANSIT: ['RECEIVED'],
+  RECEIVED: ['CLOSED'],
+  CLOSED: [],
+  REJECTED: [],
+};
+
+/** One shared transition authority for the write service and read-model UI capabilities. */
+export function allowedReturnTransitions(state: ReturnState): readonly ReturnState[] {
+  return returnTransitionMap[state];
+}
+
 export interface OrderActionEligibilityInput {
   role: StaffRole;
   paymentState: PaymentState;

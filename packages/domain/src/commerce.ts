@@ -170,7 +170,12 @@ export interface TaxSnapshot {
 }
 
 export interface RepriceOrderInput {
-  items: Array<{ orderItemId?: string; productVariantId: string; quantity: number }>;
+  items: Array<{
+    orderItemId?: string;
+    sourceOrderItemId?: string;
+    productVariantId: string;
+    quantity: number;
+  }>;
   discountCents: number;
   shippingCents: number;
   shippingAddress: ShippingAddressInput;
@@ -178,6 +183,7 @@ export interface RepriceOrderInput {
 
 export interface RepricedOrderItem {
   orderItemId?: string;
+  sourceOrderItemId?: string;
   productVariantId: string;
   quantity: number;
   productModelId: string;

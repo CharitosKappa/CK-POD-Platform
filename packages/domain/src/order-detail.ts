@@ -4,6 +4,7 @@ import type { StaffSession } from './staff-identity';
 import { adminOrderLayerSql } from './admin-commerce';
 import { activeFulfillmentPlanPredicate } from './order-operations';
 import {
+  allowedReturnTransitions,
   resolveOrderActionEligibility,
   type OrderActionEligibility,
   type ReturnState,
@@ -78,7 +79,7 @@ export interface ProductionEconomics {
 export interface AdminOrderItem {
   id: string;
   productVariantId: string;
-  variantOptions: Array<{ id: string; color: string; size: string }>;
+  variantOptions: Array<{ id: string; color: string; size: string; unitPriceCents: number }>;
   productName: string;
   color: string;
   size: string;
@@ -183,6 +184,7 @@ export interface AdminOrderReturnableItem {
 export interface AdminOrderReturn {
   id: string;
   state: ReturnState;
+  permittedTransitions: readonly ReturnState[];
   reasonCode: string;
   shippingRequired: boolean;
   note: string | null;
@@ -519,7 +521,10 @@ export class OrderDetailService {
       archivedAt: order.archived_at,
       archivedByStaffMemberId: order.archived_by_staff_member_id,
       archivedByName: order.archived_by_name,
-      returns: returnRows.rows,
+      returns: returnRows.rows.map((returned) => ({
+        ...returned,
+        permittedTransitions: allowedReturnTransitions(returned.state),
+      })),
       returnableItems: returnableRows.rows,
       cancellation,
       pendingRefunds: pendingRefundRows.rows,
@@ -1092,7 +1097,7 @@ export class OrderDetailService {
                   variant.price_cents
                 ) AS unit_price_cents,
                 item.product_variant_id, item.project_id, item.project_version_id, item.mockup_id,
-                COALESCE((SELECT jsonb_agg(jsonb_build_object('id',option.id,'color',option.color_name,'size',option.size)
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('id',option.id,'color',option.color_name,'size',option.size,'unitPriceCents',option.price_cents)
                   ORDER BY option.color_name,option.size,option.id)
                   FROM app.product_variants option
                   WHERE option.product_model_id=item.product_model_id AND option.status='ACTIVE' AND model.status='ACTIVE'), '[]'::jsonb) AS variant_options

@@ -13,7 +13,27 @@ import {
 } from './order-action-modal';
 import type { OrderDetail } from './order-detail-types';
 
-export function editDraftFrom(order: OrderDetail) {
+interface EditDraftItem {
+  draftKey: string;
+  orderItemId?: string;
+  sourceOrderItemId?: string;
+  productVariantId: string;
+  quantity: string;
+}
+
+interface EditDraft {
+  email: string;
+  phone: string;
+  note: string;
+  reason: string;
+  tags: string;
+  discount: string;
+  shipping: string;
+  address: OrderDetail['shippingAddress'] & { line2: string };
+  items: EditDraftItem[];
+}
+
+export function editDraftFrom(order: OrderDetail): EditDraft {
   return {
     email: order.customer.email,
     phone: order.customer.phone ?? '',
@@ -27,14 +47,28 @@ export function editDraftFrom(order: OrderDetail) {
       ...new Map(
         order.groups.flatMap((group) => group.items).map((item) => [item.id, item]),
       ).values(),
-    ].map((item) => ({
+    ].map((item): EditDraftItem => ({
+      draftKey: item.id,
       orderItemId: item.id,
       productVariantId: item.productVariantId,
       quantity: String(item.quantity),
     })),
   };
 }
-type EditDraft = ReturnType<typeof editDraftFrom>;
+
+export function addItemWithDesign(
+  draft: EditDraft,
+  source: OrderDetail['groups'][number]['items'][number],
+): EditDraft {
+  const ordinal = draft.items.filter((item) => item.sourceOrderItemId === source.id).length + 1;
+  const added: EditDraftItem = {
+    draftKey: `new:${source.id}:${ordinal}`,
+    sourceOrderItemId: source.id,
+    productVariantId: source.productVariantId,
+    quantity: '1',
+  };
+  return { ...draft, items: [...draft.items, added] };
+}
 
 /** The local draft never absorbs refreshed data. Only values changed from its
  * original baseline overlay the latest server snapshot shown in the form. */
@@ -52,12 +86,18 @@ export function rebaseEditDraft(
     if (local.address[key] !== original.address[key]) next.address[key] = local.address[key];
   }
   const originals = new Map(original.items.map((item) => [item.orderItemId, item]));
-  const edits = new Map(local.items.map((item) => [item.orderItemId, item]));
-  next.items = next.items
-    .filter((item) => !originals.has(item.orderItemId) || edits.has(item.orderItemId))
+  const edits = new Map(
+    local.items.filter((item) => item.orderItemId).map((item) => [item.orderItemId!, item]),
+  );
+  const rebasedExisting = next.items
+    .filter(
+      (item) =>
+        item.orderItemId !== undefined &&
+        (!originals.has(item.orderItemId) || edits.has(item.orderItemId)),
+    )
     .map((item) => {
-      const before = originals.get(item.orderItemId),
-        edited = edits.get(item.orderItemId);
+      const before = originals.get(item.orderItemId!),
+        edited = edits.get(item.orderItemId!);
       if (!before || !edited) return item;
       return {
         ...item,
@@ -67,6 +107,11 @@ export function rebaseEditDraft(
           : {}),
       };
     });
+  const currentIds = new Set(next.items.map((item) => item.orderItemId));
+  const added = local.items.filter(
+    (item) => item.sourceOrderItemId && currentIds.has(item.sourceOrderItemId),
+  );
+  next.items = [...rebasedExisting, ...added];
   return next;
 }
 
@@ -104,6 +149,7 @@ export function buildEditPayload(
     if (
       draft.items.some(
         (item) =>
+          item.orderItemId !== undefined &&
           !currentIds.has(item.orderItemId) &&
           JSON.stringify(item) !==
             JSON.stringify(
@@ -116,11 +162,19 @@ export function buildEditPayload(
       );
     if (!merged.items.length)
       throw new Error('Keep at least one item. Use Cancel order to cancel all items.');
-    result.items = merged.items.map((item) => {
+    result.items = merged.items.map((item): NonNullable<EditOrderInput['items']>[number] => {
       const quantity = Number(item.quantity);
       if (!item.productVariantId || !Number.isInteger(quantity) || quantity < 1 || quantity > 99)
         throw new Error('Select a variant and a quantity between 1 and 99 for every item.');
-      return { orderItemId: item.orderItemId, productVariantId: item.productVariantId, quantity };
+      if ((item.orderItemId === undefined) === (item.sourceOrderItemId === undefined))
+        throw new Error('Select exactly one design source for every item.');
+      return item.orderItemId
+        ? { orderItemId: item.orderItemId, productVariantId: item.productVariantId, quantity }
+        : {
+            sourceOrderItemId: item.sourceOrderItemId!,
+            productVariantId: item.productVariantId,
+            quantity,
+          };
     });
   }
   return result;
@@ -174,25 +228,30 @@ export function EditOrderModal(props: OrderActionModalProps) {
             ) : null}
             <fieldset className="order-action-fields" disabled={!fields.items}>
               {draft.items.map((row) => {
-                const item = originalItems.get(row.orderItemId);
+                const sourceId = row.orderItemId ?? row.sourceOrderItemId;
+                const item = sourceId ? originalItems.get(sourceId) : undefined;
                 const options = item?.variantOptions ?? [];
+                const selectedPrice =
+                  options.find((option) => option.id === row.productVariantId)?.unitPriceCents ??
+                  item?.unitPriceCents ??
+                  0;
                 return (
-                  <div className="order-edit-item" key={row.orderItemId}>
+                  <div className="order-edit-item" key={row.draftKey}>
                     <strong>{item?.productName ?? 'Order item'}</strong>
-                    <small>Current unit price: {formatOrderMoney(item?.unitPriceCents ?? 0)}</small>
+                    <small>Server price: {formatOrderMoney(selectedPrice)}</small>
                     <div className="customer-modal-grid">
                       <ActionField label="Variant">
                         <select
                           required
                           disabled={
-                            !localDraft.items.some((item) => item.orderItemId === row.orderItemId)
+                            !localDraft.items.some((item) => item.draftKey === row.draftKey)
                           }
                           value={row.productVariantId}
                           onChange={(event) =>
                             change(
                               'items',
                               localDraft.items.map((entry) =>
-                                entry.orderItemId === row.orderItemId
+                                entry.draftKey === row.draftKey
                                   ? { ...entry, productVariantId: event.target.value }
                                   : entry,
                               ),
@@ -215,7 +274,7 @@ export function EditOrderModal(props: OrderActionModalProps) {
                         <input
                           required
                           disabled={
-                            !localDraft.items.some((item) => item.orderItemId === row.orderItemId)
+                            !localDraft.items.some((item) => item.draftKey === row.draftKey)
                           }
                           type="number"
                           min={1}
@@ -226,7 +285,7 @@ export function EditOrderModal(props: OrderActionModalProps) {
                             change(
                               'items',
                               localDraft.items.map((entry) =>
-                                entry.orderItemId === row.orderItemId
+                                entry.draftKey === row.draftKey
                                   ? { ...entry, quantity: event.target.value }
                                   : entry,
                               ),
@@ -236,23 +295,21 @@ export function EditOrderModal(props: OrderActionModalProps) {
                       </ActionField>
                     </div>
                     {draft.items.length > 1 &&
-                    localDraft.items.some((item) => item.orderItemId === row.orderItemId) ? (
+                    localDraft.items.some((item) => item.draftKey === row.draftKey) ? (
                       <button
                         type="button"
                         className="order-action-link"
                         onClick={() =>
                           change(
                             'items',
-                            localDraft.items.filter(
-                              (entry) => entry.orderItemId !== row.orderItemId,
-                            ),
+                            localDraft.items.filter((entry) => entry.draftKey !== row.draftKey),
                           )
                         }
                       >
                         Remove item
                       </button>
                     ) : null}
-                    {!localDraft.items.some((item) => item.orderItemId === row.orderItemId) ? (
+                    {!localDraft.items.some((item) => item.draftKey === row.draftKey) ? (
                       <small>
                         This item was added while you were editing. Reopen Edit to change it.
                       </small>
@@ -260,6 +317,22 @@ export function EditOrderModal(props: OrderActionModalProps) {
                   </div>
                 );
               })}
+              {[
+                ...new Map(
+                  action.order.groups
+                    .flatMap((group) => group.items)
+                    .map((item) => [item.id, item]),
+                ).values(),
+              ].map((item) => (
+                <button
+                  type="button"
+                  className="order-action-link"
+                  key={`add-${item.id}`}
+                  onClick={() => setDraft((current) => addItemWithDesign(current, item))}
+                >
+                  Add another item with this design
+                </button>
+              ))}
             </fieldset>
           </section>
           <section className="order-edit-section">

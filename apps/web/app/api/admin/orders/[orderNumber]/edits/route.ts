@@ -83,12 +83,19 @@ export async function POST(request: Request, context: ActionContext) {
       if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100)
         invalid('Select valid order items.');
       items = body.items.map((rawItem) => {
-        const item = object(rawItem, ['orderItemId', 'productVariantId', 'quantity']);
-        return {
-          ...(item.orderItemId === undefined ? {} : { orderItemId: uuid(item.orderItemId) }),
-          productVariantId: catalogVariantId(item.productVariantId),
-          quantity: integer(item.quantity, 1, 99),
-        };
+        const item = object(rawItem, [
+          'orderItemId',
+          'sourceOrderItemId',
+          'productVariantId',
+          'quantity',
+        ]);
+        if ((item.orderItemId === undefined) === (item.sourceOrderItemId === undefined))
+          invalid('Select exactly one existing item or design source for every line.');
+        const productVariantId = catalogVariantId(item.productVariantId);
+        const quantity = integer(item.quantity, 1, 99);
+        return item.orderItemId !== undefined
+          ? { orderItemId: uuid(item.orderItemId), productVariantId, quantity }
+          : { sourceOrderItemId: uuid(item.sourceOrderItemId), productVariantId, quantity };
       });
       const ids = items.flatMap((item) =>
         item.orderItemId ? [item.orderItemId.toLowerCase()] : [],

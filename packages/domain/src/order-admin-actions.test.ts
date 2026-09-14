@@ -285,6 +285,8 @@ describe('independent return preflight', () => {
       { carrier: null },
       { carrier: 'x'.repeat(201) },
       { trackingNumber: 'x'.repeat(201) },
+      { toState: 'IN_TRANSIT', carrier: undefined, trackingNumber: undefined },
+      { toState: 'IN_TRANSIT', carrier: 'UPS', trackingNumber: '' },
       { note: 'x'.repeat(1001) },
       { idempotencyKey: 'short' },
     ])

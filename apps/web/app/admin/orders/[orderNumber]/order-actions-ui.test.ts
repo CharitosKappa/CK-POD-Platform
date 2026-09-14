@@ -10,11 +10,13 @@ import { ReturnOrderModal } from './return-order-modal';
 import {
   EditOrderModal,
   buildEditPayload,
+  addItemWithDesign,
   editDraftFrom,
   rebaseEditDraft,
 } from './edit-order-modal';
 import { ArchiveOrderModal } from './archive-order-modal';
 import { OrderPaymentSummary } from './order-payment-summary';
+import { ManageReturnModal } from './manage-return-modal';
 import {
   createPendingRefundReconciliationCheck,
   PendingRefundReconciliationModal,
@@ -120,8 +122,8 @@ const order: OrderDetail = {
           sku: 'retail-sku',
           productVariantId: 'variant-black-M',
           variantOptions: [
-            { id: 'variant-black-M', color: 'Black', size: 'M' },
-            { id: 'variant-white-L', color: 'White', size: 'L' },
+            { id: 'variant-black-M', color: 'Black', size: 'M', unitPriceCents: 3999 },
+            { id: 'variant-white-L', color: 'White', size: 'L', unitPriceCents: 4199 },
           ],
           projectId: 'project-1',
           projectVersionId: 'version-1',
@@ -337,6 +339,46 @@ describe('order action surfaces', () => {
     expect(html).not.toContain('>Refund</button>');
     expect(html).toContain('Amount due');
     expect(html).toContain('$8.00');
+  });
+  it('offers only server-permitted Return transitions and requires tracking in transit', () => {
+    const returned = {
+      id: 'return-1',
+      state: 'APPROVED' as const,
+      permittedTransitions: ['IN_TRANSIT', 'REJECTED'] as const,
+      reasonCode: 'CUSTOMER_REQUEST',
+      shippingRequired: true,
+      note: null,
+      carrier: null,
+      trackingNumber: null,
+      createdByName: 'ops@example.test',
+      createdAt: '2026-09-14T12:00:00Z',
+      updatedAt: '2026-09-14T12:00:00Z',
+      items: [{ orderItemId: 'item-1', quantity: 1 }],
+    };
+    const html = markup(ManageReturnModal, { ...props, returned });
+    expect(html).toContain('In transit');
+    expect(html).toContain('Rejected');
+    expect(html).not.toContain('Received');
+    expect(html).toContain('Carrier');
+    expect(html).toContain('Tracking number');
+    expect(html).not.toContain('Original payment method');
+  });
+  it('adds another line with one exact design source and displays the selected server price', () => {
+    const draft = editDraftFrom(order);
+    const added = addItemWithDesign(draft, order.groups[0]!.items[0]!);
+    expect(buildEditPayload(order, added)).toMatchObject({
+      items: [
+        { orderItemId: 'item-1', productVariantId: 'variant-black-M', quantity: 1 },
+        {
+          sourceOrderItemId: 'item-1',
+          productVariantId: 'variant-black-M',
+          quantity: 1,
+        },
+      ],
+    });
+    const html = markup(EditOrderModal, props);
+    expect(html).toContain('Add another item with this design');
+    expect(html).toContain('$39.99');
   });
   it('renders durable pending refunds in Payment and offers an explicit read-only reconciliation', () => {
     const pendingRefund = {

@@ -29,6 +29,21 @@ routeContract({
   invalid: [
     { reasonCode: 'EDIT', shippingCents: 1.5 },
     { reasonCode: 'EDIT', items: [{ productVariantId: uuid, quantity: 0 }] },
+    {
+      reasonCode: 'EDIT',
+      items: [
+        {
+          orderItemId: uuid,
+          sourceOrderItemId: '10000000-0000-4000-8000-000000000002',
+          productVariantId: 'essential-dtg-tee-black-M',
+          quantity: 1,
+        },
+      ],
+    },
+    {
+      reasonCode: 'EDIT',
+      items: [{ productVariantId: 'essential-dtg-tee-black-M', quantity: 1 }],
+    },
     { reasonCode: 'EDIT', items: [{ productVariantId: uuid, quantity: 1, priceCents: 1 }] },
     { reasonCode: 'EDIT', shippingAddress: { recipientName: 'Name' } },
     { reasonCode: 'EDIT', shippingAddress: { ...shippingAddress, taxCents: 0 } },
