@@ -64,53 +64,181 @@ function result(row: RefundRow, duplicate: boolean): RefundOrderResult {
   };
 }
 
+export class EditedOrderBalanceAttributionError extends Error {}
+
 /** Caller holds the order row lock shared by revisions and refund reservations. */
 export async function editedOrderBalanceWithClient(
   client: SqlClient,
   orderId: string,
   totalCents: number,
 ) {
-  const balance = (
-    await client.query<{ paid: number }>(
-      `SELECT (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid FROM app.orders orders JOIN app.payments payment ON payment.checkout_attempt_id=orders.checkout_attempt_id WHERE orders.id=$1`,
+  const context = await editBalanceContext(client, orderId);
+  if (!context) return null;
+  const pendingRefunds = context.attributed ? [] : await pendingRefundBasis(client, orderId);
+  if (context.legacy_revision_id && !context.attributed && pendingRefunds.length)
+    throw new EditedOrderBalanceAttributionError(
+      'This legacy edited order has unattributed pending refunds. Reconcile their edit responsibility before continuing.',
+    );
+  // After the first financial revision, the customer owes only the next revision's
+  // delta plus any outstanding edit responsibility. Goodwill/refund money is not debt.
+  const signed =
+    context.attributed || context.legacy_revision_id
+      ? context.amount_due_cents - context.refundable_adjustment_cents + totalCents - context.total
+      : totalCents - context.paid;
+  return {
+    amountDueCents: Math.max(0, signed),
+    refundableAdjustmentCents: Math.max(0, -signed),
+    pendingRefunds,
+  };
+}
+
+interface PendingRefundBasis {
+  refundId: string;
+  amountCents: number;
+}
+
+async function pendingRefundBasis(
+  client: SqlClient,
+  orderId: string,
+): Promise<PendingRefundBasis[]> {
+  return (
+    await client.query<PendingRefundBasis>(
+      `SELECT id AS "refundId",amount_cents AS "amountCents" FROM app.order_refunds WHERE order_id=$1 AND status='PENDING' ORDER BY id`,
+      [orderId],
+    )
+  ).rows;
+}
+
+async function editBalanceContext(client: SqlClient, orderId: string) {
+  return (
+    await client.query<{
+      total: number;
+      paid: number;
+      amount_due_cents: number;
+      refundable_adjustment_cents: number;
+      attributed: boolean;
+      balance_revision_id: string | null;
+      legacy_revision_id: string | null;
+    }>(
+      `SELECT (orders.pricing_snapshot->>'totalCents')::int AS total,orders.amount_due_cents,orders.refundable_adjustment_cents,
+       (CASE WHEN payment.status='SUCCEEDED' THEN payment.amount_cents ELSE 0 END - COALESCE((SELECT sum(amount_cents) FROM app.order_refunds WHERE order_id=$1 AND status IN ('PENDING','SUCCEEDED')),0))::int AS paid,
+       EXISTS (SELECT 1 FROM app.order_operational_audits WHERE order_id=$1 AND action='order_edit_balance_revised' AND metadata->>'revisionId'=orders.financial_snapshot->>'editBalanceRevisionId') AS attributed,
+       orders.financial_snapshot->>'editBalanceRevisionId' AS balance_revision_id,
+       (SELECT revision.id FROM app.order_revisions revision WHERE revision.order_id=$1 AND (
+         revision.before_snapshot->'order'->'pricing_snapshot' IS DISTINCT FROM revision.after_snapshot->'order'->'pricing_snapshot'
+         OR COALESCE((revision.after_snapshot->'order'->>'amount_due_cents')::int,0)>0
+         OR COALESCE((revision.after_snapshot->'order'->>'refundable_adjustment_cents')::int,0)>0)
+        ORDER BY revision.created_at DESC,revision.id DESC LIMIT 1) AS legacy_revision_id
+     FROM app.orders orders JOIN app.payments payment ON payment.checkout_attempt_id=orders.checkout_attempt_id WHERE orders.id=$1`,
       [orderId],
     )
   ).rows[0];
-  return balance
-    ? {
-        amountDueCents: Math.max(0, totalCents - balance.paid),
-        refundableAdjustmentCents: Math.max(0, balance.paid - totalCents),
-      }
-    : null;
+}
+
+/** Explicit revision/refund identity bindings use the existing append-only audit ledger. */
+export async function recordEditedOrderBalanceWithClient(
+  client: SqlClient,
+  orderId: string,
+  input: {
+    revisionId: string;
+    priceDifferenceCents: number;
+    amountDueCents: number;
+    refundableAdjustmentCents: number;
+    pendingRefunds: PendingRefundBasis[];
+    imported?: boolean;
+  },
+  staffMemberId: string | null,
+) {
+  await client.query(
+    `INSERT INTO app.order_operational_audits (order_id,action,actor_type,actor_staff_member_id,metadata)
+    VALUES ($1,'order_edit_balance_revised',$2,$3,$4::jsonb)`,
+    [
+      orderId,
+      staffMemberId ? 'OPS' : 'SYSTEM',
+      staffMemberId,
+      JSON.stringify({ version: 1, ...input }),
+    ],
+  );
+}
+
+async function importLegacyEditBalanceBasis(client: SqlClient, orderId: string) {
+  const context = await editBalanceContext(client, orderId);
+  if (!context || context.attributed || !context.legacy_revision_id) return;
+  if ((await pendingRefundBasis(client, orderId)).length)
+    throw new EditedOrderBalanceAttributionError(
+      'This legacy edited order has unattributed pending refunds. Reconcile their edit responsibility before continuing.',
+    );
+  // Do not rewrite historical snapshots or infer settlement from refund reason/status.
+  // Adopt only a settled opening responsibility; ambiguous pending records need review.
+  await client.query(
+    `UPDATE app.orders SET financial_snapshot=jsonb_set(financial_snapshot,'{editBalanceRevisionId}',to_jsonb($2::text)),updated_at=now() WHERE id=$1`,
+    [orderId, context.legacy_revision_id],
+  );
+  await recordEditedOrderBalanceWithClient(
+    client,
+    orderId,
+    {
+      revisionId: context.legacy_revision_id,
+      priceDifferenceCents: 0,
+      amountDueCents: context.amount_due_cents,
+      refundableAdjustmentCents: context.refundable_adjustment_cents,
+      pendingRefunds: [],
+      imported: true,
+    },
+    null,
+  );
+}
+
+async function reserveEditRefundSettlement(
+  client: SqlClient,
+  orderId: string,
+  amountCents: number,
+) {
+  const context = await editBalanceContext(client, orderId);
+  const allocated = context?.attributed
+    ? Math.min(context.refundable_adjustment_cents, amountCents)
+    : 0;
+  if (allocated > 0)
+    await client.query(
+      'UPDATE app.orders SET refundable_adjustment_cents=refundable_adjustment_cents-$2,updated_at=now() WHERE id=$1',
+      [orderId, allocated],
+    );
+  return {
+    amountCents: allocated,
+    revisionId: allocated > 0 ? context!.balance_revision_id : null,
+  };
+}
+
+async function restoreFailedEditRefundSettlement(
+  client: SqlClient,
+  orderId: string,
+  refundId: string,
+) {
+  const result = (
+    await client.query<{ amount: number }>(
+      `SELECT COALESCE(sum(amount),0)::int AS amount FROM (
+       SELECT (metadata->'editSettlement'->>'amountCents')::int AS amount FROM app.order_operational_audits
+       WHERE order_id=$1 AND action='refund_requested' AND metadata->>'refundId'=$2
+       UNION ALL
+       SELECT (pending->>'amountCents')::int FROM app.order_operational_audits audit
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(audit.metadata->'pendingRefunds','[]'::jsonb)) pending
+       WHERE audit.order_id=$1 AND audit.action='order_edit_balance_revised' AND pending->>'refundId'=$2
+     ) responsibility`,
+      [orderId, refundId],
+    )
+  ).rows[0]!.amount;
+  if (!result) return;
+  await client.query(
+    `UPDATE app.orders SET amount_due_cents=GREATEST(0,amount_due_cents-refundable_adjustment_cents-$2),
+    refundable_adjustment_cents=GREATEST(0,refundable_adjustment_cents-amount_due_cents+$2),updated_at=now() WHERE id=$1`,
+    [orderId, result],
+  );
 }
 
 async function lockRefundOrder(client: SqlClient, orderId: string) {
   // The row lock is first, matching admin edits and Order→Groups operations.
   await client.query('SELECT id FROM app.orders WHERE id=$1 FOR UPDATE', [orderId]);
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [orderId]);
-}
-
-async function reconcileEditedOrderBalance(client: SqlClient, orderId: string) {
-  // Ordinary refunds remain independent of fulfillment. Reconcile only financial
-  // revisions (including an unchanged-total edit which reserved a pending refund),
-  // not a delivered order whose only revision was a contact/note update.
-  const order = (
-    await client.query<{ total: number }>(
-      `SELECT (pricing_snapshot->>'totalCents')::int AS total FROM app.orders orders WHERE id=$1
-     AND EXISTS (SELECT 1 FROM app.order_revisions revision WHERE revision.order_id=orders.id AND (
-       revision.before_snapshot->'order'->'pricing_snapshot' IS DISTINCT FROM revision.after_snapshot->'order'->'pricing_snapshot'
-       OR COALESCE((revision.after_snapshot->'order'->>'amount_due_cents')::int,0)>0
-       OR COALESCE((revision.after_snapshot->'order'->>'refundable_adjustment_cents')::int,0)>0))`,
-      [orderId],
-    )
-  ).rows[0];
-  if (!order) return;
-  const balance = await editedOrderBalanceWithClient(client, orderId, order.total);
-  if (!balance) throw new Error('The order payment is unavailable.');
-  await client.query(
-    'UPDATE app.orders SET amount_due_cents=$2,refundable_adjustment_cents=$3,updated_at=now() WHERE id=$1 AND (amount_due_cents<>$2 OR refundable_adjustment_cents<>$3)',
-    [orderId, balance.amountDueCents, balance.refundableAdjustmentCents],
-  );
 }
 
 /** Refund reservations share one order lock across both destinations, independent of fulfillment. */
@@ -142,11 +270,17 @@ export class OrderRefundService {
     } catch (error) {
       await withTransaction(this.pool, async (client) => {
         await lockRefundOrder(client, reservation.order.id);
-        await client.query(
-          `UPDATE app.order_refunds SET status='FAILED' WHERE id=$1 AND status='PENDING'`,
+        await importLegacyEditBalanceBasis(client, reservation.order.id);
+        const failed = await client.query(
+          `UPDATE app.order_refunds SET status='FAILED' WHERE id=$1 AND status='PENDING' RETURNING id`,
           [reservation.refund.id],
         );
-        await reconcileEditedOrderBalance(client, reservation.order.id);
+        if (failed.rows.length)
+          await restoreFailedEditRefundSettlement(
+            client,
+            reservation.order.id,
+            reservation.refund.id,
+          );
       });
       throw error;
     }
@@ -161,7 +295,6 @@ export class OrderRefundService {
       );
       const refund = updated.rows[0];
       if (!refund) throw new Error('Refund reservation is unavailable.');
-      await reconcileEditedOrderBalance(client, reservation.order.id);
       await this.audit(client, reservation.order.id, 'refund_succeeded', actor, input, {
         amountCents: refund.amount_cents,
         providerRefundId: provider.providerRefundId,
@@ -206,7 +339,6 @@ export class OrderRefundService {
       );
       const refund = updated.rows[0];
       if (!refund) throw new Error('Refund reservation is unavailable.');
-      await reconcileEditedOrderBalance(client, order.id);
       await this.audit(client, order.id, 'refund_succeeded', actor, input, {
         amountCents,
         destination: 'STORE_CREDIT',
@@ -293,6 +425,7 @@ export class OrderRefundService {
     );
     if (Number(prior.rows[0]?.amount ?? 0) + input.amountCents > order.amount_cents)
       throw new Error('Refund exceeds the captured payment.');
+    await importLegacyEditBalanceBasis(client, order.id);
     const inserted = await client.query<RefundRow>(
       `INSERT INTO app.order_refunds (order_id, payment_id, provider, idempotency_key,
          amount_cents, reason_code, status, notes, initiated_by_user_id, initiated_by_staff_member_id, destination)
@@ -312,8 +445,10 @@ export class OrderRefundService {
     );
     const refund = inserted.rows[0];
     if (!refund) throw new Error('Could not reserve refund.');
-    await reconcileEditedOrderBalance(client, order.id);
+    const editSettlement = await reserveEditRefundSettlement(client, order.id, input.amountCents);
     await this.audit(client, order.id, 'refund_requested', actor, input, {
+      refundId: refund.id,
+      editSettlement,
       amountCents: input.amountCents,
       idempotencyKey: input.idempotencyKey,
       ...(destination === 'STORE_CREDIT' ? { destination } : {}),

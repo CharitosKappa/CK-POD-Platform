@@ -22,7 +22,12 @@ import {
 } from './order-detail-contracts';
 import { OrderOperationsAccessError, type OrderOperationsService } from './order-operations';
 import { normalizeFulfillmentError, type FulfillmentService } from './fulfillment-contracts';
-import { editedOrderBalanceWithClient, type OrderRefundService } from './order-refunds';
+import {
+  editedOrderBalanceWithClient,
+  EditedOrderBalanceAttributionError,
+  recordEditedOrderBalanceWithClient,
+  type OrderRefundService,
+} from './order-refunds';
 import { LifecycleOrchestrator } from './operations-analytics';
 import {
   CommerceValidationError,
@@ -299,6 +304,10 @@ export class OrderAdminActionsService {
       const email = input.customerEmail?.trim().toLowerCase() ?? order.customer_email;
       let amountDueCents = order.amount_due_cents;
       let refundableAdjustmentCents = order.refundable_adjustment_cents;
+      const revisionId = randomUUID();
+      let pendingRefunds: NonNullable<
+        Awaited<ReturnType<typeof editedOrderBalanceWithClient>>
+      >['pendingRefunds'] = [];
       if (commercial) {
         if (order.pricing_snapshot.currency !== 'USD')
           throw new OrderAdminActionValidationError(
@@ -334,17 +343,26 @@ export class OrderAdminActionsService {
         pricing = result.pricing;
         financial = {
           ...financial,
+          editBalanceRevisionId: revisionId,
           revenueCents: pricing.subtotalCents,
           discountCents: pricing.discountCents,
           customerShippingRevenueCents: pricing.customerShippingCents,
           taxCollectedCents: pricing.taxCents,
           taxSnapshot: result.tax,
         };
-        const balance = await editedOrderBalanceWithClient(client, locked.id, pricing.totalCents);
+        let balance: Awaited<ReturnType<typeof editedOrderBalanceWithClient>>;
+        try {
+          balance = await editedOrderBalanceWithClient(client, locked.id, pricing.totalCents);
+        } catch (error) {
+          if (error instanceof EditedOrderBalanceAttributionError)
+            throw new OrderAdminActionConflictError(error.message, eligibility);
+          throw error;
+        }
         if (!balance)
           throw new OrderAdminActionValidationError('The order payment is unavailable.');
         amountDueCents = balance.amountDueCents;
         refundableAdjustmentCents = balance.refundableAdjustmentCents;
+        pendingRefunds = balance.pendingRefunds;
         if (input.items !== undefined || input.shippingAddress !== undefined) {
           const plan = await repricing.plan(
             changedItems.map((item) => ({ ...item.price, orderItemId: item.id })),
@@ -448,8 +466,9 @@ export class OrderAdminActionsService {
       const priceDifferenceCents = pricing.totalCents - order.pricing_snapshot.totalCents;
       const revision = (
         await client.query<{ id: string }>(
-          `INSERT INTO app.order_revisions (order_id,before_snapshot,after_snapshot,price_difference_cents,reason_code,note,created_by_staff_member_id,idempotency_key) VALUES ($1,$2::jsonb,$3::jsonb,$4,$5,$6,$7,$8) RETURNING id`,
+          `INSERT INTO app.order_revisions (id,order_id,before_snapshot,after_snapshot,price_difference_cents,reason_code,note,created_by_staff_member_id,idempotency_key) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9) RETURNING id`,
           [
+            revisionId,
             locked.id,
             JSON.stringify(before),
             JSON.stringify(after),
@@ -461,6 +480,19 @@ export class OrderAdminActionsService {
           ],
         )
       ).rows[0]!;
+      if (commercial)
+        await recordEditedOrderBalanceWithClient(
+          client,
+          locked.id,
+          {
+            revisionId: revision.id,
+            priceDifferenceCents,
+            amountDueCents,
+            refundableAdjustmentCents,
+            pendingRefunds,
+          },
+          session.staffMemberId,
+        );
       const result = {
         revisionId: revision.id,
         priceDifferenceCents,

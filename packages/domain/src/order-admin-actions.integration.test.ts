@@ -981,6 +981,258 @@ suite('order archive transaction integration', () => {
     },
   );
 
+  it.each(['ORIGINAL_PAYMENT', 'STORE_CREDIT'] as const)(
+    'does not create edit debt or block production for a separate %s refund after settlement',
+    async (destination) => {
+      const f = await productionFixture();
+      const { actions, operations } = editService();
+      const edit = await actions.editOrder(staff, { ...f.input(), discountCents: 1000 });
+      const refunds = new domain.OrderRefundService(
+        actionDatabase.pool,
+        new domain.FakePaymentService(),
+      );
+      const actor = {
+        type: 'STAFF',
+        staffMemberId: staff.staffMemberId,
+        role: 'OPERATIONS',
+        email: staff.email,
+      } as const;
+      const settlement = await refunds.refundOriginalPayment(actor, {
+        orderNumber: f.orderNumber,
+        amountCents: edit.refundableAdjustmentCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      });
+      const unrelated = {
+        orderNumber: f.orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      };
+      const independent =
+        destination === 'ORIGINAL_PAYMENT'
+          ? await refunds.refundOriginalPayment(actor, unrelated)
+          : await refunds.refundToStoreCredit(actor, unrelated);
+      const allocations = (
+        await pool.query(
+          'SELECT metadata FROM app.order_operational_audits WHERE order_id=$1 AND action=$2',
+          [f.orderId, 'refund_requested'],
+        )
+      ).rows.map((row) => row.metadata);
+      expect(allocations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            refundId: settlement.refundId,
+            editSettlement: {
+              amountCents: edit.refundableAdjustmentCents,
+              revisionId: edit.revisionId,
+            },
+          }),
+          expect.objectContaining({
+            refundId: independent.refundId,
+            editSettlement: { amountCents: 0, revisionId: null },
+          }),
+        ]),
+      );
+      expect((await snapshot(f.orderId)).order).toMatchObject({
+        amount_due_cents: 0,
+        refundable_adjustment_cents: 0,
+        status: 'READY_FOR_PRODUCTION',
+      });
+      await expect(
+        operations.submitFulfillmentGroup(staff, {
+          orderNumber: f.orderNumber,
+          fulfillmentGroupId: f.groupId,
+        }),
+      ).resolves.toMatchObject({ duplicate: false });
+    },
+  );
+
+  it('keeps a later full cancellation refund independent of a settled edit adjustment', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const edit = await editService().actions.editOrder(staff, {
+      ...f.input(),
+      discountCents: 1000,
+    });
+    const { actions, refunds } = cancellationService();
+    const actor = {
+      type: 'STAFF',
+      staffMemberId: staff.staffMemberId,
+      role: 'OPERATIONS',
+      email: staff.email,
+    } as const;
+    await refunds.refundOriginalPayment(actor, {
+      orderNumber: f.orderNumber,
+      amountCents: edit.refundableAdjustmentCents,
+      reasonCode: 'CUSTOMER_REQUEST',
+      idempotencyKey: randomUUID(),
+    });
+    const paid = (await snapshot(f.orderId)).payments[0]!.amount_cents;
+    await actions.cancel(staff, {
+      ...cancellationInput(f.orderNumber),
+      refundDestination: 'ORIGINAL_PAYMENT',
+      refundAmountCents: paid - edit.refundableAdjustmentCents,
+    });
+    const after = await snapshot(f.orderId);
+    expect(after.order).toMatchObject({
+      status: 'CANCELLED',
+      amount_due_cents: 0,
+      refundable_adjustment_cents: 0,
+    });
+    expect(after.refunds).toHaveLength(2);
+    expect(after.refunds.every((refund) => refund.status === 'SUCCEEDED')).toBe(true);
+    expect(after.refunds.reduce((sum, refund) => sum + refund.amount_cents, 0)).toBe(paid);
+  });
+
+  it('charges only the new revision delta after a settled edit and unrelated goodwill refund', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), discountCents: 1000 });
+    const refunds = new domain.OrderRefundService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const actor = {
+      type: 'STAFF',
+      staffMemberId: staff.staffMemberId,
+      role: 'OPERATIONS',
+      email: staff.email,
+    } as const;
+    for (const amountCents of [edit.refundableAdjustmentCents, 100])
+      await refunds.refundOriginalPayment(actor, {
+        orderNumber: f.orderNumber,
+        amountCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      });
+    const increased = await actions.editOrder(staff, { ...f.input(), shippingCents: 200 });
+    expect(increased).toMatchObject({
+      priceDifferenceCents: 200,
+      amountDueCents: 200,
+      refundableAdjustmentCents: 0,
+    });
+  });
+
+  it('restores only the failed refund allocation without adopting an unrelated concurrent refund', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), discountCents: 1000 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const payments = new domain.FakePaymentService();
+    vi.spyOn(payments, 'refund').mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error('Settlement rejected');
+    });
+    const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
+    const actor = {
+      type: 'STAFF',
+      staffMemberId: staff.staffMemberId,
+      role: 'OPERATIONS',
+      email: staff.email,
+    } as const;
+    const pending = Promise.allSettled([
+      refunds.refundOriginalPayment(actor, {
+        orderNumber: f.orderNumber,
+        amountCents: edit.refundableAdjustmentCents,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      }),
+    ]);
+    try {
+      await entered.promise;
+      expect((await snapshot(f.orderId)).order.refundable_adjustment_cents).toBe(0);
+      await refunds.refundToStoreCredit(actor, {
+        orderNumber: f.orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      });
+    } finally {
+      release.resolve();
+    }
+    expect(await pending).toMatchObject([{ status: 'rejected' }]);
+    expect((await snapshot(f.orderId)).order).toMatchObject({
+      amount_due_cents: 0,
+      refundable_adjustment_cents: edit.refundableAdjustmentCents,
+    });
+  });
+
+  it('binds refund allocation to the current financial revision even when audit timestamps are out of order', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const first = await actions.editOrder(staff, { ...f.input(), discountCents: 1000 });
+    const current = await actions.editOrder(staff, { ...f.input(), discountCents: 2000 });
+    // PostgreSQL now() is the transaction start time, not lock-acquisition/commit order.
+    await pool.query(
+      `UPDATE app.order_operational_audits SET created_at=now()+interval '1 hour' WHERE order_id=$1 AND action='order_edit_balance_revised' AND metadata->>'revisionId'=$2`,
+      [f.orderId, first.revisionId],
+    );
+    const refunds = new domain.OrderRefundService(
+      actionDatabase.pool,
+      new domain.FakePaymentService(),
+    );
+    const refund = await refunds.refundOriginalPayment(
+      { type: 'STAFF', staffMemberId: staff.staffMemberId, role: 'OPERATIONS', email: staff.email },
+      {
+        orderNumber: f.orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      },
+    );
+    const allocation = (
+      await pool.query(
+        `SELECT metadata->'editSettlement' AS settlement FROM app.order_operational_audits WHERE order_id=$1 AND metadata->>'refundId'=$2`,
+        [f.orderId, refund.refundId],
+      )
+    ).rows[0]!.settlement;
+    expect(allocation).toEqual({ amountCents: 100, revisionId: current.revisionId });
+  });
+
+  it('does not infer attribution for legacy edited balances with unbound pending refunds', async () => {
+    const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
+    const { actions } = editService();
+    const edit = await actions.editOrder(staff, { ...f.input(), discountCents: 1000 });
+    await pool.query(
+      `DELETE FROM app.order_operational_audits WHERE order_id=$1 AND action='order_edit_balance_revised'`,
+      [f.orderId],
+    );
+    const before = await snapshot(f.orderId);
+    await pool.query(
+      `INSERT INTO app.order_refunds (order_id,payment_id,provider,amount_cents,reason_code,status,idempotency_key,initiated_by_staff_member_id) VALUES ($1,$2,'FAKE',500,'CUSTOMER_REQUEST','PENDING',$3,$4)`,
+      [f.orderId, before.payments[0]!.id, randomUUID(), staff.staffMemberId],
+    );
+    await pool.query('UPDATE app.orders SET refundable_adjustment_cents=$2 WHERE id=$1', [
+      f.orderId,
+      edit.refundableAdjustmentCents - 500,
+    ]);
+    const payments = new domain.FakePaymentService();
+    const provider = vi.spyOn(payments, 'refund');
+    const refunds = new domain.OrderRefundService(actionDatabase.pool, payments);
+    const actor = {
+      type: 'STAFF',
+      staffMemberId: staff.staffMemberId,
+      role: 'OPERATIONS',
+      email: staff.email,
+    } as const;
+    const persisted = await snapshot(f.orderId);
+    await expect(
+      refunds.refundOriginalPayment(actor, {
+        orderNumber: f.orderNumber,
+        amountCents: 100,
+        reasonCode: 'CUSTOMER_REQUEST',
+        idempotencyKey: randomUUID(),
+      }),
+    ).rejects.toThrow('unattributed pending refunds');
+    await expect(
+      actions.editOrder(staff, { ...f.input(), shippingCents: 200 }),
+    ).rejects.toBeInstanceOf(domain.OrderAdminActionConflictError);
+    expect(provider).not.toHaveBeenCalled();
+    expect(await snapshot(f.orderId)).toEqual(persisted);
+  });
+
   it('rejects currency conversion during edits and keeps clearing a contact phone compatible with later repricing', async () => {
     const f = await fixture('UNFULFILLED', 'PAID', 'NOT_STARTED');
     const { actions } = editService();
