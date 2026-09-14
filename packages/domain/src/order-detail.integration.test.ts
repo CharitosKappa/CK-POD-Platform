@@ -138,14 +138,12 @@ suite('order detail persistence integration', () => {
 
     const service = new OrderDetailService(pool);
     const detail = await service.getOrder(staff, order.orderNumber);
-    const item = detail!.groups.flatMap((group) => group.items).find((row) => row.id === order.itemId);
+    const item = detail!.groups
+      .flatMap((group) => group.items)
+      .find((row) => row.id === order.itemId);
     expect(item).toMatchObject({ unitPriceCents: 4321, lineTotalCents: 8642 });
 
-    const group = await service.getPrintingGroup(
-      staff,
-      order.orderNumber,
-      detail!.groups[0]!.id,
-    );
+    const group = await service.getPrintingGroup(staff, order.orderNumber, detail!.groups[0]!.id);
     expect(group?.items.find((row) => row.id === order.itemId)).toMatchObject({
       unitPriceCents: 4321,
       lineTotalCents: 8642,
@@ -173,6 +171,14 @@ suite('order detail persistence integration', () => {
         `INSERT INTO app.order_refunds (order_id,payment_id,provider,idempotency_key,amount_cents,status,reason_code,initiated_by_staff_member_id) VALUES ($1,$2,'FAKE',$3,$4,$5,'TEST',$6)`,
         [order.id, order.payment_id, randomUUID(), amount, status, staff.staffMemberId],
       );
+    const providerRefundId = `provider-secret-${randomUUID()}`;
+    const pendingRefundId = (
+      await pool.query<{ id: string }>(
+        `UPDATE app.order_refunds SET provider_refund_id=$2
+         WHERE order_id=$1 AND status='PENDING' RETURNING id`,
+        [order.id, providerRefundId],
+      )
+    ).rows[0]!.id;
     const actions = new domain.OrderAdminActionsService(pool);
     const returned = await actions.createReturn(staff, {
       orderNumber: order.orderNumber,
@@ -190,6 +196,15 @@ suite('order detail persistence integration', () => {
       amountDueCents: 0,
       refundableAdjustmentCents: 200,
       refundableCents: order.total - 1500,
+      pendingRefunds: [
+        {
+          id: pendingRefundId,
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 500,
+          status: 'PENDING',
+          createdAt: expect.any(Date),
+        },
+      ],
       returnableItems: [
         {
           orderItemId: order.itemId,
@@ -204,6 +219,9 @@ suite('order detail persistence integration', () => {
         editFields: { items: false },
       },
     });
+    expect(JSON.stringify(detail?.pendingRefunds)).not.toMatch(
+      new RegExp(`${providerRefundId}|providerRefundId|paymentId|idempotency`, 'i'),
+    );
     expect(detail?.financials.taxLines).toEqual([
       { label: 'Wyoming Sales Tax', rateBasisPoints: 400, amountCents: 200 },
     ]);

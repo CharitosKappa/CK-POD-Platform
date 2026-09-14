@@ -3182,6 +3182,25 @@ select:focus-visible {
   color: #2b2c28;
   font-variant-numeric: tabular-nums;
 }
+
+.order-payment-inline-action {
+  margin-left: 0.55rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #446149;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+
+.order-payment-inline-action:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
 .order-payment-card .order-payment-total {
   margin-top: 7px;
   padding-top: 11px;

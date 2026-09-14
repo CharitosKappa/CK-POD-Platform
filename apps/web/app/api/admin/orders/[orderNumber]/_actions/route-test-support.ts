@@ -21,6 +21,8 @@ const doubles = vi.hoisted(() => ({
   refundOriginalPayment: vi.fn(),
   refundToStoreCredit: vi.fn(),
   recoverRefundResult: vi.fn(),
+  reconcileRefund: vi.fn(),
+  prepareAdditionalPayment: vi.fn(),
   getOrder: vi.fn(),
 }));
 export { doubles };
@@ -65,6 +67,7 @@ export function routeContract(input: {
       doubles.orderAdminActionsRuntime.mockResolvedValue({
         actions: doubles,
         refunds: doubles,
+        editPayments: { prepare: doubles.prepareAdditionalPayment },
         detail: { getOrder: doubles.getOrder },
       });
       doubles[input.service].mockResolvedValue(input.result ?? { duplicate: false });

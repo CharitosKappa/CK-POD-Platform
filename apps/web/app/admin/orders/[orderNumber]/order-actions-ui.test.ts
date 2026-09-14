@@ -15,6 +15,7 @@ import {
 } from './edit-order-modal';
 import { ArchiveOrderModal } from './archive-order-modal';
 import { OrderPaymentSummary } from './order-payment-summary';
+import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
 import { OrderDetailSidebar } from './order-detail-sidebar';
 import { OrderTimelineDetails } from './order-timeline';
 import type { OrderDetail } from './order-detail-types';
@@ -51,6 +52,7 @@ const order: OrderDetail = {
   amountDueCents: 0,
   refundableAdjustmentCents: 0,
   refundableCents: 3500,
+  pendingRefunds: [],
   customer: {
     id: 'customer-1',
     name: 'Taylor Example',
@@ -333,6 +335,36 @@ describe('order action surfaces', () => {
     expect(html).toContain('Amount due');
     expect(html).toContain('$8.00');
   });
+  it('renders durable pending refunds in Payment and offers an explicit read-only reconciliation', () => {
+    const pendingRefund = {
+      id: 'refund-1',
+      destination: 'ORIGINAL_PAYMENT' as const,
+      amountCents: 1200,
+      status: 'PENDING' as const,
+      createdAt: '2026-09-14T12:30:00Z',
+    };
+    const pendingOrder = { ...order, pendingRefunds: [pendingRefund] };
+    const payment = markup(OrderPaymentSummary, {
+      order: pendingOrder,
+      onReconcileRefund: vi.fn(),
+    });
+    expect(payment).toContain('Pending refund');
+    expect(payment).toContain('$12.00');
+    expect(payment).toContain('Check status');
+    expect(
+      markup(OrderPaymentSummary, {
+        order: { ...pendingOrder, actionRecovery: { canResume: false, cancellation: null } },
+      }),
+    ).not.toContain('Check status');
+    const modal = markup(PendingRefundReconciliationModal, {
+      ...props,
+      order: pendingOrder,
+      refund: pendingRefund,
+    });
+    expect(modal).toContain('Check refund status');
+    expect(modal).toContain('does not issue another refund');
+    expect(modal).not.toContain('provider');
+  });
   it('hides existing note and tag mutations from read-only staff', () => {
     vi.stubGlobal('React', React);
     const readonly = {
@@ -420,6 +452,29 @@ describe('order action surfaces', () => {
 });
 
 describe('durable order mutation client', () => {
+  it('uses a dedicated recovery key and session journal only to resume the read-only refund check', async () => {
+    const fetcher = vi
+      .fn()
+      .mockImplementation(async () =>
+        Response.json(
+          { result: { refundId: 'refund-1', status: 'PENDING', amountCents: 1200 } },
+          { status: 202 },
+        ),
+      );
+    vi.stubGlobal('fetch', fetcher);
+    const path = '/api/admin/orders/%2342/refunds/refund-1/reconcile';
+    const first = createOrderActionSession(path);
+    expect((await first.submit({})).kind).toBe('pending');
+    const firstRequest = fetcher.mock.calls[0]![1];
+    expect(firstRequest.body).toBe('{}');
+    expect(firstRequest.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/i);
+
+    const resumed = createOrderActionSession(path);
+    expect((await resumed.resume()).kind).toBe('pending');
+    expect(fetcher.mock.calls[1]![1].headers['Idempotency-Key']).toBe(
+      firstRequest.headers['Idempotency-Key'],
+    );
+  });
   it('gives an explicit unresolved cancellation retry a new key only after a durable failed attempt', async () => {
     const fetcher = vi
       .fn()

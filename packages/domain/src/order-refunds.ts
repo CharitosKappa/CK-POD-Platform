@@ -31,6 +31,13 @@ export interface RefundOrderResult {
   providerRefundId: string | null;
 }
 
+export interface ReconcileRefundInput {
+  orderNumber: string;
+  refundId: string;
+  /** Identifies this admin recovery request; it is never sent to the payment provider. */
+  idempotencyKey: string;
+}
+
 interface RefundRow {
   id: string;
   order_id: string;
@@ -38,6 +45,13 @@ interface RefundRow {
   amount_cents: number;
   status: RefundOrderResult['status'];
   provider_refund_id: string | null;
+}
+
+interface RefundReconciliationRow extends RefundRow {
+  provider_payment_id: string;
+  idempotency_key: string;
+  reason_code: string;
+  notes: string | null;
 }
 
 interface PaidOrderRow {
@@ -262,7 +276,7 @@ export class OrderRefundService {
   ): Promise<RefundOrderResult | null> {
     this.validate(actor, input);
     await this.requireActor(actor);
-    const found = await this.pool.query<RefundRow & { provider_payment_id: string }>(
+    const found = await this.pool.query<RefundReconciliationRow>(
       `SELECT refund.*,payment.provider_payment_id FROM app.order_refunds refund
        JOIN app.orders orders ON orders.id=refund.order_id
        JOIN app.payments payment ON payment.id=refund.payment_id
@@ -270,7 +284,47 @@ export class OrderRefundService {
       [input.orderNumber, input.idempotencyKey],
     );
     const refund = found.rows[0];
-    if (!refund || refund.status !== 'PENDING') return refund ? result(refund, true) : null;
+    if (!refund) return null;
+    return this.reconcilePersistedRefund(actor, input.orderNumber, refund);
+  }
+
+  /**
+   * Reconcile a persisted ORIGINAL_PAYMENT refund selected from Order Detail.
+   * The recovery key belongs only to this read-only provider check; provider discovery
+   * always uses the original refund key stored in the database.
+   */
+  async reconcileRefund(
+    actor: RefundActor,
+    input: ReconcileRefundInput,
+  ): Promise<RefundOrderResult | null> {
+    this.validateReconciliation(actor, input);
+    await this.requireActor(actor);
+    const found = await this.pool.query<RefundReconciliationRow>(
+      `SELECT refund.*,payment.provider_payment_id FROM app.order_refunds refund
+       JOIN app.orders orders ON orders.id=refund.order_id
+       JOIN app.payments payment ON payment.id=refund.payment_id
+       WHERE orders.order_number=$1 AND refund.id=$2 AND refund.destination='ORIGINAL_PAYMENT'`,
+      [input.orderNumber, input.refundId],
+    );
+    const refund = found.rows[0];
+    if (!refund) return null;
+    return this.reconcilePersistedRefund(actor, input.orderNumber, refund);
+  }
+
+  private async reconcilePersistedRefund(
+    actor: RefundActor,
+    orderNumber: string,
+    refund: RefundReconciliationRow,
+  ): Promise<RefundOrderResult> {
+    if (refund.status !== 'PENDING' || refund.destination !== 'ORIGINAL_PAYMENT')
+      return result(refund, true);
+    const persistedInput: RefundOrderInput = {
+      orderNumber,
+      amountCents: refund.amount_cents,
+      reasonCode: refund.reason_code,
+      ...(refund.notes === null ? {} : { note: refund.notes }),
+      idempotencyKey: refund.idempotency_key,
+    };
     let provider: PaymentRefundResult;
     try {
       if (refund.provider_refund_id && this.payments.getRefundStatus)
@@ -283,7 +337,7 @@ export class OrderRefundService {
         const foundProvider = await this.payments.findRefund({
           providerPaymentId: refund.provider_payment_id,
           amountCents: refund.amount_cents,
-          idempotencyKey: input.idempotencyKey,
+          idempotencyKey: refund.idempotency_key,
         });
         if (!foundProvider) return result(refund, true);
         provider = foundProvider;
@@ -334,7 +388,7 @@ export class OrderRefundService {
         refund.order_id,
         provider.status === 'SUCCEEDED' ? 'refund_succeeded' : 'refund_failed',
         actor,
-        input,
+        persistedInput,
         {
           refundId: refund.id,
           amountCents: refund.amount_cents,
@@ -345,7 +399,8 @@ export class OrderRefundService {
       );
       return updated.rows[0];
     });
-    if (provider.status === 'SUCCEEDED') await this.emitRefund(this.pool, refund.order_id, input);
+    if (provider.status === 'SUCCEEDED')
+      await this.emitRefund(this.pool, refund.order_id, persistedInput);
     return result(reconciled, true);
   }
 
@@ -520,6 +575,30 @@ export class OrderRefundService {
       typeof input.idempotencyKey !== 'string' ||
       (actor.type === 'STAFF' &&
         (input.idempotencyKey.trim().length < 12 || input.idempotencyKey.length > 120))
+    )
+      throw new Error('Provide an idempotency key between 12 and 120 characters.');
+  }
+
+  private validateReconciliation(actor: RefundActor, input: ReconcileRefundInput) {
+    if (
+      (actor.type !== 'STAFF' && actor.type !== 'USER') ||
+      (actor.type === 'STAFF' && actor.role !== 'OWNER' && actor.role !== 'OPERATIONS') ||
+      (actor.type === 'USER' && !actor.userId)
+    )
+      throw new Error('Operations access is restricted.');
+    if (typeof input.orderNumber !== 'string' || !input.orderNumber.trim())
+      throw new Error('Order is unavailable.');
+    if (
+      typeof input.refundId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        input.refundId,
+      )
+    )
+      throw new Error('Refund is unavailable.');
+    if (
+      typeof input.idempotencyKey !== 'string' ||
+      input.idempotencyKey.trim().length < 12 ||
+      input.idempotencyKey.length > 120
     )
       throw new Error('Provide an idempotency key between 12 and 120 characters.');
   }

@@ -1114,6 +1114,68 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       ]);
     });
 
+    it('reconciles a durable pending refund by refund id from a new operator without replaying payment', async () => {
+      const f = await fixture();
+      const providerRefundId = `re_${randomUUID()}`;
+      const refundPayment = vi.fn<domain.PaymentService['refund']>().mockResolvedValue({
+        providerRefundId,
+        status: 'PENDING',
+        providerStatus: 'pending',
+      });
+      const readRefund = vi
+        .fn<NonNullable<domain.PaymentService['getRefundStatus']>>()
+        .mockResolvedValue({
+          providerRefundId,
+          status: 'SUCCEEDED',
+          providerStatus: 'succeeded',
+        });
+      const payments: domain.PaymentService = Object.assign(new FakePaymentService(), {
+        refund: refundPayment,
+        getRefundStatus: readRefund,
+      });
+      const firstOperator = new domain.OrderRefundService(pool, payments);
+      const pending = await firstOperator.refundOriginalPayment(f.staff, f.input(1200));
+      const secondStaff = {
+        ...f.staff,
+        staffMemberId: randomUUID(),
+        email: `refund-recovery-${randomUUID()}@example.test`,
+      };
+      await pool.query(
+        `INSERT INTO app.staff_members (id,normalized_email,role,status)
+        VALUES ($1,$2,'OPERATIONS','ACTIVE')`,
+        [secondStaff.staffMemberId, secondStaff.email],
+      );
+
+      const reconciled = await new domain.OrderRefundService(pool, payments).reconcileRefund(
+        secondStaff,
+        {
+          orderNumber: f.orderNumber,
+          refundId: pending.refundId,
+          idempotencyKey: randomUUID(),
+        },
+      );
+
+      expect(reconciled).toMatchObject({
+        refundId: pending.refundId,
+        status: 'SUCCEEDED',
+        duplicate: true,
+      });
+      expect(refundPayment).toHaveBeenCalledOnce();
+      expect(readRefund).toHaveBeenCalledWith({
+        providerRefundId,
+        providerPaymentId: expect.stringMatching(/^fake_pi_/),
+        amountCents: 1200,
+      });
+      expect(
+        await new domain.OrderRefundService(pool, payments).reconcileRefund(secondStaff, {
+          orderNumber: '#999999999',
+          refundId: pending.refundId,
+          idempotencyKey: randomUUID(),
+        }),
+      ).toBeNull();
+      expect(refundPayment).toHaveBeenCalledOnce();
+    });
+
     it('recovers provider identity read-only when its first local write fails after acceptance', async () => {
       const f = await fixture();
       const refunds = service();

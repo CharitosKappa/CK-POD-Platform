@@ -8,7 +8,12 @@ const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD
 export function OrderPaymentSummary({
   order,
   onRefund,
-}: Readonly<{ order: OrderDetail; onRefund?: () => void }>) {
+  onReconcileRefund,
+}: Readonly<{
+  order: OrderDetail;
+  onRefund?: () => void;
+  onReconcileRefund?: (refund: OrderDetail['pendingRefunds'][number]) => void;
+}>) {
   const status = layerStatusPresentation('payment', order.paymentState);
   const rows = [
     [
@@ -67,6 +72,24 @@ export function OrderPaymentSummary({
             <dd>−{money.format(order.financials.refundedCents / 100)}</dd>
           </div>
         ) : null}
+        {order.pendingRefunds.map((refund) => (
+          <div className="order-payment-pending-refund" key={refund.id}>
+            <dt>Pending refund</dt>
+            <dd>
+              Awaiting confirmation
+              {onReconcileRefund ? (
+                <button
+                  type="button"
+                  className="order-payment-inline-action"
+                  onClick={() => onReconcileRefund(refund)}
+                >
+                  Check status
+                </button>
+              ) : null}
+            </dd>
+            <dd>{money.format(refund.amountCents / 100)}</dd>
+          </div>
+        ))}
         {order.amountDueCents > 0 ? (
           <div className="order-payment-due">
             <dt>Amount due</dt>

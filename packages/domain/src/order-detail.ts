@@ -139,6 +139,7 @@ export interface AdminOrderDetail {
   amountDueCents: number;
   refundableAdjustmentCents: number;
   refundableCents: number;
+  pendingRefunds: AdminOrderPendingRefund[];
   returnableItems: AdminOrderReturnableItem[];
   returns: AdminOrderReturn[];
   cancellation: AdminOrderCancellation | null;
@@ -162,6 +163,14 @@ export interface AdminOrderDetail {
   groups: AdminOrderGroupSummary[];
   notes: AdminOrderNote[];
   tags: string[];
+}
+
+export interface AdminOrderPendingRefund {
+  id: string;
+  destination: 'ORIGINAL_PAYMENT';
+  amountCents: number;
+  status: 'PENDING';
+  createdAt: Date;
 }
 
 export interface AdminOrderReturnableItem {
@@ -351,6 +360,7 @@ export class OrderDetailService {
       returnRows,
       returnableRows,
       cancellationRows,
+      pendingRefundRows,
     ] = await Promise.all([
       this.groups(order.id),
       this.items(order.id),
@@ -411,6 +421,13 @@ export class OrderDetailService {
             FROM app.order_cancellation_groups g WHERE g.order_cancellation_id=c.id),'[]'::jsonb) AS groups
         FROM app.order_cancellations c JOIN app.staff_members staff ON staff.id=c.initiated_by_staff_member_id
         WHERE c.order_id=$1 ORDER BY c.created_at DESC,c.id DESC LIMIT 1`,
+        [order.id],
+      ),
+      this.pool.query<AdminOrderPendingRefund>(
+        `SELECT id,destination,amount_cents AS "amountCents",status,created_at AS "createdAt"
+         FROM app.order_refunds
+         WHERE order_id=$1 AND destination='ORIGINAL_PAYMENT' AND status='PENDING'
+         ORDER BY created_at DESC,id DESC`,
         [order.id],
       ),
     ]);
@@ -505,6 +522,7 @@ export class OrderDetailService {
       returns: returnRows.rows,
       returnableItems: returnableRows.rows,
       cancellation,
+      pendingRefunds: pendingRefundRows.rows,
       orderNumber: order.order_number,
       createdAt: order.created_at,
       salesChannel:

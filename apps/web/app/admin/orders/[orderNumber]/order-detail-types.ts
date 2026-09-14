@@ -73,6 +73,9 @@ export interface OrderDetail {
   amountDueCents: number;
   refundableAdjustmentCents: number;
   refundableCents: number;
+  pendingRefunds: Array<
+    Omit<AdminOrderDetail['pendingRefunds'][number], 'createdAt'> & { createdAt: string }
+  >;
   returnableItems: AdminOrderDetail['returnableItems'];
   returns: Array<
     Omit<AdminOrderReturn, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }

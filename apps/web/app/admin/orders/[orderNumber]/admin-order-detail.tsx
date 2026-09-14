@@ -15,6 +15,7 @@ import { OrderStatusBadges } from './order-status-badges';
 import { OrderTimeline } from './order-timeline';
 import { OrderActionsMenu, OrderActionHost } from './order-actions-menu';
 import { pendingOrderActions, type OrderActionName } from './order-action-client';
+import { PendingRefundReconciliationModal } from './pending-refund-reconciliation-modal';
 
 export function AdminOrderDetail({
   orderNumber,
@@ -33,7 +34,9 @@ export function AdminOrderDetail({
   const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [activeAction, setActiveAction] = useState<OrderActionName>();
   const [pendingActions, setPendingActions] = useState<OrderActionName[]>([]);
+  const [pendingRefundId, setPendingRefundId] = useState<string>();
   const actionTrigger = useRef<HTMLElement | null>(null);
+  const pendingRefund = order?.pendingRefunds.find((refund) => refund.id === pendingRefundId);
 
   const load = useCallback(async () => {
     const response = await adminApiFetch(`${apiBase}/${encodeURIComponent(orderNumber)}`);
@@ -68,6 +71,12 @@ export function AdminOrderDetail({
     await load();
     setTimelineRefresh((value) => value + 1);
     setNotice('Order updated.');
+  };
+  const closeRefundReconciliation = () => {
+    setPendingRefundId(undefined);
+    requestAnimationFrame(
+      () => actionTrigger.current?.isConnected && actionTrigger.current.focus(),
+    );
   };
 
   const mutate = async (key: string, url: string, init: RequestInit): Promise<boolean> => {
@@ -182,7 +191,18 @@ export function AdminOrderDetail({
                   <p className="order-empty-copy">No fulfillment groups have been created.</p>
                 </article>
               ) : null}
-              <OrderPaymentSummary order={order} onRefund={() => openAction('refund')} />
+              <OrderPaymentSummary
+                order={order}
+                onRefund={() => openAction('refund')}
+                {...(order.actionRecovery.canResume
+                  ? {
+                      onReconcileRefund: (refund: OrderDetail['pendingRefunds'][number]) => {
+                        actionTrigger.current = document.activeElement as HTMLElement | null;
+                        setPendingRefundId(refund.id);
+                      },
+                    }
+                  : {})}
+              />
               {order.returns.length ? (
                 <article className="order-detail-card">
                   <header className="order-card-header">
@@ -247,6 +267,15 @@ export function AdminOrderDetail({
               action={activeAction}
               apiBase={apiBase}
               onClose={closeAction}
+              onSaved={actionSaved}
+            />
+          ) : null}
+          {pendingRefund ? (
+            <PendingRefundReconciliationModal
+              order={order}
+              refund={pendingRefund}
+              apiBase={apiBase}
+              onClose={closeRefundReconciliation}
               onSaved={actionSaved}
             />
           ) : null}

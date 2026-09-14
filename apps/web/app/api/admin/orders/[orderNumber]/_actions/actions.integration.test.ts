@@ -5,6 +5,7 @@ import * as domain from '@let-it-be/domain';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { doubles, requestFor } from './route-test-support';
 import { POST as refund } from '../refunds/route';
+import { POST as reconcileRefund } from '../refunds/[refundId]/reconcile/route';
 import { POST as createReturn } from '../returns/route';
 import { POST as transitionReturn } from '../returns/[returnId]/transitions/route';
 
@@ -268,4 +269,70 @@ suite('Order action API real domain failure recovery', () => {
         expect(paymentCalls).toBe(1);
       },
     );
+
+  it('discovers a pending refund from Order Detail and reconciles it in a new operator session without another payment write', async () => {
+    const f = await fixture();
+    const providerRefundId = `provider-private-${randomUUID()}`;
+    const paymentWrite = vi.fn<domain.PaymentService['refund']>().mockResolvedValue({
+      providerRefundId,
+      status: 'PENDING',
+      providerStatus: 'pending',
+    });
+    const paymentRead = vi
+      .fn<NonNullable<domain.PaymentService['getRefundStatus']>>()
+      .mockResolvedValue({
+        providerRefundId,
+        status: 'SUCCEEDED',
+        providerStatus: 'succeeded',
+      });
+    const payments: domain.PaymentService = Object.assign(new domain.FakePaymentService(), {
+      refund: paymentWrite,
+      getRefundStatus: paymentRead,
+    });
+    const refunds = new domain.OrderRefundService(pool, payments);
+    doubles.orderAdminActionsRuntime.mockResolvedValue({
+      actions: f.actions,
+      detail: f.detail,
+      refunds,
+    });
+    const created = await refund(
+      requestFor(
+        {
+          destination: 'ORIGINAL_PAYMENT',
+          amountCents: 1200,
+          reasonCode: 'CUSTOMER_REQUEST',
+        },
+        'POST',
+        randomUUID(),
+      ),
+      f.context,
+    );
+    expect(created.status).toBe(202);
+    const refundId = ((await created.json()) as { result: { refundId: string } }).result.refundId;
+    expect((await f.detail.getOrder(f.staff, f.orderNumber))?.pendingRefunds).toMatchObject([
+      { id: refundId, status: 'PENDING', amountCents: 1200 },
+    ]);
+
+    const secondOperator = {
+      ...f.staff,
+      staffMemberId: randomUUID(),
+      email: `api-refund-recovery-${randomUUID()}@example.test`,
+    };
+    await pool.query(
+      "INSERT INTO app.staff_members(id,normalized_email,role,status) VALUES($1,$2,'OPERATIONS','ACTIVE')",
+      [secondOperator.staffMemberId, secondOperator.email],
+    );
+    doubles.requireAdminSession.mockResolvedValue(secondOperator);
+    const recovery = await reconcileRefund(requestFor({}, 'POST', randomUUID()), {
+      params: Promise.resolve({
+        orderNumber: encodeURIComponent(f.orderNumber),
+        refundId,
+      }),
+    });
+
+    expect(recovery.status).toBe(200);
+    expect(await recovery.json()).toMatchObject({ result: { refundId, status: 'SUCCEEDED' } });
+    expect(paymentWrite).toHaveBeenCalledOnce();
+    expect((await f.detail.getOrder(secondOperator, f.orderNumber))?.pendingRefunds).toEqual([]);
+  });
 });
