@@ -41,4 +41,3 @@ Existing component selectors that currently force smaller sizes must be normaliz
 - Visually inspect representative Customers list, Customer detail, Orders list, Order detail, and at least one non-Printing action modal.
 - Confirm the sidebar and Printing modal remain unchanged.
 - Run format, lint, typecheck, full tests, and production build.
-

@@ -25,10 +25,12 @@
 ### Task 1: Establish the approved semantic scale
 
 **Files:**
+
 - Modify: `apps/web/app/admin/admin-main-typography.test.ts`
 - Modify: `apps/web/app/globals.css:2315-2410`
 
 **Interfaces:**
+
 - Consumes: `.commerce-admin-main` as the boundary around commerce admin content.
 - Produces: `--admin-body-size`, `--admin-helper-size`, `--admin-control-size`, `--admin-compact-size`, and `--admin-section-heading-size` CSS custom properties.
 
@@ -89,10 +91,12 @@ git commit -m "style: raise admin typography scale"
 ### Task 2: Normalize Customers, Orders, and shared admin surfaces
 
 **Files:**
+
 - Modify: `apps/web/app/admin/admin-main-typography.test.ts`
 - Modify: `apps/web/app/globals.css`
 
 **Interfaces:**
+
 - Consumes: the five `.commerce-admin-main` typography tokens from Task 1.
 - Produces: consistent readable text across shared cards, tables, filters, forms, timelines, pagination, feedback, Customers pages, Orders pages, and non-Printing action dialogs.
 
@@ -134,28 +138,23 @@ Place the block after the existing Customers and Orders component rules but befo
 
 ```css
 /* Final readable scale for commerce admin content, excluding the fixed sidebar and Printing modal. */
-.commerce-admin-main
-  :where(p, address, li, td, dd):not(.order-printing-modal *) {
+.commerce-admin-main :where(p, address, li, td, dd):not(.order-printing-modal *) {
   font-size: var(--admin-body-size);
 }
 
-.commerce-admin-main
-  :where(small, time, label):not(.order-printing-modal *) {
+.commerce-admin-main :where(small, time, label):not(.order-printing-modal *) {
   font-size: var(--admin-helper-size);
 }
 
-.commerce-admin-main
-  :where(h2, h3):not(.order-printing-modal *) {
+.commerce-admin-main :where(h2, h3):not(.order-printing-modal *) {
   font-size: var(--admin-section-heading-size);
 }
 
-.commerce-admin-main
-  :where(button, input, select, textarea):not(.order-printing-modal *) {
+.commerce-admin-main :where(button, input, select, textarea):not(.order-printing-modal *) {
   font-size: var(--admin-control-size);
 }
 
-.commerce-admin-main
-  :where(th, .commerce-status, .order-layer-badge):not(.order-printing-modal *) {
+.commerce-admin-main :where(th, .commerce-status, .order-layer-badge):not(.order-printing-modal *) {
   font-size: var(--admin-compact-size);
 }
 
@@ -203,10 +202,12 @@ git commit -m "style: normalize admin content typography"
 ### Task 3: Visual and full regression verification
 
 **Files:**
+
 - Verify only: `apps/web/app/globals.css`
 - Verify only: `apps/web/app/admin/admin-main-typography.test.ts`
 
 **Interfaces:**
+
 - Consumes: the complete semantic scale and component normalization from Tasks 1 and 2.
 - Produces: evidence that readability improved without layout or interaction regressions.
 
