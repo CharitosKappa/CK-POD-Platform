@@ -197,7 +197,11 @@ suite('Order action API real domain failure recovery', () => {
         vi.spyOn(payments, 'refund').mockImplementation(async () => {
           paymentCalls++;
           if (failure === 'transport') throw new TypeError('fetch failed: private-provider-data');
-          return { providerRefundId: 'provider-private-refund' };
+          return {
+            providerRefundId: 'provider-private-refund',
+            status: 'SUCCEEDED' as const,
+            providerStatus: 'succeeded' as const,
+          };
         });
         let failFinalization = failure === 'finalization';
         const faultPool: SqlPool = {

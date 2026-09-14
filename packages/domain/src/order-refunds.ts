@@ -3,6 +3,7 @@ import { withTransaction, type SqlClient, type SqlPool } from '@let-it-be/db';
 import {
   PaymentRefundRejectedError,
   PaymentRefundUncertainError,
+  type PaymentRefundResult,
   type PaymentService,
 } from './commerce-contracts';
 import { adjustStoreCreditWithClient } from './store-credit';
@@ -253,20 +254,73 @@ export class OrderRefundService {
     private readonly analytics?: RefundAnalytics,
   ) {}
 
-  /** Read an already-reserved staff refund after a transport/finalization error; never retry payment. */
+  /** Reconcile an already-reserved authorized refund through a provider read; never repeat payment. */
   async recoverRefundResult(
-    actor: Extract<RefundActor, { type: 'STAFF' }>,
+    actor: RefundActor,
     input: RefundOrderInput,
   ): Promise<RefundOrderResult | null> {
     this.validate(actor, input);
-    if (actor.type !== 'STAFF') throw new Error('Operations access is restricted.');
-    const found = await this.pool.query<RefundRow>(
-      `SELECT refund.* FROM app.order_refunds refund
+    await this.requireActor(actor);
+    const found = await this.pool.query<RefundRow & { provider_payment_id: string }>(
+      `SELECT refund.*,payment.provider_payment_id FROM app.order_refunds refund
        JOIN app.orders orders ON orders.id=refund.order_id
+       JOIN app.payments payment ON payment.id=refund.payment_id
        WHERE orders.order_number=$1 AND refund.idempotency_key=$2`,
       [input.orderNumber, input.idempotencyKey],
     );
-    return found.rows[0] ? result(found.rows[0], true) : null;
+    const refund = found.rows[0];
+    if (
+      !refund ||
+      refund.status !== 'PENDING' ||
+      !refund.provider_refund_id ||
+      !this.payments.getRefundStatus
+    )
+      return refund ? result(refund, true) : null;
+    let provider: PaymentRefundResult;
+    try {
+      provider = await this.payments.getRefundStatus({
+        providerRefundId: refund.provider_refund_id,
+        providerPaymentId: refund.provider_payment_id,
+        amountCents: refund.amount_cents,
+      });
+    } catch {
+      return result(refund, true);
+    }
+    if (provider.status === 'PENDING') return result(refund, true);
+    const reconciled = await withTransaction(this.pool, async (client) => {
+      await lockRefundOrder(client, refund.order_id);
+      const updated = await client.query<RefundRow>(
+        `UPDATE app.order_refunds SET status=$2,completed_at=now()
+         WHERE id=$1 AND status='PENDING' AND provider_refund_id=$3 RETURNING *`,
+        [refund.id, provider.status, provider.providerRefundId],
+      );
+      if (!updated.rows[0]) {
+        return (
+          await client.query<RefundRow>('SELECT * FROM app.order_refunds WHERE id=$1', [refund.id])
+        ).rows[0]!;
+      }
+      if (provider.status === 'FAILED') {
+        await importLegacyEditBalanceBasis(client, refund.order_id);
+        await restoreFailedEditRefundSettlement(client, refund.order_id, refund.id);
+      }
+      await this.audit(
+        client,
+        refund.order_id,
+        provider.status === 'SUCCEEDED' ? 'refund_succeeded' : 'refund_failed',
+        actor,
+        input,
+        {
+          refundId: refund.id,
+          amountCents: refund.amount_cents,
+          providerRefundId: provider.providerRefundId,
+          providerStatus: provider.providerStatus,
+          reconciled: true,
+        },
+      );
+      return updated.rows[0];
+    });
+    if (provider.status === 'SUCCEEDED') await this.emitRefund(this.pool, refund.order_id, input);
+    return result(reconciled, true);
   }
 
   async refundOriginalPayment(
@@ -278,9 +332,13 @@ export class OrderRefundService {
     const reservation = await withTransaction(this.pool, (client) =>
       this.reserve(client, actor, input, 'ORIGINAL_PAYMENT'),
     );
-    if (reservation.duplicate) return result(reservation.refund, true);
+    if (reservation.duplicate) {
+      if (reservation.refund.status === 'PENDING' && reservation.refund.provider_refund_id)
+        return (await this.recoverRefundResult(actor, input)) ?? result(reservation.refund, true);
+      return result(reservation.refund, true);
+    }
 
-    let provider: { providerRefundId: string };
+    let provider: PaymentRefundResult;
     try {
       provider = await this.payments.refund({
         providerPaymentId: reservation.order.provider_payment_id,
@@ -319,12 +377,35 @@ export class OrderRefundService {
       throw error;
     }
 
-    // External success cannot be undone. Keep the reservation PENDING if local finalization fails.
+    // Persist provider identity before terminal finalization so a later audit/database
+    // failure remains recoverable through a read-only provider lookup.
+    const identified = await withTransaction(this.pool, async (client) => {
+      await lockRefundOrder(client, reservation.order.id);
+      const updated = await client.query<RefundRow>(
+        `UPDATE app.order_refunds SET provider_refund_id=$2
+         WHERE id=$1 AND status='PENDING' RETURNING *`,
+        [reservation.refund.id, provider.providerRefundId],
+      );
+      const refund = updated.rows[0];
+      if (!refund) throw new Error('Refund reservation is unavailable.');
+      return refund;
+    });
+    if (provider.status === 'PENDING') {
+      await withTransaction(this.pool, async (client) => {
+        await lockRefundOrder(client, reservation.order.id);
+        await this.audit(client, reservation.order.id, 'refund_pending', actor, input, {
+          amountCents: identified.amount_cents,
+          providerRefundId: provider.providerRefundId,
+          providerStatus: provider.providerStatus,
+        });
+      });
+      return result(identified, false);
+    }
     const completed = await withTransaction(this.pool, async (client) => {
       await lockRefundOrder(client, reservation.order.id);
       const updated = await client.query<RefundRow>(
-        `UPDATE app.order_refunds SET provider_refund_id=$2, status='SUCCEEDED', completed_at=now()
-         WHERE id=$1 AND status='PENDING' RETURNING *`,
+        `UPDATE app.order_refunds SET status='SUCCEEDED',completed_at=now()
+         WHERE id=$1 AND status='PENDING' AND provider_refund_id=$2 RETURNING *`,
         [reservation.refund.id, provider.providerRefundId],
       );
       const refund = updated.rows[0];
@@ -332,10 +413,12 @@ export class OrderRefundService {
       await this.audit(client, reservation.order.id, 'refund_succeeded', actor, input, {
         amountCents: refund.amount_cents,
         providerRefundId: provider.providerRefundId,
+        providerStatus: provider.providerStatus,
       });
       return refund;
     });
-    await this.emitRefund(this.pool, reservation.order.id, input);
+    if (provider.status === 'SUCCEEDED')
+      await this.emitRefund(this.pool, reservation.order.id, input);
     return result(completed, false);
   }
 

@@ -58,6 +58,14 @@ export class PaymentRefundUncertainError extends Error {
   }
 }
 
+export type PaymentRefundStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED';
+
+export interface PaymentRefundResult {
+  providerRefundId: string;
+  status: PaymentRefundStatus;
+  providerStatus: 'pending' | 'requires_action' | 'succeeded' | 'failed' | 'canceled';
+}
+
 export interface PaymentService {
   createIntent(input: PaymentIntentRequest): Promise<PaymentIntentResult>;
   verifyWebhook(input: {
@@ -68,7 +76,13 @@ export interface PaymentService {
     providerPaymentId: string;
     amountCents: number;
     idempotencyKey: string;
-  }): Promise<{ providerRefundId: string }>;
+  }): Promise<PaymentRefundResult>;
+  /** Safe read-only reconciliation for an accepted nonterminal provider refund. */
+  getRefundStatus?(input: {
+    providerRefundId: string;
+    providerPaymentId: string;
+    amountCents: number;
+  }): Promise<PaymentRefundResult>;
 }
 
 export interface TaxAddress {

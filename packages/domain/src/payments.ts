@@ -6,6 +6,7 @@ import type {
   PaymentIntentRequest,
   PaymentIntentResult,
   PaymentOutcome,
+  PaymentRefundResult,
   PaymentService,
   TaxCalculation,
   TaxService,
@@ -60,6 +61,20 @@ export class FakePaymentService implements PaymentService {
   async refund(input: { providerPaymentId: string; amountCents: number; idempotencyKey: string }) {
     return {
       providerRefundId: `fake_re_${input.idempotencyKey.replace(/[^a-zA-Z0-9]/g, '').slice(-24)}`,
+      status: 'SUCCEEDED' as const,
+      providerStatus: 'succeeded' as const,
+    };
+  }
+
+  async getRefundStatus(input: {
+    providerRefundId: string;
+    providerPaymentId: string;
+    amountCents: number;
+  }): Promise<PaymentRefundResult> {
+    return {
+      providerRefundId: input.providerRefundId,
+      status: 'SUCCEEDED',
+      providerStatus: 'succeeded',
     };
   }
 }
@@ -170,18 +185,61 @@ export class StripePaymentService implements PaymentService {
         throw new PaymentRefundRejectedError();
       throw new PaymentRefundUncertainError();
     }
-    if (
-      typeof result.id !== 'string' ||
-      !result.id.startsWith('re_') ||
-      result.payment_intent !== input.providerPaymentId ||
-      result.amount !== input.amountCents
-    )
-      throw new PaymentRefundUncertainError();
-    if (result.status === 'failed' || result.status === 'canceled')
-      throw new PaymentRefundRejectedError();
-    if (result.status !== 'succeeded') throw new PaymentRefundUncertainError();
-    return { providerRefundId: result.id };
+    const refund = stripeRefundResult(result, input);
+    if (refund.status === 'FAILED') throw new PaymentRefundRejectedError();
+    return refund;
   }
+
+  async getRefundStatus(input: {
+    providerRefundId: string;
+    providerPaymentId: string;
+    amountCents: number;
+  }): Promise<PaymentRefundResult> {
+    let response: Response;
+    let result: Record<string, unknown>;
+    try {
+      response = await fetch(
+        `${this.baseUrl}/refunds/${encodeURIComponent(input.providerRefundId)}`,
+        {
+          headers: { Authorization: `Bearer ${this.secretKey}` },
+        },
+      );
+      result = (await response.json()) as Record<string, unknown>;
+      if (!response.ok || !result || typeof result !== 'object')
+        throw new PaymentRefundUncertainError();
+    } catch {
+      throw new PaymentRefundUncertainError();
+    }
+    return stripeRefundResult(result, input);
+  }
+}
+
+function stripeRefundResult(
+  result: Record<string, unknown>,
+  expected: { providerRefundId?: string; providerPaymentId: string; amountCents: number },
+): PaymentRefundResult {
+  if (
+    typeof result.id !== 'string' ||
+    !result.id.startsWith('re_') ||
+    (expected.providerRefundId !== undefined && result.id !== expected.providerRefundId) ||
+    result.payment_intent !== expected.providerPaymentId ||
+    result.amount !== expected.amountCents ||
+    !['pending', 'requires_action', 'succeeded', 'failed', 'canceled'].includes(
+      String(result.status),
+    )
+  )
+    throw new PaymentRefundUncertainError();
+  const providerStatus = result.status as PaymentRefundResult['providerStatus'];
+  return {
+    providerRefundId: result.id,
+    status:
+      providerStatus === 'succeeded'
+        ? 'SUCCEEDED'
+        : providerStatus === 'failed' || providerStatus === 'canceled'
+          ? 'FAILED'
+          : 'PENDING',
+    providerStatus,
+  };
 }
 
 /** Development tax only. Production tax policy remains gated by G4. */

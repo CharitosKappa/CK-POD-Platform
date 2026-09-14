@@ -8,7 +8,6 @@ describe('platform payment and tax adapters', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([
-    { id: 're_pending', status: 'pending', payment_intent: 'pi_expected', amount: 100 },
     { id: 're_other', status: 'succeeded', payment_intent: 'pi_other', amount: 100 },
     { id: 're_amount', status: 'succeeded', payment_intent: 'pi_expected', amount: 200 },
     { status: 'succeeded', payment_intent: 'pi_expected', amount: 100 },
@@ -22,6 +21,57 @@ describe('platform payment and tax adapters', () => {
         idempotencyKey: 'fixture-key-0001',
       }),
     ).rejects.toThrow('Refund outcome is not confirmed');
+  });
+
+  it('preserves accepted nonterminal Stripe refunds for later reconciliation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              id: 're_pending',
+              status: 'pending',
+              payment_intent: 'pi_expected',
+              amount: 100,
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              id: 're_pending',
+              status: 'succeeded',
+              payment_intent: 'pi_expected',
+              amount: 100,
+            }),
+          ),
+        ),
+    );
+    const payments = new StripePaymentService('fixture', 'fixture');
+    await expect(
+      payments.refund({
+        providerPaymentId: 'pi_expected',
+        amountCents: 100,
+        idempotencyKey: 'fixture-key-0001',
+      }),
+    ).resolves.toEqual({
+      providerRefundId: 're_pending',
+      status: 'PENDING',
+      providerStatus: 'pending',
+    });
+    await expect(
+      payments.getRefundStatus!({
+        providerRefundId: 're_pending',
+        providerPaymentId: 'pi_expected',
+        amountCents: 100,
+      }),
+    ).resolves.toEqual({
+      providerRefundId: 're_pending',
+      status: 'SUCCEEDED',
+      providerStatus: 'succeeded',
+    });
   });
   it('supports deterministic success, failure, cancellation, pending, and duplicate-safe fake event identifiers', async () => {
     const payments = new FakePaymentService();

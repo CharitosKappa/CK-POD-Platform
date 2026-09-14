@@ -562,7 +562,11 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
           throw new Error('Payment setup is temporarily unavailable.');
         },
         verifyWebhook: async () => null,
-        refund: async () => ({ providerRefundId: 'unused' }),
+        refund: async () => ({
+          providerRefundId: 'unused',
+          status: 'SUCCEEDED' as const,
+          providerStatus: 'succeeded' as const,
+        }),
       },
       new FakeTaxService(875),
       fulfillment,
@@ -700,7 +704,20 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
 
     function transport(beforeResponse?: () => Promise<void>, fail = false) {
       const requests: { amountCents: number; paymentId: string | null; key: string | null }[] = [];
+      const accepted = new Map<string, { amountCents: number; paymentId: string | null }>();
       vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'GET') {
+          const providerRefundId = url.split('/').at(-1)!;
+          const prior = accepted.get(providerRefundId)!;
+          return new Response(
+            JSON.stringify({
+              id: providerRefundId,
+              status: 'succeeded',
+              amount: prior.amountCents,
+              payment_intent: prior.paymentId,
+            }),
+          );
+        }
         expect(url).toBe('https://api.stripe.com/v1/refunds');
         expect(init.method).toBe('POST');
         const form = new URLSearchParams(String(init.body));
@@ -709,6 +726,10 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
           amountCents: Number(form.get('amount')),
           paymentId: form.get('payment_intent'),
           key,
+        });
+        accepted.set(`re_${key}`, {
+          amountCents: Number(form.get('amount')),
+          paymentId: form.get('payment_intent'),
         });
         await beforeResponse?.();
         return new Response(
@@ -1032,6 +1053,49 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
       },
     );
 
+    it('persists an accepted provider refund id and reconciles its nonterminal status', async () => {
+      const f = await fixture();
+      const refunds = service();
+      const providerRefundId = `re_${randomUUID()}`;
+      const input = f.input(f.amount_cents);
+      const payment = await pool.query<{ provider_payment_id: string }>(
+        'SELECT provider_payment_id FROM app.payments WHERE id=$1',
+        [f.payment_id],
+      );
+      vi.stubGlobal(
+        'fetch',
+        async (url: string) =>
+          new Response(
+            JSON.stringify({
+              id: providerRefundId,
+              status: url.endsWith(providerRefundId) ? 'succeeded' : 'pending',
+              payment_intent: payment.rows[0]!.provider_payment_id,
+              amount: input.amountCents,
+            }),
+          ),
+      );
+
+      await expect(refunds.refundOriginalPayment(f.staff, input)).resolves.toMatchObject({
+        status: 'PENDING',
+        providerRefundId,
+      });
+      expect((await state(f.id)).refunds).toMatchObject([
+        { status: 'PENDING', provider_refund_id: providerRefundId, completed_at: null },
+      ]);
+      await expect(refunds.refundOriginalPayment(f.staff, input)).resolves.toMatchObject({
+        status: 'SUCCEEDED',
+        providerRefundId,
+        duplicate: true,
+      });
+      expect((await state(f.id)).refunds).toMatchObject([
+        {
+          status: 'SUCCEEDED',
+          provider_refund_id: providerRefundId,
+          completed_at: expect.any(Date),
+        },
+      ]);
+    });
+
     it('serializes the same monetary key across different orders into exactly one effect', async () => {
       const first = await fixture();
       const second = await fixture();
@@ -1088,10 +1152,14 @@ integrationSuite('mockup, cart, checkout, and paid-order integration', () => {
         await removeFailure();
       }
       expect((await state(f.id)).refunds).toMatchObject([
-        { status: 'PENDING', amount_cents: f.amount_cents },
+        {
+          status: 'PENDING',
+          amount_cents: f.amount_cents,
+          provider_refund_id: expect.stringMatching(/^re_/),
+        },
       ]);
       expect(await refunds.refundOriginalPayment(f.staff, input)).toMatchObject({
-        status: 'PENDING',
+        status: 'SUCCEEDED',
         duplicate: true,
       });
       await expect(refunds.refundToStoreCredit(f.staff, f.input(1))).rejects.toThrow(

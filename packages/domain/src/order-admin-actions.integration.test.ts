@@ -2132,7 +2132,11 @@ suite('order archive transaction integration', () => {
       const payments = new domain.FakePaymentService();
       const refund = vi.spyOn(payments, 'refund').mockImplementation(async () => {
         expect((await snapshot(f.orderId)).order).toMatchObject({ status: 'CANCELLED' });
-        return { providerRefundId: `refund-${randomUUID()}` };
+        return {
+          providerRefundId: `refund-${randomUUID()}`,
+          status: 'SUCCEEDED' as const,
+          providerStatus: 'succeeded' as const,
+        };
       });
       const { actions } = cancellationService(undefined, { payments });
       const before = await snapshot(f.orderId);
@@ -2225,7 +2229,11 @@ suite('order archive transaction integration', () => {
         },
       },
     ]);
-    refund.mockResolvedValue({ providerRefundId: `recovered-${randomUUID()}` });
+    refund.mockResolvedValue({
+      providerRefundId: `recovered-${randomUUID()}`,
+      status: 'SUCCEEDED',
+      providerStatus: 'succeeded',
+    });
     expect(
       await refunds.refundOriginalPayment(
         {
