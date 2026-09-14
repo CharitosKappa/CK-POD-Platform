@@ -13,6 +13,20 @@ WITH candidates AS (
          END AS corrected_state
   FROM app.order_fulfillment_groups fulfillment_group
   WHERE fulfillment_group.fulfillment_status='DELIVERED'
+    AND EXISTS (
+      SELECT 1 FROM app.order_fulfillment_status_history history
+      WHERE history.fulfillment_group_id=fulfillment_group.id
+        AND history.source='MIGRATION'
+        AND history.from_state IS NULL
+        AND history.to_state='DELIVERED'
+        AND history.metadata->>'legacyGroupStatus'='DELIVERED'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM app.order_fulfillment_status_history history
+      WHERE history.fulfillment_group_id=fulfillment_group.id
+        AND history.source<>'MIGRATION'
+        AND history.to_state='DELIVERED'
+    )
     AND NOT EXISTS (
       SELECT 1 FROM app.order_shipments shipment
       WHERE shipment.fulfillment_group_id=fulfillment_group.id

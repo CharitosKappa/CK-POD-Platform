@@ -70,6 +70,8 @@ suite('order fulfillment evidence migration', () => {
       );
 
       await migration('0046_order_detail_layers', schema);
+      await migration('0053_fulfillment_evidence_repair', schema);
+      await migration('0053_fulfillment_evidence_repair', schema);
 
       expect(
         (
@@ -95,6 +97,7 @@ suite('order fulfillment evidence migration', () => {
     const orderId = randomUUID();
     const unsupported = randomUUID();
     const evidenced = randomUUID();
+    const providerDelivered = randomUUID();
     try {
       await createLegacyTables(schema);
       await database.pool.query(`ALTER TABLE "${schema}".order_fulfillment_groups
@@ -115,14 +118,34 @@ suite('order fulfillment evidence migration', () => {
       await database.pool.query(
         `INSERT INTO "${schema}".order_fulfillment_groups
            (id,order_id,status,fulfillment_status) VALUES
-           ($2,$1,'DELIVERED','DELIVERED'),($3,$1,'DELIVERED','DELIVERED')`,
-        [orderId, unsupported, evidenced],
+           ($2,$1,'DELIVERED','DELIVERED'),
+           ($3,$1,'DELIVERED','DELIVERED'),
+           ($4,$1,'IN_PRODUCTION','DELIVERED')`,
+        [orderId, unsupported, evidenced, providerDelivered],
       );
       await database.pool.query(
         `INSERT INTO "${schema}".order_shipments
            (id,fulfillment_group_id,status,shipped_at,delivered_at)
            VALUES ($1,$2,'delivered',now()-interval '2 days',now()-interval '1 day')`,
         [randomUUID(), evidenced],
+      );
+      await database.pool.query(
+        `INSERT INTO "${schema}".order_fulfillment_status_history
+           (order_id,fulfillment_group_id,from_state,to_state,source,metadata) VALUES
+           ($1,$2,NULL,'DELIVERED','MIGRATION',
+             '{"legacyGroupStatus":"DELIVERED","evidence":"strongest-durable"}'::jsonb),
+           ($1,$3,NULL,'DELIVERED','MIGRATION',
+             '{"legacyGroupStatus":"DELIVERED","evidence":"strongest-durable"}'::jsonb),
+           ($1,$4,NULL,'UNFULFILLED','MIGRATION',
+             '{"legacyGroupStatus":"IN_PRODUCTION","evidence":"strongest-durable"}'::jsonb)`,
+        [orderId, unsupported, evidenced, providerDelivered],
+      );
+      await database.pool.query(
+        `INSERT INTO "${schema}".order_fulfillment_status_history
+           (order_id,fulfillment_group_id,from_state,to_state,source,metadata)
+         VALUES ($1,$2,'FULFILLED','DELIVERED','WEBHOOK',
+           '{"externalEventId":"provider-delivered-without-shipment"}'::jsonb)`,
+        [orderId, providerDelivered],
       );
 
       await migration('0053_fulfillment_evidence_repair', schema);
@@ -139,13 +162,15 @@ suite('order fulfillment evidence migration', () => {
         [
           { id: unsupported, fulfillment_status: 'FULFILLED' },
           { id: evidenced, fulfillment_status: 'DELIVERED' },
+          { id: providerDelivered, fulfillment_status: 'DELIVERED' },
         ].sort((left, right) => left.id.localeCompare(right.id)),
       );
       expect(
         (
           await database.pool.query(
             `SELECT from_state,to_state,source,metadata->>'reason' AS reason
-             FROM "${schema}".order_fulfillment_status_history`,
+             FROM "${schema}".order_fulfillment_status_history
+             WHERE source='MIGRATION' AND metadata->>'repairMigration'='0053'`,
           )
         ).rows,
       ).toEqual([
